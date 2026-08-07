@@ -25,11 +25,29 @@ patient data. The important system boundaries are:
 - Escalation decision logic.
 - Structured call summaries and observable metrics.
 
-Read `.challenge-docs/README.md`, `.challenge-docs/requerimientos.txt`,
-`.challenge-docs/rubrica-evaluacion.md`, `.challenge-docs/stack-tecnico.md`, and the
-privacy and terms documents before making architectural decisions.
+The agent-facing project documentation is English and must remain English. Read
+`docs/PROJECT.md` and `docs/STATUS.md` first. Read `docs/ARCHITECTURE.md` only when the
+task affects architecture or interfaces. Read the relevant `.challenge-docs` files only
+when the task requires their constraints; do not load the entire repository or dataset
+by default.
 
 ## Worktrees and parallel work
+
+### Mandatory session protocol
+
+At the start of every coding session:
+
+1. Run `git rev-parse --show-toplevel` and `git branch --show-current`.
+2. Determine whether the current directory is the primary worktree or a task worktree.
+3. If the current directory is the primary worktree and the user requests code or
+   documentation changes:
+   - Derive a short kebab-case task slug from the request.
+   - Create `.worktrees/<task-slug>` with branch `task/<task-slug>`.
+   - Continue all work from that task worktree.
+4. If already inside a task worktree, do not create another nested worktree.
+5. Report the active worktree and branch before implementation begins.
+
+### Parallel work rules
 
 - Use one worktree per independent task or feature branch.
 - Keep each worktree focused on one planner File Impact list.
@@ -58,3 +76,13 @@ The auditor must verify, when applicable:
 - Metrics are captured in logs and reported in the README.
 - Synthetic data and privacy constraints are respected.
 - The documented setup completes in 15 minutes or less.
+
+## Documentation Maintenance
+
+- The planner must include a `Documentation Impact` section in every plan.
+- The coder must update only the relevant documentation when behavior, architecture,
+  interfaces, dependencies, milestones, or blockers change.
+- The coder must remove or correct stale documentation found in the affected documents.
+- The auditor must verify that changed documentation matches the code and that no stale
+  statements remain in the affected scope.
+- Do not create a new document for a routine implementation step.

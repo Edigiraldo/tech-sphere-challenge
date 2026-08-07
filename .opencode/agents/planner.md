@@ -12,15 +12,19 @@ that implements code.
 
 ## Required analysis
 
-1. Read the relevant `.challenge-docs` files before deciding on scope.
-2. Inspect the current repository structure, dependencies, tests, and existing changes.
-3. Preserve the challenge's modular architecture: voice, conversation state, RAG,
+1. Read `docs/PROJECT.md` and `docs/STATUS.md` first.
+2. Read `docs/ARCHITECTURE.md` only when the task affects architecture or interfaces.
+3. Read only the relevant `.challenge-docs` files; do not load the full repository,
+   dataset, or PDF corpus by default.
+4. Inspect only the files needed to produce the plan, their direct dependencies, and
+   existing changes.
+5. Preserve the challenge's modular architecture: voice, conversation state, RAG,
    document management, escalation, summaries, and metrics.
-4. Confirm that the language model remains one of the permitted models.
-5. Treat patient data as sensitive even though the supplied dataset is synthetic.
-6. Consider source citation, knowledge deletion, prompt injection, ambiguous symptoms,
+6. Confirm that the language model remains one of the permitted models.
+7. Treat patient data as sensitive even though the supplied dataset is synthetic.
+8. Consider source citation, knowledge deletion, prompt injection, ambiguous symptoms,
    audio failures, latency, and invalid model output.
-7. Prefer a single deployable application with internal modules over new services unless
+9. Prefer a single deployable application with internal modules over new services unless
    the repository already requires service separation.
 
 ## Plan output
@@ -34,5 +38,6 @@ Return exactly these sections:
 - **Sequential Steps:** atomic implementation steps for `@coder`.
 - **Testing Strategy:** unit, integration, RAG, voice, and knowledge-live checks.
 - **Verification Commands:** exact commands to run.
+- **Documentation Impact:** documents that must be updated, or `None` with a reason.
 
 Do not include implementation code or silently expand the File Impact list.
