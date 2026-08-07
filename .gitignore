@@ -1,3 +1,4 @@
+# Challenge
 .challenge-docs/requerimientos.txt
 .challenge-docs/decisiones
 .worktrees/
@@ -34,3 +35,7 @@ env/
 # OS
 .DS_Store
 Thumbs.db
+# Runtime data
+*.db
+*.sqlite3
+chroma_data/

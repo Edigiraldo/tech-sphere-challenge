@@ -2,9 +2,11 @@
 
 ## Current Phase
 
-Phase 1 (project skeleton and persistence) in progress.  Architecture definition is
-complete; the first implementation artifact — the normalized read-only dataset access
-package — is built and tested.
+Phase 1 in progress: the FastAPI project skeleton, `/health` endpoint, and normalized
+read-only dataset access package are implemented and tested. Persistence and the RAG
+foundation are the next deliverables. The modular monolith architecture, module
+boundaries, data flows, persistence design, adapter contracts, and phased plan are
+documented in `docs/ARCHITECTURE.md`.
 
 ## Completed
 
