@@ -7,21 +7,45 @@ follow-up using synthetic Colombian patient data.
 
 The product must support:
 
-- Browser-based voice conversations.
-- Clinical retrieval-augmented generation (RAG).
-- Live document upload, listing, processing, and deletion.
-- Traceable sources for clinical responses.
-- Conservative escalation decisions.
-- Structured call summaries and observable metrics.
+- Browser-based voice conversations in Spanish.
+- Clinical retrieval-augmented generation (RAG) with traceable source citations.
+- Live document upload, listing, processing status, and deletion (including purging
+  indexed chunks).
+- Conservative escalation decisions with a safety-first classification policy.
+- Structured call summaries with patient, procedure, symptoms, decision, sources, and
+  next steps.
+- Observable metrics: latency, token consumption, model invocations, RAG queries, and
+  estimated cost per call.
+
+The language model must be one of the four permitted by the challenge
+(`.challenge-docs/stack-tecnico.md`). The rest of the stack — orchestration, voice,
+RAG, embeddings — is open choice.
+
+## Architecture
+
+The target is a modular monolith: one Python backend with internal modules and a
+browser frontend with two surfaces (call interface and administration console).
+See `docs/ARCHITECTURE.md` for the full module catalog, data flows, persistence
+boundaries, permitted adapters, phased implementation plan, and open decisions.
 
 ## Repository Map
 
 ```text
-backend/       Application API and domain modules (planned)
-frontend/      Browser call and administration interfaces (planned)
-dataset/       Synthetic challenge data and reference PDFs
-docs/          Maintained project documentation
-.challenge-docs/ Challenge requirements and evaluation rules
+backend/               Application backend (Python modular monolith)
+  api/                 REST and WebSocket endpoints
+  voice/               STT and TTS adapters
+  conversation/        Dialogue orchestration and state machine
+  llm/                 Permitted language model adapter
+  rag/                 Document ingestion, embedding, and retrieval
+  documents/           Document lifecycle (upload, list, status, delete)
+  decision/            Escalation classification
+  summaries/           Structured call summary generation
+  metrics/             Latency, token, and cost instrumentation
+  persistence/         SQLite and ChromaDB access layer
+frontend/              Browser call and administration interfaces (planned)
+dataset/               Synthetic challenge data and reference PDFs
+docs/                  Maintained project documentation
+.challenge-docs/       Challenge requirements and evaluation rules
 ```
 
 ## Where To Look
@@ -29,13 +53,18 @@ docs/          Maintained project documentation
 | Task | First files to inspect |
 | --- | --- |
 | Architecture | `docs/ARCHITECTURE.md` |
-| Current work | `docs/STATUS.md` |
-| RAG or documents | `backend/rag/`, `backend/documents/` |
-| Conversation | `backend/conversation/` |
-| Escalation | `backend/decision/` |
-| API contract | `backend/api/` and relevant models |
+| Current work and open decisions | `docs/STATUS.md` |
+| Document lifecycle | `backend/documents/`, `backend/rag/` |
+| RAG retrieval | `backend/rag/` |
+| Conversation flow | `backend/conversation/` |
+| Escalation logic | `backend/decision/` |
+| Voice I/O | `backend/voice/` |
+| LLM adapter | `backend/llm/` |
+| API contract | `backend/api/` |
+| Persistence schema | `backend/persistence/` |
 | Browser UI | `frontend/` |
 | Challenge constraints | `.challenge-docs/README.md` and `.challenge-docs/rubrica-evaluacion.md` |
+| Permitted models | `.challenge-docs/stack-tecnico.md` |
 
 ## Working Rules
 
@@ -44,5 +73,6 @@ docs/          Maintained project documentation
 - Inspect only the files listed by the planner and their direct dependencies.
 - Keep implementation details in code, docstrings, and tests.
 - Keep stable architectural facts in `docs/ARCHITECTURE.md`.
-- Keep current progress and blockers in `docs/STATUS.md`.
+- Keep current progress, milestones, and blockers in `docs/STATUS.md`.
+- Track unresolved architectural decisions in `docs/ARCHITECTURE.md` § Open Decisions.
 - Remove stale documentation when the behavior it describes is removed.
