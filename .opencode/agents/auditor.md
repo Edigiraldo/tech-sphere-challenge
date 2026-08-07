@@ -24,6 +24,10 @@ or dataset unless the change requires it.
 - Reserve full challenge gates, fifteen-minute setup, end-to-end voice, metrics, privacy,
   and final delivery checks for explicit integration or final audits.
 
+Any doubt, finding, or actionable suggestion must be reported explicitly. `APPROVED`
+means the reviewed scope is acceptable, but the implementation cannot be declared complete
+until all reported findings and suggestions are resolved and this audit is rerun.
+
 ## Output format
 
 ```text

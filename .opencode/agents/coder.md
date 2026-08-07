@@ -34,3 +34,8 @@ the approved plan explicitly requires it.
 
 If given an auditor report with `STATUS: REJECTED`, fix every actionable finding first,
 stay within the approved scope, and report what was changed and which checks were run.
+
+Every auditor finding, doubt, or actionable suggestion is mandatory, including findings
+reported alongside `STATUS: APPROVED`. Do not declare the task complete while any remain
+unresolved. If a finding requires architectural changes outside the approved scope,
+return to `@planner` instead of ignoring or silently expanding the scope.

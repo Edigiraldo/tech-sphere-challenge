@@ -60,7 +60,13 @@ At the start of every coding session:
 - If the auditor rejects due to an implementation defect, send the report to `@coder`.
 - If the auditor finds an architectural flaw, or two coder attempts fail, return to `@planner`.
 - After a fix, rerun the auditor checks.
-- Finish only with an `APPROVED` audit or a clearly documented blocker.
+- Every auditor finding, doubt, or actionable suggestion is mandatory. The coder must
+  resolve it or the planner must explicitly revise the architecture and scope.
+- The work is not complete while the auditor has unresolved findings, doubts, or
+  suggestions.
+- After every remediation, rerun the auditor checks.
+- Finish only with an `APPROVED` audit and no unresolved findings, or a clearly
+  documented blocker explicitly accepted by the user.
 
 ## Required audit focus
 
