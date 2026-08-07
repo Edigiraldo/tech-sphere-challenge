@@ -31,7 +31,12 @@ entrega pública actual.
 
 ## Documentación
 
-La documentación disponible se encuentra en [`.challenge-docs/`](.challenge-docs/):
+La documentación del proyecto incluye:
+
+- [Arquitectura técnica completa](docs/ARCHITECTURE.md)
+- [Estado del proyecto](docs/STATUS.md)
+
+La documentación del reto se encuentra en [`.challenge-docs/`](.challenge-docs/):
 
 - [README del reto](.challenge-docs/README.md)
 - [Rúbrica de evaluación](.challenge-docs/rubrica-evaluacion.md)
