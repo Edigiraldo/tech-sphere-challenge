@@ -20,8 +20,10 @@ Implementation Plan) are complete. The application implements:
 - HTTP voice turn REST endpoints (``POST /calls`` creates a call and returns a
   base64-encoded WAV greeting; ``POST /calls/{call_id}/turn`` accepts base64 WAV,
   STT-transcribes, runs through the orchestrator, classifies escalation, synthesises
-  a TTS response, and returns base64 WAV + transcription + citations + escalation
-  info).
+  a TTS response, and returns base64 WAV + transcription + patient transcription +
+  citations + escalation info). The orchestrator is wired with live ``RagConfig``
+  and ``LlmConfig`` (from environment variables); built-in safe fallbacks handle
+  cases where RAG or LLM providers are unavailable.
 - Conversation orchestrator (finite state machine: IDLE → GREETING → CONSENT →
   QUESTIONS → CLOSING → ENDED; 6 structured Spanish follow-up questions;
   RAG+LLM integration; safe fallbacks).
@@ -113,10 +115,16 @@ adapter contracts, and phased implementation plan are documented in
 - Summaries module: ``backend/summaries/`` — deterministic Spanish summary generator
   (patient demographics, procedure, six symptom domains, escalation decision, next
   steps). 44 tests pass. Stdlib-only.
-- Voice turn endpoints: ``backend/api/calls.py`` — ``POST /calls`` (create call,
-  return agent greeting as base64 WAV), ``POST /calls/{call_id}/turn`` (STT
-  transcribe → orchestrator → escalation classify → TTS synthesise → base64 WAV).
-  ``backend/api/call_store.py`` — thread-safe in-memory ``CallStore``. 41 tests pass.
+- Voice turn endpoints: ``backend/api/calls.py`` — ``POST /calls`` creates a call
+  and returns the agent greeting as base64 WAV; ``POST /calls/{call_id}/turn``
+  transcribes patient audio (STT), runs the orchestrator (with live ``RagConfig``
+  and ``LlmConfig``), classifies escalation, synthesises a TTS response, and
+  returns base64 WAV + transcription + patient transcription + citations +
+  escalation info.  ``TurnResponse`` includes ``patient_transcription`` (the
+  STT output for the patient's speech) for frontend display.  Real patient profiles
+  are loaded from the dataset when available, with a request-body fallback for
+  patients not found in the dataset.  ``backend/api/call_store.py`` —
+  thread-safe in-memory ``CallStore``.  49 tests pass.
 - Escalation classification wired in voice turn endpoints: domain inferred from
   question index during QUESTIONS phase; ``EscalationInfo`` returned in
   ``TurnResponse``.
@@ -134,6 +142,7 @@ adapter contracts, and phased implementation plan are documented in
 - Browser voice integration: ``frontend/call.js`` — MediaRecorder microphone
   capture, fetch-based calls to ``POST /calls`` and
   ``POST /calls/{call_id}/turn``, WAV audio playback, transcript rendering,
+  patient transcription display (from ``patient_transcription`` field),
   conversation history with citation and escalation display.
 - Administration console: ``/admin`` page with document upload, listing with
   status polling, refresh, and deletion; backed by the document lifecycle REST API
@@ -141,11 +150,10 @@ adapter contracts, and phased implementation plan are documented in
 - Metrics API and frontend: read-only typed ``GET /metrics`` endpoint and metrics
   frontend view; metrics collector module is distinct from the reporting API.
 
-Test totals: 761 fast tests (pytest), 16 slow tests (`pytest -m slow`).
+Test totals: 822 fast tests (pytest), 16 slow tests (`pytest -m slow`).
 
 ## In Progress
 
-<<<<<<< HEAD
 - Audio transport format — decision D5 pending (Phase 6).
 
 ## Completed (frontend)
@@ -186,7 +194,7 @@ Test totals: 761 fast tests (pytest), 16 slow tests (`pytest -m slow`).
 
 ## Recent Changes
 
-- **2026-08-08:** Frontend shell implemented.  ``frontend/`` directory with vanilla
+ - **2026-08-08:** Frontend shell implemented.  ``frontend/`` directory with vanilla
   HTML/CSS/JS (index.html, call.html, styles.css, app.js, call.js).  ``backend/main.py``
   serves static assets via ``FileResponse`` routes and ``StaticFiles`` mount.
   8 focused tests pass.  No backend API connections, no microphone/audio APIs.
@@ -301,16 +309,12 @@ Test totals: 761 fast tests (pytest), 16 slow tests (`pytest -m slow`).
   autouse test fixture resetting the ChromaStore singleton between tests. Added
   security comment for ``trust_remote_code=True``. Documented pdfplumber choice
   and 800/150 defaults rationale in ``docs/ARCHITECTURE.md``.
-- **2026-08-07:** First minimal RAG slice implemented. Added ``backend/persistence/``
+ - **2026-08-07:** First minimal RAG slice implemented. Added ``backend/persistence/``
   (ChromaDB access), ``backend/rag/`` (extract, chunk, embed, store, retrieve),
   ``tests/rag/`` (fixtures and 25 tests, 10 slow). Updated ``pyproject.toml`` with
   chromadb, sentence-transformers, pdfplumber dependencies. Added model cache and
   ChromaDB runtime data to ``.gitignore``. Resolved open decision D6 (chunking strategy
   = fixed-size with overlap).
-=======
-- Audio transport format — decision D5 is de facto HTTP REST with base64 WAV for the
-  voice turn endpoints; WebSocket streaming remains an open option for future phases.
->>>>>>> 2d429fb (docs: synchronize current implementation documentation)
 
 ## Next Milestones
 

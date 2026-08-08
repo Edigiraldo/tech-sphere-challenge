@@ -1,14 +1,15 @@
 """Tests for the voice call REST endpoints.
 
 All tests mock STT and TTS dependencies so they execute quickly without
-external services.  The ``ConversationOrchestrator`` runs with
-``rag_config=None`` and ``llm_config=None`` — it uses deterministic
-fallback messages.
+external services.  The ``ConversationOrchestrator`` uses real
+``RagConfig`` / ``LlmConfig`` (constructed from env vars) with built-in
+safe fallbacks when the underlying providers are unavailable.
 """
 
 from __future__ import annotations
 
 import base64
+import datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -78,11 +79,17 @@ def mock_tts():
 @pytest.fixture(autouse=True)
 def setup_voice_mocks(mock_stt, mock_tts):
     """Inject mock STT/TTS into the calls module and reset shared
-    module-level state (metrics collector, turn-index counter) before
-    each test so tests are isolated.
+    module-level state (metrics collector, turn-index counter, patient
+    cache) before each test so tests are isolated.
 
     Uses ``unittest.mock.patch`` on the module-level globals so every
     endpoint call goes through the mocks.
+
+    Also patches ``RagConfig`` / ``LlmConfig`` to return ``None`` so that
+    tests do not trigger model downloads or external API connections, and
+    ``_get_patients`` to return an empty dict so tests do not read XLSX
+    files.  Tests that need to verify config or patient wiring must opt
+    out via their own ``patch`` calls.
     """
     from backend.api.calls import _call_turn_index
     from backend.api.metrics import metrics_collector
@@ -92,6 +99,15 @@ def setup_voice_mocks(mock_stt, mock_tts):
 
     with patch("backend.api.calls._stt", mock_stt), patch(
         "backend.api.calls._tts", mock_tts
+    ), patch(
+        "backend.api.calls.RagConfig",
+        return_value=None,
+    ), patch(
+        "backend.api.calls.LlmConfig",
+        return_value=None,
+    ), patch(
+        "backend.api.calls._get_patients",
+        return_value={},
     ):
         yield
 
@@ -1063,3 +1079,306 @@ class TestEscalationInEndpoint:
 
         # Clean up
         await global_store.remove(cid)
+
+
+# ---------------------------------------------------------------------------
+# Patient transcription
+# ---------------------------------------------------------------------------
+
+
+class TestPatientTranscription:
+    """Verify the ``patient_transcription`` field in TurnResponse."""
+
+    @pytest.fixture
+    async def call_id(self):
+        """Create a call and advance through greeting so the first turn
+        is the consent request."""
+        transport = ASGITransport(app=app)
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            response = await client.post(
+                "/calls",
+                json={
+                    "patient_id": "pac-pt",
+                    "dia_postop": 3,
+                    "procedimiento": "Apendicectomía",
+                    "nombre_completo": "Patient Transcript",
+                    "eps": "EPS",
+                },
+            )
+        cid = response.json()["call_id"]
+        yield cid
+        await global_store.remove(cid)
+
+    @pytest.mark.asyncio
+    async def test_turn_response_includes_patient_transcription(self, call_id):
+        """The TurnResponse includes a ``patient_transcription`` field
+        containing the STT output for the patient's speech."""
+        transport = ASGITransport(app=app)
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            response = await client.post(
+                f"/calls/{call_id}/turn",
+                json={"audio_base64": _MOCK_AUDIO_B64},
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+
+        # Backward-compatible: the field must be present in the model.
+        parsed = TurnResponse(**data)
+
+        # The mock STT always returns "Sí, acepto continuar con la llamada."
+        assert parsed.patient_transcription is not None
+        assert "acepto" in parsed.patient_transcription.lower()
+        assert parsed.patient_transcription == (
+            "Sí, acepto continuar con la llamada."
+        )
+
+    @pytest.mark.asyncio
+    async def test_patient_transcription_is_none_for_create_call(self):
+        """CreateCallResponse does NOT include patient_transcription
+        (the field only exists on TurnResponse)."""
+        transport = ASGITransport(app=app)
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            response = await client.post(
+                "/calls",
+                json={
+                    "patient_id": "pac-pt2",
+                    "dia_postop": 1,
+                    "procedimiento": "Test",
+                    "nombre_completo": "Test",
+                },
+            )
+
+        assert response.status_code == 201
+        data = response.json()
+
+        # CreateCallResponse must validate (no patient_transcription field
+        # expected).
+        parsed = CreateCallResponse(**data)
+        assert parsed.call_id
+        assert "patient_transcription" not in data
+
+
+# ---------------------------------------------------------------------------
+# Patient lookup from dataset
+# ---------------------------------------------------------------------------
+
+
+class TestPatientLookup:
+    """Verify the real patient loader integration in create_call."""
+
+    @pytest.mark.asyncio
+    async def test_lookup_uses_dataset_patient_when_found(self):
+        """When a patient_id exists in the dataset, the full patient
+        profile is used (real demographics)."""
+        from backend.data.models import Patient as DataPatient
+
+        real_patient = DataPatient(
+            paciente_id="P001",
+            bundle_id="bundle-001",
+            synthea_runtime="synthea_v3",
+            modulo_synthea="appendicitis",
+            procedimiento="Apendicectomía laparoscópica",
+            fecha_cirugia=datetime.date(2026, 7, 1),
+            edad=45,
+            genero="F",
+            comorbilidades=["hipertension"],
+            complicacion_encounter=False,
+            nombre_completo="María Elena Gómez",
+            direccion="Calle 123",
+            ciudad="Bogotá",
+            departamento="Cundinamarca",
+            documento_cc="123456789",
+            eps="Compensar EPS",
+            source_country="CO",
+            adapted_country="CO",
+            adaptation_fields=["nombre_completo"],
+        )
+
+        with patch(
+            "backend.api.calls._get_patients",
+            return_value={"P001": real_patient},
+        ):
+            transport = ASGITransport(app=app)
+            async with AsyncClient(
+                transport=transport, base_url="http://test"
+            ) as client:
+                response = await client.post(
+                    "/calls",
+                    json={
+                        "patient_id": "P001",
+                        "dia_postop": 3,
+                        "procedimiento": "Apendicectomía laparoscópica",
+                        "nombre_completo": "María Elena Gómez",
+                        "eps": "Compensar EPS",
+                    },
+                )
+
+        assert response.status_code == 201
+        data = response.json()
+        assert data["state"] == "GREETING"
+
+    @pytest.mark.asyncio
+    async def test_lookup_fallback_when_patient_not_found(self):
+        """When a patient_id is NOT in the dataset, the request-body
+        fields are used as a fallback (no crash)."""
+        with patch(
+            "backend.api.calls._get_patients",
+            return_value={"P001": MagicMock()},
+        ):
+            transport = ASGITransport(app=app)
+            async with AsyncClient(
+                transport=transport, base_url="http://test"
+            ) as client:
+                response = await client.post(
+                    "/calls",
+                    json={
+                        "patient_id": "NONEXISTENT",
+                        "dia_postop": 2,
+                        "procedimiento": "Colecistectomía",
+                        "nombre_completo": "Juan Pérez",
+                        "eps": "Nueva EPS",
+                    },
+                )
+
+        assert response.status_code == 201
+        data = response.json()
+        assert data["state"] == "GREETING"
+
+    @pytest.mark.asyncio
+    async def test_lookup_handles_loader_exception_gracefully(self):
+        """When the dataset loader throws, the endpoint falls back to
+        the request-body fields without crashing."""
+        def _failing_loader():
+            raise RuntimeError("Dataset XLSX not found")
+
+        with patch(
+            "backend.api.calls._get_patients",
+            side_effect=_failing_loader,
+        ):
+            transport = ASGITransport(app=app)
+            async with AsyncClient(
+                transport=transport, base_url="http://test"
+            ) as client:
+                response = await client.post(
+                    "/calls",
+                    json={
+                        "patient_id": "P099",
+                        "dia_postop": 1,
+                        "procedimiento": "Test",
+                        "nombre_completo": "Fallback User",
+                        "eps": "EPS",
+                    },
+                )
+
+        assert response.status_code == 201
+        data = response.json()
+        assert data["state"] == "GREETING"
+
+
+# ---------------------------------------------------------------------------
+# RagConfig / LlmConfig wiring
+# ---------------------------------------------------------------------------
+
+
+class TestOrchestratorConfigWiring:
+    """Verify that the orchestrator is constructed with configs.
+
+    The autouse ``setup_voice_mocks`` fixture patches ``RagConfig`` and
+    ``LlmConfig`` to return ``None``.  These tests override those patches
+    to verify the wiring paths.
+    """
+
+    @pytest.mark.asyncio
+    async def test_orchestrator_receives_configs_when_available(self):
+        """When RagConfig/LlmConfig return real objects, the orchestrator
+        stores them (not None)."""
+        mock_rag = MagicMock()
+        mock_llm = MagicMock()
+
+        transport = ASGITransport(app=app)
+
+        with patch(
+            "backend.api.calls.RagConfig", return_value=mock_rag
+        ), patch(
+            "backend.api.calls.LlmConfig", return_value=mock_llm
+        ):
+            async with AsyncClient(
+                transport=transport, base_url="http://test"
+            ) as client:
+                response = await client.post(
+                    "/calls",
+                    json={
+                        "patient_id": "pac-cfg",
+                        "dia_postop": 3,
+                        "procedimiento": "Apendicectomía",
+                        "nombre_completo": "Config Test",
+                        "eps": "EPS",
+                    },
+                )
+
+        assert response.status_code == 201
+        call_id = response.json()["call_id"]
+
+        # Verify the orchestrator stored in call_store has the configs.
+        orch = await global_store.get(call_id)
+        assert orch is not None
+        assert orch._rag_config is mock_rag, (
+            "Orchestrator must store the RagConfig return value"
+        )
+        assert orch._llm_config is mock_llm, (
+            "Orchestrator must store the LlmConfig return value"
+        )
+
+        await global_store.remove(call_id)
+
+    @pytest.mark.asyncio
+    async def test_orchestrator_receives_none_when_config_fails(self):
+        """When RagConfig/LlmConfig constructors raise, the orchestrator
+        receives None (graceful degradation), and the call still works."""
+        def _failing_config():
+            raise RuntimeError("Config unavailable")
+
+        transport = ASGITransport(app=app)
+
+        with patch(
+            "backend.api.calls.RagConfig",
+            side_effect=_failing_config,
+        ), patch(
+            "backend.api.calls.LlmConfig",
+            side_effect=_failing_config,
+        ):
+            async with AsyncClient(
+                transport=transport, base_url="http://test"
+            ) as client:
+                response = await client.post(
+                    "/calls",
+                    json={
+                        "patient_id": "pac-cfg-fail",
+                        "dia_postop": 1,
+                        "procedimiento": "Test",
+                        "nombre_completo": "Fail Test",
+                        "eps": "EPS",
+                    },
+                )
+
+        # The endpoint should still succeed (201)
+        assert response.status_code == 201
+        call_id = response.json()["call_id"]
+
+        orch = await global_store.get(call_id)
+        assert orch is not None
+        assert orch._rag_config is None, (
+            "Orchestrator should receive None when RagConfig fails"
+        )
+        assert orch._llm_config is None, (
+            "Orchestrator should receive None when LlmConfig fails"
+        )
+
+        await global_store.remove(call_id)
