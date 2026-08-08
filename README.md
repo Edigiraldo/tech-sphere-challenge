@@ -15,11 +15,9 @@ llamada.
 Fase 1 (persistencia) y Fase 2 (RAG) parciales: la aplicación arranca, expone un
 endpoint de salud, y el pipeline completo de RAG (extracción → chunking → embedding
 BGE-M3 → almacenamiento ChromaDB → recuperación con citas trazables) está implementado
-y probado. El shell frontal local (vanilla HTML/CSS/JS) está disponible en `/` y
-`/call` con selector de pacientes sintéticos, controles de llamada simulados,
-historial de conversación, área de transcripción y placeholder de audio. Las fases
-subsecuentes agregarán voz, integración backend-frontend y la consola de
-administración.
+y probado. El shell frontal local (vanilla HTML/CSS/JS) está disponible en `/`
+(selección de pacientes), `/call` (interfaz de llamada simulada) y `/admin` (consola
+de administración para subir, listar y eliminar documentos clínicos).
 
 ## Requisitos
 
@@ -112,7 +110,7 @@ proyecto.
 pytest
 ```
 
-Estas pruebas (243) validan dataset, salud del servidor, chunking y extracción de
+Estas pruebas (538) validan dataset, salud del servidor, chunking y extracción de
 PDF (con error paths), el adaptador LLM (Llama 3.1 70B Versatile con prompts,
 validación y respuestas estructuradas), y el endpoint RAG `/rag/query`. Todas las
 llamadas a la API de Groq están mockeadas. No descargan el modelo de embeddings ni
@@ -166,17 +164,20 @@ eliminación de chunks y generación de citas trazables. El modelo de embeddings
 ├── frontend/              Shell frontal (HTML/CSS/JS vanilla)
 │   ├── index.html         Página de selección de paciente
 │   ├── call.html          Interfaz de llamada simulada
+│   ├── admin.html         Consola de administración de documentos
 │   ├── styles.css         Estilos compartidos
 │   ├── data.js            Catálogo compartido de pacientes sintéticos
 │   ├── app.js             Lógica de selección de paciente
-│   └── call.js            Lógica de interfaz de llamada
+│   ├── call.js            Lógica de interfaz de llamada
+│   └── admin.js           Lógica de consola de administración
 ├── tests/                 Pruebas automatizadas
 │   ├── __init__.py
 │   ├── test_frontend.py   Pruebas de servido de archivos estáticos (8)
 │   ├── test_health.py
 │   ├── test_llm.py        Pruebas del adaptador LLM (41)
-│   ├── test_rag_api.py    Pruebas del endpoint /rag/query (13)
-│   ├── test_dataset/      Pruebas de acceso a datos sintéticos (58)
+│   ├── test_rag_api.py          Pruebas del endpoint /rag/query (13)
+│   ├── test_admin_console.py    Pruebas de la consola de administración (12)
+│   ├── test_dataset/            Pruebas de acceso a datos sintéticos (58)
 │   ├── rag/
 │   │   ├── conftest.py
 │   │   ├── test_chunking.py
@@ -239,9 +240,10 @@ de navegador.
 
 La aplicación incluirá dos superficies funcionales:
 
-- Una interfaz de llamada desde el navegador (conversación por voz en español).
-- Una consola de administración para subir, listar y eliminar documentos del
-  conocimiento.
+- Una interfaz de llamada desde el navegador (conversación por voz en español)
+  accesible desde `/` y `/call`.
+- Una consola de administración en `/admin` para subir, listar y eliminar
+  documentos del conocimiento clínico.
 
 El flujo esperado es:
 
