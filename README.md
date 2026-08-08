@@ -134,7 +134,7 @@ proyecto.
 pytest
 ```
 
-Estas pruebas (775) validan dataset, salud del servidor, chunking y extracción de
+Estas pruebas (761) validan dataset, salud del servidor, chunking y extracción de
 PDF (con error paths), el adaptador LLM (Llama 3.1 70B Versatile con prompts,
 validación y respuestas estructuradas), el endpoint RAG `/rag/query`, la capa de
 persistencia, los módulos de voz (STT/TTS), el motor de conversación, el

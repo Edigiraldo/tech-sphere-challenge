@@ -3,7 +3,9 @@
 These tests exercise the exact HTTP contract that the vanilla frontend
 (call.js) consumes: POST /calls to create a call and POST /calls/{call_id}/turn
 to send patient audio and receive agent audio.  STT and TTS are mocked so
-tests run without external services.
+tests run without external services.  RagConfig, LlmConfig, and the patient
+loader are also mocked so tests do not trigger model downloads, XLSX reads,
+or external API connections.
 
 The tests verify:
 
@@ -121,11 +123,36 @@ def mock_tts():
 
 @pytest.fixture(autouse=True)
 def setup_voice_mocks(mock_stt, mock_tts):
-    """Inject mock STT/TTS into the calls module before each test."""
+    """Inject mock STT/TTS into the calls module and reset shared
+    module-level state (metrics collector, turn-index counter) before
+    each test so tests are isolated.
+
+    Also patches RagConfig/LlmConfig to return None and _get_patients
+    to return an empty dict so tests do not trigger model downloads,
+    XLSX reads, or external API connections.
+    """
+    from backend.api.calls import _call_turn_index
+    from backend.api.metrics import metrics_collector
+
+    metrics_collector.reset()
+    _call_turn_index.clear()
+
     with patch("backend.api.calls._stt", mock_stt), patch(
         "backend.api.calls._tts", mock_tts
+    ), patch(
+        "backend.api.calls.RagConfig",
+        return_value=None,
+    ), patch(
+        "backend.api.calls.LlmConfig",
+        return_value=None,
+    ), patch(
+        "backend.api.calls._get_patients",
+        return_value={},
     ):
         yield
+
+    metrics_collector.reset()
+    _call_turn_index.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -264,6 +291,9 @@ class TestTurnFrontendContract:
         assert "transcription" in data
         assert isinstance(data["transcription"], str)
         assert len(data["transcription"]) > 0
+
+        # patient_transcription added for frontend display
+        assert "patient_transcription" in data
 
         assert "state" in data
         assert "citations" in data

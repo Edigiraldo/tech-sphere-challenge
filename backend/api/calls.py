@@ -7,6 +7,13 @@ The endpoints accept base64-encoded WAV audio, transcribe via the injected STT
 provider, delegate to the ``ConversationOrchestrator`` for dialogue management,
 run escalation classification on patient responses during follow-up questions,
 and synthesise agent responses via the injected TTS adapter.
+
+The ``create_call`` endpoint loads the patient's real dataset profile when
+available (via ``backend.data.load_patients``), falling back to the
+request-body fields when the patient is not found in the dataset.  The
+orchestrator is wired with live ``RagConfig`` and ``LlmConfig`` (from
+environment variables); safe fallbacks built into the orchestrator handle
+cases where RAG or LLM are unavailable.
 """
 
 from __future__ import annotations
@@ -30,9 +37,12 @@ from backend.conversation.orchestrator import (
 )
 from backend.conversation.state import State
 from backend.conversation.transitions import InvalidTransitionError
+from backend.data.loader import load_patients
 from backend.data.models import Patient as DataPatient
 from backend.decision import classify, EscalationResult, Severity
+from backend.llm.config import LlmConfig
 from backend.metrics.models import TurnMetrics
+from backend.rag.config import RagConfig
 from backend.voice.api import SttDependency, transcribe_audio
 from backend.voice.models import SttError
 from backend.voice.tts.config import TTSConfig
@@ -209,6 +219,12 @@ class TurnResponse(BaseModel):
     transcription: str = Field(
         ..., description="Text transcription of the agent's response"
     )
+    patient_transcription: str | None = Field(
+        None,
+        description="Text transcription of the patient's speech (as "
+        "returned by STT).  ``None`` when the turn did not involve "
+        "patient audio input (e.g. the call-creation greeting).",
+    )
     state: str = Field(..., description="Conversation state after this turn")
     citations: list[CitationResponse] = Field(
         default_factory=list,
@@ -231,16 +247,69 @@ class TurnResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Lazy patient catalogue (dataset-backed, fallback to request body)
+# ---------------------------------------------------------------------------
+
+_patients_cache: dict[str, DataPatient] | None = None
+"""Module-level cache of all 40 synthetic patients loaded once."""
+
+
+def _get_patients() -> dict[str, DataPatient]:
+    """Return the dataset patient catalogue, loading it lazily.
+
+    Loading is deferred until the first call-creation request so that
+    application startup stays fast and the health endpoint is available
+    immediately.
+    """
+    global _patients_cache
+    if _patients_cache is None:
+        _patients_cache = load_patients()
+        logger.info(
+            "Loaded %d synthetic patients from dataset.", len(_patients_cache)
+        )
+    return _patients_cache
+
+
+# ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
 
 
 def _build_data_patient(body: CreateCallRequest) -> DataPatient:
-    """Build a minimal ``DataPatient`` from request fields.
+    """Build a ``DataPatient``, preferring the real dataset profile.
 
-    Only ``nombre_completo``, ``eps``, and ``procedimiento`` are consumed
-    by the orchestrator; remaining fields are filled with safe defaults.
+    Looks up *body.patient_id* in the dataset patients catalogue.  When
+    found the full patient profile is returned as-is (real demographics and
+    clinical data).  When not found, the request-body fields are used to
+    construct a minimal fallback ``DataPatient`` so the call still works
+    with manually entered patient information.
+
+    The *dia_postop* and *procedimiento* from the request body are **not**
+    applied here; the caller (``create_call``) passes them separately to
+    ``PatientContext``, which is the object that governs the conversation.
+    This allows the dataset profile to be used for demographics while the
+    request body controls the post-operative context.
     """
+    try:
+        patients = _get_patients()
+        if body.patient_id in patients:
+            real = patients[body.patient_id]
+            logger.info(
+                "Call for patient %s: using real dataset profile.", body.patient_id
+            )
+            return real
+    except Exception:
+        logger.exception(
+            "Failed to load dataset patients — falling back to request body "
+            "for patient %s.",
+            body.patient_id,
+        )
+
+    # Fallback: construct a minimal DataPatient from request fields
+    logger.info(
+        "Patient %s not found in dataset — using request-body fields.",
+        body.patient_id,
+    )
     return DataPatient(
         paciente_id=body.patient_id,
         bundle_id="",
@@ -390,10 +459,26 @@ async def create_call(body: CreateCallRequest) -> CreateCallResponse:
         procedimiento=body.procedimiento,
     )
 
+    # Wire the real RAG and LLM configurations (reads env vars).  The
+    # orchestrator has built-in safe fallbacks for missing API keys,
+    # empty ChromaDB stores, and LLM failures — a misconfigured
+    # provider never crashes the call.
+    try:
+        rag_config = RagConfig()
+    except Exception:
+        logger.exception("Failed to build RagConfig — RAG will be unavailable.")
+        rag_config = None
+
+    try:
+        llm_config = LlmConfig()
+    except Exception:
+        logger.exception("Failed to build LlmConfig — LLM will be unavailable.")
+        llm_config = None
+
     orchestrator = ConversationOrchestrator(
         patient_context=patient_context,
-        rag_config=None,
-        llm_config=None,
+        rag_config=rag_config,
+        llm_config=llm_config,
     )
 
     turn: OrchestratorTurn = orchestrator.start_call()
@@ -548,6 +633,7 @@ async def process_turn(
         call_id=call_id,
         audio_base64=audio_b64,
         transcription=turn.agent_message,
+        patient_transcription=patient_text,
         state=turn.state.value,
         citations=[
             CitationResponse(

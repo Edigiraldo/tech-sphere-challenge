@@ -408,12 +408,14 @@ document.addEventListener("DOMContentLoaded", () => {
             setCallState(data.state);
         }
 
-        // Add patient transcription as a patient message
-        // (The transcription field contains the *agent* text; we infer the
-        //  patient speech from the audio we just sent.)
-        // We show "🎤 ..." as a placeholder since we don't get the patient
-        // transcription back directly in the response.
-        addMessage("patient", "🎤 [grabación enviada]");
+        // Add patient transcription as a patient message.
+        // When the backend returns a patient_transcription field we use it;
+        // otherwise we show a placeholder (backward-compatible with older
+        // backend versions that did not include this field).
+        addMessage(
+            "patient",
+            data.patient_transcription || "🎤 [grabación enviada]"
+        );
 
         // Add agent message
         if (data.transcription) {
