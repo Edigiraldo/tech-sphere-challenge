@@ -230,7 +230,6 @@ These decisions affect multiple modules or have meaningful alternatives. Each ha
 
 | # | Decision | Alternatives | Depends on | Resolve by |
 |---|----------|-------------|------------|------------|
-| D2 | STT provider | Groq Whisper Large V3 / browser Web Speech API / local Whisper (Ollama) | D4, D5 | Start of Phase 4 |
 | D3 | TTS provider | Kokoro-82M / Piper | D4, D5 | Start of Phase 4 |
 | D5 | Audio transport format | Raw PCM16 / Opus-encoded / MediaRecorder chunks | D4 | Start of Phase 6 |
 | D8 | Patient data loading | Load all 40 profiles at startup vs. lazy-load per call | D1, D4 | Start of Phase 5 |
@@ -240,6 +239,7 @@ These decisions affect multiple modules or have meaningful alternatives. Each ha
 | # | Decision | Chosen option | Rationale | Resolved |
 |---|----------|--------------|-----------|----------|
 | D1 | Language model | **Gemini 1.5 Flash** | 1M-token context window preserves clinical reasoning coherence without excessive chunking; 15 RPM free tier via Google AI Studio is sufficient for development and live demo; strong Spanish-language performance. Implemented in Phase 3 (``backend/llm/``). | Phase 3 |
+| D2 | STT provider | **Groq Whisper Large V3** | Recommended in the challenge's ``stack-tecnico.md`` for ultra-low-latency Spanish transcription. Free tier via Groq Cloud. Implemented in Phase 4 (``backend/voice/``). | Phase 4 |
 | D4 | Backend framework | **FastAPI** (async, WebSocket-native) | Required for WebSocket call interface (Phase 6), async-native, strong OpenAPI support for the administration console (Phase 7). Already implemented in Phase 1. | Phase 1 |
 | D6 | Chunking strategy | **Fixed-size with overlap** (800 chars, 150 overlap) | Simple, predictable, well-tested. The 800-character default balances context completeness against retrieval precision for the challenge's clinical PDFs (typically 1–3 paragraphs per page). The 150-character overlap prevents splitting mid-sentence while keeping the duplication ratio below 19 %. Both values are tunable via env vars (``RAG_CHUNK_SIZE``, ``RAG_CHUNK_OVERLAP``). Implemented in Phase 2. | Phase 2 |
 | D7 | LLM provider failover | **Single provider** (no failover chain) | The challenge scope allows a single permitted model; a failover chain adds complexity without a corresponding evaluation requirement. The API endpoint returns a safe fallback response when the LLM is unreachable. | Phase 3 |

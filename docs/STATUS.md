@@ -122,10 +122,21 @@ adapter contracts, and phased implementation plan are documented in
   when RAG/LLM is unavailable or returns insufficient knowledge.  55 new tests pass
   (153 total in the conversation module).
 
+- **2026-08-08:** STT adapter foundation implemented (``backend/voice/``).
+  Typed ``SttProvider`` Protocol, normalised ``TranscriptionResult`` dataclass,
+  ``SttError`` / ``SttConfigError`` / ``SttProviderError`` / ``SttAudioError``
+  exception hierarchy, frozen Spanish-first ``GroqWhisperConfig`` (model fixed to
+  ``whisper-large-v3``, language fixed to ``"es"``), ``GroqWhisperProvider`` adapter
+  with bytes/file handling and robust error mapping for empty/invalid audio, missing
+  API key, rate-limit, auth, network, and provider errors, and public
+   ``transcribe_audio()`` dependency-injection entry point.  56 unit tests pass
+   (all Groq API calls mocked).  Open decision D2 resolved: STT provider = Groq
+   Whisper Large V3.  ``groq>=0.9.0`` added to project dependencies.
+
 ## In Progress
 
 - Remaining Phase 1 SQLite tables (calls, summaries, escalation_alerts).
-- Voice adapters (STT/TTS — Phase 4, depends on D2/D3/D5).
+- TTS adapter (Phase 4, depends on D3/D5).
 - Conversation orchestration with RAG and escalation (Phase 5, depends on D8).
 
 ## Completed (setup)
@@ -138,6 +149,16 @@ adapter contracts, and phased implementation plan are documented in
 
 ## Recent Changes
 
+- **2026-08-08:** STT adapter made truly async.  ``GroqWhisperProvider._call_groq``
+  now uses ``groq.AsyncGroq`` (instead of synchronous ``groq.Groq``) and awaits the
+  transcription API call.  All 56 mocked unit tests updated; a focused test
+  (``test_async_groq_client_instantiated_and_awaited``) proves ``AsyncGroq`` is
+  instantiated and awaited.  Error mapping and behaviour preserved.
+- **2026-08-08:** STT adapter foundation (Phase 4 partial).  ``backend/voice/`` with
+  typed ``SttProvider`` Protocol, ``TranscriptionResult``, ``SttError`` exception
+  hierarchy, frozen ``GroqWhisperConfig``, ``GroqWhisperProvider`` adapter, and
+   ``transcribe_audio()`` injection API.  56 mocked unit tests pass.  Resolved D2
+  (STT provider = Groq Whisper Large V3).  ``groq>=0.9.0`` added to dependencies.
 - **2026-08-07 (pm):** Conversation orchestrator implemented.  ``ConversationOrchestrator``
   drives the state machine through all six phases (IDLE → GREETING → CONSENT →
   QUESTIONS → CLOSING → ENDED), asks 6 structured Spanish follow-up questions,
@@ -190,12 +211,13 @@ RAG-backed dialogue and escalation (blocked on D8).
 
 ## Open Architectural Decisions
 
-These are tracked in `docs/ARCHITECTURE.md` § Open Decisions. The four open decisions
-(D2, D3, D5, D8) cover STT provider, TTS provider, audio transport format, and patient
-data loading strategy. Five decisions (D1, D4, D6, D7, D9) have been resolved: language
-model (Gemini 1.5 Flash), backend framework (FastAPI), chunking strategy (fixed-size
-with overlap), LLM failover (single provider), and PDF extraction library (pdfplumber).
-Each open decision has a "resolve by" deadline tied to the phase that needs it.
+These are tracked in `docs/ARCHITECTURE.md` § Open Decisions. The three open decisions
+(D3, D5, D8) cover TTS provider, audio transport format, and patient data loading
+strategy. Six decisions (D1, D2, D4, D6, D7, D9) have been resolved: language
+model (Gemini 1.5 Flash), STT provider (Groq Whisper Large V3), backend framework
+(FastAPI), chunking strategy (fixed-size with overlap), LLM failover (single provider),
+and PDF extraction library (pdfplumber).  Each open decision has a "resolve by"
+deadline tied to the phase that needs it.
 
 ## Known Constraints
 
