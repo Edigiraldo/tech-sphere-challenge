@@ -94,6 +94,16 @@ adapter contracts, and phased implementation plan are documented in
   and UTC ``created_at``.  Stdlib-only, text-only — no voice/frontend/LLM/RAG
   dependencies.  98 tests pass.
 
+- **2026-08-07:** Conversation orchestrator implemented
+  (``backend/conversation/orchestrator.py``).  ``ConversationOrchestrator`` connects
+  the existing domain primitives (``PatientContext``, ``CallContext``, state machine,
+  ``History``, ``Message``) with RAG retrieval (``backend/rag/retrieval.retrieve``) and
+  LLM answer generation (``backend/llm/adapter.generate_rag_answer``) into a
+  deterministic Spanish text-only call flow.  6 structured follow-up questions cover
+  pain, fever, wound, appetite, sleep, and mobility.  Fallback messages
+  when RAG/LLM is unavailable or returns insufficient knowledge.  55 new tests pass
+  (153 total in the conversation module).
+
 ## In Progress
 
 - Full Phase 1 (SQLite persistence tables for calls, summaries, documents).
@@ -109,6 +119,12 @@ adapter contracts, and phased implementation plan are documented in
 
 ## Recent Changes
 
+- **2026-08-07 (pm):** Conversation orchestrator implemented.  ``ConversationOrchestrator``
+  drives the state machine through all six phases (IDLE → GREETING → CONSENT →
+  QUESTIONS → CLOSING → ENDED), asks 6 structured Spanish follow-up questions,
+  integrates RAG retrieval and LLM answer generation, and falls back safely when
+  RAG/LLM is unavailable.  Escalation is explicitly out of scope for this phase.
+  55 tests pass, 153 total in ``tests/conversation/``.
 - **2026-08-07 (pm):** First RAG-backed clinical answer endpoint implemented.
   ``backend/llm/`` (Gemini 1.5 Flash adapter with validation), ``backend/api/rag.py``
   (``POST /rag/query``), 54 tests pass. Resolved D1 (model = Gemini 1.5 Flash) and
