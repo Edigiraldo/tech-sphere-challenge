@@ -17,8 +17,17 @@
 </header>
 
 <main class="main-content call-layout">
+    <!-- Escalation banner (hidden by default) -->
+    <section id="escalation-banner" class="card escalation-banner hidden" role="alert" aria-live="assertive">
+        <div class="escalation-icon">&#x26A0;</div>
+        <div>
+            <strong>Alerta de Escalación</strong>
+            <p id="escalation-text"></p>
+        </div>
+    </section>
+
     <section class="card transcript-section">
-        <h2>Transcripción</h2>
+        <h2>Transcripción / Estado</h2>
         <div id="transcript-area" class="transcript-area">
             <p class="placeholder-text">La transcripción aparecerá aquí durante la llamada.</p>
         </div>
@@ -46,17 +55,31 @@
     <section class="card controls-section">
         <h2>Controles</h2>
         <div class="controls-bar">
-            <button id="record-toggle-btn" class="btn btn-record" title="Iniciar / Detener grabación" aria-label="Iniciar o detener grabación de voz">
+            <button id="record-toggle-btn" class="btn btn-record" disabled
+                    title="Iniciar / Detener grabación"
+                    aria-label="Iniciar o detener grabación de voz">
                 <span id="record-icon">&#x23FA;</span>
                 <span id="record-label">Iniciar Grabación</span>
             </button>
-            <button id="end-call-btn" class="btn btn-danger">
+            <button id="end-call-btn" class="btn btn-danger" disabled>
                 Finalizar Llamada
             </button>
         </div>
         <p id="call-timer" class="call-timer">00:00</p>
     </section>
 </main>
+
+<!-- Loading overlay -->
+<div id="loading-overlay" class="loading-overlay hidden">
+    <div class="loading-spinner"></div>
+    <p id="loading-text" class="loading-text">Cargando...</p>
+</div>
+
+<!-- Call completed banner -->
+<div id="call-completed-banner" class="completed-banner hidden">
+    <div class="completed-icon">&#x2714;</div>
+    <p>Llamada completada. Puede cerrar esta página.</p>
+</div>
 
 <footer class="app-footer">
     <p>Datos sintéticos — Sin fines clínicos reales</p>

@@ -112,12 +112,15 @@ proyecto.
 pytest
 ```
 
-Estas pruebas (537) validan dataset, salud del servidor, chunking y extracción de
+Estas pruebas (243) validan dataset, salud del servidor, chunking y extracción de
 PDF (con error paths), el adaptador LLM (Llama 3.1 70B Versatile con prompts,
-validación y respuestas estructuradas), el endpoint RAG `/rag/query`, la capa de persistencia,
-los módulos de voz (STT/TTS), el motor de conversación, el clasificador de
-escalamiento y el shell frontal. Todas las llamadas a la API de Gemini y Groq están
-mockeadas. No descargan el modelo de embeddings ni procesan PDFs reales.
+validación y respuestas estructuradas), y el endpoint RAG `/rag/query`. Todas las
+llamadas a la API de Groq están mockeadas. No descargan el modelo de embeddings ni
+procesan PDFs reales.
+También cubren la capa de persistencia, los módulos de voz (STT/TTS), el motor de
+conversación, el clasificador de escalamiento y el shell frontal. Todas las llamadas
+a las APIs externas están mockeadas. No descargan el modelo de embeddings ni
+procesan PDFs reales.
 
 ### Pruebas lentas (requieren BGE-M3 y PDFs)
 

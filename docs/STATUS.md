@@ -176,6 +176,34 @@ adapter contracts, and phased implementation plan are documented in
 - TTS adapter (Phase 4, depends on D5).
 - Audio transport format — decision D5 pending (Phase 6).
 
+## Completed (frontend)
+
+- **2026-08-08:** Frontend voice integration implemented:
+  - ``frontend/app.js`` — patient selection page now creates calls via
+    ``POST /calls``, stores the response (``call_id``, ``greeting_audio_b64``,
+    ``total_questions``) in ``sessionStorage``, and navigates to ``/call``.
+  - ``frontend/call.js`` — full real-time voice call interface with
+    ``MediaRecorder`` microphone capture (audio/webm), record/stop toggle
+    controls, base64 audio upload to ``POST /calls/{call_id}/turn``,
+    base64 WAV playback via ``<audio>``, live transcript and conversation
+    history, escalation severity banner (GREEN/YELLOW/RED), source citation
+    badges, loading overlay with spinner, and call-completed modal.
+    Error states (404, 400, 422, 5xx) are surfaced to the user.
+  - ``frontend/call.html`` — added escalation banner, loading overlay,
+    and completed-banner DOM elements.
+  - ``frontend/styles.css`` — new styles for escalation banner (animated
+    severity colours), citation badges, loading overlay with spinner
+    animation, completed banner with scale-in, and call-status display.
+   - ``tests/test_frontend_integration.py`` — 15 backend contract tests
+    verifying the exact HTTP API surface consumed by the vanilla frontend:
+    ``CreateCallResponse`` shape, ``TurnResponse`` shape, base64 audio
+    round-trip, MediaRecorder-compatible formats, full call flow
+    (GREETING→ENDED), escalation info shape (GREEN/YELLOW/RED fields),
+    citation structure, error handling (404/400/422), and sessionStorage
+    field completeness.  All tests use mocked STT/TTS.
+  - All 8 existing ``test_frontend.py`` static-serving tests continue to
+    pass.
+
 ## Completed (setup)
 
 - **2026-08-07:** Automatic ``.env`` file loading via ``python-dotenv``.
