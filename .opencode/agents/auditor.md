@@ -16,6 +16,9 @@ or dataset unless the change requires it.
 
 - Review the changed code for correctness, maintainability, security, and regressions.
 - Run only tests, linting, type checks, and build commands relevant to the changed scope.
+- If `@coder` provides exact relevant test commands and successful results, verify the
+  report and do not rerun those same tests unless the evidence is missing or contradictory,
+  the implementation changed afterward, or the user explicitly requests a rerun.
 - Check contracts, error handling, validation, persistence behavior, and direct dependencies.
 - Check type hints on new public interfaces and validation at external boundaries.
 - Check for bare exception handlers, swallowed errors, missing context, and unsafe fallbacks.

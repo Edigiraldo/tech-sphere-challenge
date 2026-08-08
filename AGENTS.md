@@ -22,6 +22,10 @@ work.
 - Do not independently rerun tests, linting, builds, or audits already reported by
   `@auditor` unless a report is missing, contradictory, or the user explicitly asks for
   an independent verification.
+- If `@coder` reports the exact relevant test commands and successful results, ask
+  `@auditor` to trust that evidence rather than rerunning the same tests. The auditor
+  may rerun them only when the evidence is missing or contradictory, the implementation
+  changed after the report, or the user explicitly requests independent verification.
 - Do not repeat repository-wide exploration already performed by `@planner`.
 - Trust the specialized agent's report as the source of truth for its assigned phase.
 - Forward the planner proposal to the user for approval before invoking `@coder`.
