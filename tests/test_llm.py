@@ -1,14 +1,13 @@
 """Unit tests for the LLM adapter — prompt building, validation, and
 structured output parsing.
 
-All Gemini API calls are mocked so the tests execute quickly without
+All Groq API calls are mocked so the tests execute quickly without
 network access or an API key.
 """
 
 from __future__ import annotations
 
 import json
-import os
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -17,7 +16,7 @@ from backend.llm.adapter import (
     RagAnswer,
     RagCitation,
     _build_prompt,
-    _call_gemini,
+    _call_groq,
     _validate_answer,
     generate_rag_answer,
 )
@@ -31,14 +30,14 @@ from backend.llm.config import LlmConfig
 
 class TestLlmConfig:
     def test_defaults(self, monkeypatch):
-        # LlmConfig reads GOOGLE_API_KEY from os.environ via a
+        # LlmConfig reads GROQ_API_KEY from os.environ via a
         # default_factory lambda.  Since backend.main now calls
         # load_dotenv() at import time, the env var may already be set.
         # Clear it for this test so we assert the default (empty string).
-        monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+        monkeypatch.delenv("GROQ_API_KEY", raising=False)
 
         cfg = LlmConfig()
-        assert cfg.model_name == "gemini-1.5-flash"
+        assert cfg.model_name == "llama-3.1-70b-versatile"
         assert cfg.temperature == 0.2
         assert cfg.max_output_tokens == 1024
         assert cfg.api_key == ""
@@ -51,21 +50,22 @@ class TestLlmConfig:
         with pytest.raises(ValueError, match="LLM_MAX_TOKENS"):
             LlmConfig(max_output_tokens=0)
 
-    def test_model_name_is_fixed_to_gemini_flash(self):
-        """The model_name field is always ``gemini-1.5-flash`` — it is not
-        configurable via environment variable or constructor argument."""
+    def test_model_name_is_fixed_to_llama_3_1_70b(self):
+        """The model_name field is always ``llama-3.1-70b-versatile`` — it
+        is not configurable via environment variable or constructor
+        argument."""
         cfg = LlmConfig()
-        assert cfg.model_name == "gemini-1.5-flash"
+        assert cfg.model_name == "llama-3.1-70b-versatile"
 
         # Explicitly passing the valid name is accepted.
-        cfg2 = LlmConfig(model_name="gemini-1.5-flash")
-        assert cfg2.model_name == "gemini-1.5-flash"
+        cfg2 = LlmConfig(model_name="llama-3.1-70b-versatile")
+        assert cfg2.model_name == "llama-3.1-70b-versatile"
 
-    def test_model_name_not_gemini_flash_raises(self):
-        """Any model_name other than exactly 'gemini-1.5-flash' raises
-        ValueError at construction time."""
+    def test_model_name_not_llama_3_1_70b_raises(self):
+        """Any model_name other than exactly 'llama-3.1-70b-versatile'
+        raises ValueError at construction time."""
         with pytest.raises(ValueError, match="model_name must be"):
-            LlmConfig(model_name="gemini-2.0-flash")
+            LlmConfig(model_name="gemini-1.5-flash")
 
     def test_model_name_empty_string_raises(self):
         """An empty model_name is also rejected."""
@@ -207,7 +207,7 @@ class TestValidateAnswer:
 
 
 # ---------------------------------------------------------------------------
-# generate_rag_answer — integration with mocked Gemini
+# generate_rag_answer — integration with mocked Groq
 # ---------------------------------------------------------------------------
 
 
@@ -259,11 +259,8 @@ class TestGenerateRagAnswer:
             }
         )
 
-        mock_response = MagicMock()
-        mock_response.text = mock_response_text
-
         with patch(
-            "backend.llm.adapter._call_gemini", return_value=json.loads(mock_response_text)
+            "backend.llm.adapter._call_groq", return_value=json.loads(mock_response_text)
         ):
             result = generate_rag_answer(
                 "¿Cómo cuido mi herida?", context_chunks, config
@@ -275,7 +272,7 @@ class TestGenerateRagAnswer:
         assert result.citations[0].chunk_id == "c1"
         assert result.citations[0].document_id == "doc-1"
         assert result.citations[0].source_filename == "guia_postop.pdf"
-        assert result.model == "gemini-1.5-flash"
+        assert result.model == "llama-3.1-70b-versatile"
 
     def test_model_flags_insufficient_knowledge(self, config, context_chunks):
         response = json.dumps(
@@ -290,7 +287,7 @@ class TestGenerateRagAnswer:
         )
 
         with patch(
-            "backend.llm.adapter._call_gemini", return_value=json.loads(response)
+            "backend.llm.adapter._call_groq", return_value=json.loads(response)
         ):
             result = generate_rag_answer(
                 "¿Qué medicamentos debo tomar?", context_chunks, config
@@ -308,7 +305,7 @@ class TestGenerateRagAnswer:
         )
 
         with patch(
-            "backend.llm.adapter._call_gemini", return_value=json.loads(response)
+            "backend.llm.adapter._call_groq", return_value=json.loads(response)
         ):
             result = generate_rag_answer("pregunta", context_chunks, config)
 
@@ -329,7 +326,7 @@ class TestGenerateRagAnswer:
             }
         )
         with patch(
-            "backend.llm.adapter._call_gemini",
+            "backend.llm.adapter._call_groq",
             return_value=json.loads(response),
         ):
             result = generate_rag_answer("pregunta", context_chunks, config)
@@ -347,7 +344,7 @@ class TestGenerateRagAnswer:
             }
         )
         with patch(
-            "backend.llm.adapter._call_gemini",
+            "backend.llm.adapter._call_groq",
             return_value=json.loads(response),
         ):
             result = generate_rag_answer(
@@ -363,7 +360,7 @@ class TestGenerateRagAnswer:
 
     def test_llm_failure_returns_safe_fallback(self, config, context_chunks):
         with patch(
-            "backend.llm.adapter._call_gemini",
+            "backend.llm.adapter._call_groq",
             side_effect=RuntimeError("API error"),
         ):
             result = generate_rag_answer(
@@ -378,7 +375,7 @@ class TestGenerateRagAnswer:
     def test_llm_failure_debug_exposes_warnings(self, config, context_chunks):
         """When debug=True, validation_warnings includes the LLM error."""
         with patch(
-            "backend.llm.adapter._call_gemini",
+            "backend.llm.adapter._call_groq",
             side_effect=RuntimeError("API error"),
         ):
             result = generate_rag_answer(
@@ -391,7 +388,7 @@ class TestGenerateRagAnswer:
 
     def test_llm_invalid_json_returns_safe_fallback(self, config, context_chunks):
         with patch(
-            "backend.llm.adapter._call_gemini",
+            "backend.llm.adapter._call_groq",
             side_effect=ValueError("not valid JSON"),
         ):
             result = generate_rag_answer(
@@ -405,7 +402,7 @@ class TestGenerateRagAnswer:
     def test_llm_invalid_json_debug_exposes_warnings(self, config, context_chunks):
         """When debug=True, JSON parse errors appear in validation_warnings."""
         with patch(
-            "backend.llm.adapter._call_gemini",
+            "backend.llm.adapter._call_groq",
             side_effect=ValueError("not valid JSON"),
         ):
             result = generate_rag_answer(
@@ -431,7 +428,7 @@ class TestGenerateRagAnswer:
         )
 
         with patch(
-            "backend.llm.adapter._call_gemini",
+            "backend.llm.adapter._call_groq",
             return_value=json.loads(response),
         ):
             result = generate_rag_answer("pregunta", context_chunks, config)
@@ -454,7 +451,7 @@ class TestGenerateRagAnswer:
         )
 
         with patch(
-            "backend.llm.adapter._call_gemini",
+            "backend.llm.adapter._call_groq",
             return_value=json.loads(response),
         ):
             result = generate_rag_answer(
@@ -470,11 +467,11 @@ class TestGenerateRagAnswer:
     # -- Markdown code fences stripped ---------------------------------------
 
     def test_markdown_json_fences_stripped(self, config, context_chunks):
-        """_call_gemini strips ```json ... ``` fences before JSON parsing.
+        """_call_groq strips ```json ... ``` fences before JSON parsing.
 
-        This test mocks the Google genai module so _call_gemini exercises
-        the real fence-stripping logic (unlike the old test which mocked
-        _call_gemini itself and bypassed the code under test).
+        This test mocks the Groq client so _call_groq exercises the real
+        fence-stripping logic (unlike tests that mock _call_groq itself
+        and bypass the code under test).
         """
         raw_json = json.dumps(
             {
@@ -485,17 +482,18 @@ class TestGenerateRagAnswer:
         )
         fenced = f"```json\n{raw_json}\n```"
 
-        mock_model = MagicMock()
-        mock_model.generate_content.return_value.text = fenced
+        mock_client = MagicMock()
+        mock_choice = MagicMock()
+        mock_choice.message.content = fenced
+        mock_client.chat.completions.create.return_value.choices = [mock_choice]
 
-        mock_genai = MagicMock()
-        mock_genai.GenerativeModel.return_value = mock_model
+        mock_groq_module = MagicMock()
+        mock_groq_module.Groq.return_value = mock_client
 
-        with patch.dict("sys.modules", {"google.generativeai": mock_genai}):
-            with patch("backend.llm.adapter.genai", mock_genai, create=True):
-                result = generate_rag_answer(
-                    "¿Cómo cuidar la herida?", context_chunks, config
-                )
+        with patch.dict("sys.modules", {"groq": mock_groq_module}):
+            result = generate_rag_answer(
+                "¿Cómo cuidar la herida?", context_chunks, config
+            )
 
         assert result.insufficient_knowledge is False
         assert "herida limpia" in result.answer
@@ -503,7 +501,7 @@ class TestGenerateRagAnswer:
         assert result.citations[0].chunk_id == "c1"
 
     def test_markdown_fences_no_language_tag(self, config, context_chunks):
-        """_call_gemini handles ``` without a language tag."""
+        """_call_groq handles ``` without a language tag."""
         raw_json = json.dumps(
             {
                 "answer": "Recomendación postoperatoria.",
@@ -513,31 +511,32 @@ class TestGenerateRagAnswer:
         )
         fenced = f"```\n{raw_json}\n```"
 
-        mock_model = MagicMock()
-        mock_model.generate_content.return_value.text = fenced
+        mock_client = MagicMock()
+        mock_choice = MagicMock()
+        mock_choice.message.content = fenced
+        mock_client.chat.completions.create.return_value.choices = [mock_choice]
 
-        mock_genai = MagicMock()
-        mock_genai.GenerativeModel.return_value = mock_model
+        mock_groq_module = MagicMock()
+        mock_groq_module.Groq.return_value = mock_client
 
-        with patch.dict("sys.modules", {"google.generativeai": mock_genai}):
-            with patch("backend.llm.adapter.genai", mock_genai, create=True):
-                result = generate_rag_answer(
-                    "pregunta", context_chunks, config
-                )
+        with patch.dict("sys.modules", {"groq": mock_groq_module}):
+            result = generate_rag_answer(
+                "pregunta", context_chunks, config
+            )
 
         assert result.insufficient_knowledge is False
 
 
 # ---------------------------------------------------------------------------
-# _call_gemini unit tests (lazy import, configure, parsing, error wrapping)
+# _call_groq unit tests (client construction, parsing, error wrapping)
 # ---------------------------------------------------------------------------
 
 
-class TestCallGemini:
-    """Unit tests for _call_gemini that mock google.generativeai entirely.
+class TestCallGroq:
+    """Unit tests for _call_groq that mock the groq module entirely.
 
-    No real API calls are made; the Google genai module is replaced with
-    a MagicMock via module-level patching.
+    No real API calls are made; the groq client is replaced with a
+    MagicMock via module-level patching.
     """
 
     @pytest.fixture
@@ -545,115 +544,130 @@ class TestCallGemini:
         return LlmConfig(api_key="test-key", temperature=0.0)
 
     @pytest.fixture
-    def mock_genai(self):
-        """Return a fresh MagicMock for the google.generativeai module."""
-        mock = MagicMock()
-        mock_model = MagicMock()
-        mock_model.generate_content.return_value.text = json.dumps(
+    def mock_groq_module(self):
+        """Return a fresh MagicMock for the groq module with a working
+        chat completions endpoint."""
+        mock_client = MagicMock()
+        mock_choice = MagicMock()
+        mock_choice.message.content = json.dumps(
             {
                 "answer": "Una respuesta clínica.",
                 "cited_chunk_ids": ["c1"],
                 "insufficient_knowledge": False,
             }
         )
-        mock.GenerativeModel.return_value = mock_model
-        return mock
+        mock_client.chat.completions.create.return_value.choices = [mock_choice]
+
+        mock_module = MagicMock()
+        mock_module.Groq.return_value = mock_client
+        return mock_module
+
+    def _call_with_module(self, sys_prompt, user_prompt, config, mock_module):
+        """Helper: call _call_groq with the groq module pre-patched in
+        sys.modules."""
+        with patch.dict("sys.modules", {"groq": mock_module}):
+            return _call_groq(sys_prompt, user_prompt, config)
 
     # -- Successful call -----------------------------------------------------
 
-    def test_successful_call_parses_json(self, config, mock_genai):
-        with patch.dict("sys.modules", {"google.generativeai": mock_genai}):
-            with patch("backend.llm.adapter.genai", mock_genai, create=True):
-                result = _call_gemini("sys", "user", config)
+    def test_successful_call_parses_json(self, config, mock_groq_module):
+        result = self._call_with_module("sys", "user", config, mock_groq_module)
 
         assert result["answer"] == "Una respuesta clínica."
         assert result["cited_chunk_ids"] == ["c1"]
         assert result["insufficient_knowledge"] is False
 
-    # -- genai.configure is called with the API key --------------------------
+    # -- Groq client is instantiated with the API key ------------------------
 
-    def test_genai_configure_called_with_api_key(self, config, mock_genai):
-        with patch.dict("sys.modules", {"google.generativeai": mock_genai}):
-            with patch("backend.llm.adapter.genai", mock_genai, create=True):
-                _call_gemini("sys", "user", config)
+    def test_groq_client_instantiated_with_api_key(self, config, mock_groq_module):
+        self._call_with_module("sys", "user", config, mock_groq_module)
 
-        mock_genai.configure.assert_called_once_with(api_key="test-key")
+        mock_groq_module.Groq.assert_called_once_with(api_key="test-key")
 
-    # -- GenerativeModel created with correct params -------------------------
+    # -- Chat completions called with correct params -------------------------
 
-    def test_generative_model_created_with_correct_params(self, config, mock_genai):
-        with patch.dict("sys.modules", {"google.generativeai": mock_genai}):
-            with patch("backend.llm.adapter.genai", mock_genai, create=True):
-                _call_gemini("sys", "user", config)
+    def test_chat_completions_called_with_correct_params(
+        self, config, mock_groq_module,
+    ):
+        self._call_with_module("sys", "user", config, mock_groq_module)
 
-        mock_genai.GenerativeModel.assert_called_once()
-        call_kwargs = mock_genai.GenerativeModel.call_args.kwargs
-        assert call_kwargs["model_name"] == "gemini-1.5-flash"
-        assert call_kwargs["system_instruction"] == "sys"
-        assert call_kwargs["generation_config"]["temperature"] == 0.0
-        assert call_kwargs["generation_config"]["max_output_tokens"] == 1024
-        assert call_kwargs["generation_config"]["response_mime_type"] == "application/json"
+        mock_groq_module.Groq.return_value.chat.completions.create.assert_called_once()
+        call_kwargs = (
+            mock_groq_module.Groq.return_value.chat.completions.create.call_args.kwargs
+        )
+        assert call_kwargs["model"] == "llama-3.1-70b-versatile"
+        assert call_kwargs["messages"] == [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "user"},
+        ]
+        assert call_kwargs["temperature"] == 0.0
+        assert call_kwargs["max_tokens"] == 1024
+        assert call_kwargs["response_format"] == {"type": "json_object"}
 
     # -- Missing API key -----------------------------------------------------
 
-    def test_missing_api_key_raises_runtime_error(self, mock_genai):
+    def test_missing_api_key_raises_runtime_error(self, mock_groq_module):
         config_no_key = LlmConfig(api_key="", temperature=0.0)
-        with patch.dict("sys.modules", {"google.generativeai": mock_genai}):
-            with patch("backend.llm.adapter.genai", mock_genai, create=True):
-                with pytest.raises(RuntimeError, match="GOOGLE_API_KEY"):
-                    _call_gemini("sys", "user", config_no_key)
+        with patch.dict("sys.modules", {"groq": mock_groq_module}):
+            with pytest.raises(RuntimeError, match="GROQ_API_KEY"):
+                _call_groq("sys", "user", config_no_key)
 
     # -- Lazy import: ImportError wrapping -----------------------------------
 
     def test_import_error_raises_runtime_error(self, config):
-        """When google-generativeai is not installed, _call_gemini wraps
-        the ImportError in a RuntimeError with a clear message."""
-        with patch.dict("sys.modules", {"google.generativeai": None}):
-            # Remove the module so the lazy import fails
-            with patch("builtins.__import__", side_effect=ImportError("no module")):
-                with pytest.raises(RuntimeError, match="google-generativeai"):
-                    _call_gemini("sys", "user", config)
+        """When groq is not installed, _call_groq wraps the ImportError
+        in a RuntimeError with a clear message."""
+        with patch.dict("sys.modules", {"groq": None}):
+            with patch(
+                "builtins.__import__", side_effect=ImportError("no module"),
+            ):
+                with pytest.raises(RuntimeError, match="groq"):
+                    _call_groq("sys", "user", config)
 
-    # -- genai.generate_content RuntimeError wrapping ------------------------
+    # -- Chat completions RuntimeError wrapping ------------------------------
 
-    def test_generate_content_error_wraps_as_runtime_error(self, config, mock_genai):
-        mock_genai.GenerativeModel.return_value.generate_content.side_effect = (
-            Exception("API quota exceeded")
+    def test_chat_completions_error_wraps_as_runtime_error(
+        self, config, mock_groq_module,
+    ):
+        mock_groq_module.Groq.return_value.chat.completions.create.side_effect = (
+            Exception("API rate limit exceeded")
         )
-        with patch.dict("sys.modules", {"google.generativeai": mock_genai}):
-            with patch("backend.llm.adapter.genai", mock_genai, create=True):
-                with pytest.raises(RuntimeError, match="API quota exceeded"):
-                    _call_gemini("sys", "user", config)
+        with patch.dict("sys.modules", {"groq": mock_groq_module}):
+            with pytest.raises(RuntimeError, match="API rate limit exceeded"):
+                _call_groq("sys", "user", config)
 
     # -- Invalid JSON response -----------------------------------------------
 
-    def test_invalid_json_response_raises_value_error(self, config, mock_genai):
-        mock_genai.GenerativeModel.return_value.generate_content.return_value.text = (
-            "not valid json at all"
-        )
-        with patch.dict("sys.modules", {"google.generativeai": mock_genai}):
-            with patch("backend.llm.adapter.genai", mock_genai, create=True):
-                with pytest.raises(ValueError, match="no devolvió JSON"):
-                    _call_gemini("sys", "user", config)
+    def test_invalid_json_response_raises_value_error(self, config, mock_groq_module):
+        mock_groq_module.Groq.return_value.chat.completions.create.return_value.choices[
+            0
+        ].message.content = "not valid json at all"
+        with patch.dict("sys.modules", {"groq": mock_groq_module}):
+            with pytest.raises(ValueError, match="no devolvió JSON"):
+                _call_groq("sys", "user", config)
 
     # -- Non-dict JSON response ----------------------------------------------
 
-    def test_non_dict_json_response_raises_value_error(self, config, mock_genai):
-        mock_genai.GenerativeModel.return_value.generate_content.return_value.text = (
-            json.dumps(["not", "a", "dict"])
-        )
-        with patch.dict("sys.modules", {"google.generativeai": mock_genai}):
-            with patch("backend.llm.adapter.genai", mock_genai, create=True):
-                with pytest.raises(ValueError, match="no es un objeto"):
-                    _call_gemini("sys", "user", config)
+    def test_non_dict_json_response_raises_value_error(
+        self, config, mock_groq_module,
+    ):
+        mock_groq_module.Groq.return_value.chat.completions.create.return_value.choices[
+            0
+        ].message.content = json.dumps(["not", "a", "dict"])
+        with patch.dict("sys.modules", {"groq": mock_groq_module}):
+            with pytest.raises(ValueError, match="no es un objeto"):
+                _call_groq("sys", "user", config)
 
-    # -- Response.text is None -----------------------------------------------
+    # -- Response content is None --------------------------------------------
 
-    def test_response_text_none_returns_empty_dict_after_parse_failure(self, config, mock_genai):
-        """When response.text is None, _call_gemini attempts to parse '' and
-        raises ValueError because '' is not valid JSON."""
-        mock_genai.GenerativeModel.return_value.generate_content.return_value.text = None
-        with patch.dict("sys.modules", {"google.generativeai": mock_genai}):
-            with patch("backend.llm.adapter.genai", mock_genai, create=True):
-                with pytest.raises(ValueError, match="no devolvió JSON"):
-                    _call_gemini("sys", "user", config)
+    def test_response_content_none_raises_value_error(
+        self, config, mock_groq_module,
+    ):
+        """When message.content is None, _call_groq attempts to parse ''
+        and raises ValueError because '' is not valid JSON."""
+        mock_groq_module.Groq.return_value.chat.completions.create.return_value.choices[
+            0
+        ].message.content = None
+        with patch.dict("sys.modules", {"groq": mock_groq_module}):
+            with pytest.raises(ValueError, match="no devolvió JSON"):
+                _call_groq("sys", "user", config)

@@ -70,7 +70,7 @@ Copia este contenido en un archivo nuevo llamado `.env` en la raíz del proyecto
 
 ```ini
 # Tech Sphere Challenge — configuración de entorno local
-GOOGLE_API_KEY=tu-clave-de-api-aqui
+GROQ_API_KEY=tu-clave-de-api-aqui
 
 # Opcionales (con sus valores por defecto)
 # LLM_TEMPERATURE=0.2
@@ -81,7 +81,7 @@ GOOGLE_API_KEY=tu-clave-de-api-aqui
 
 | Variable | Descripción |
 | --- | --- |
-| `GOOGLE_API_KEY` | Clave de API de Google AI Studio para el modelo Gemini 1.5 Flash |
+| `GROQ_API_KEY` | Clave de API de Groq Cloud para el modelo Llama 3.1 70B Versatile |
 
 ### Opcionales
 
@@ -90,8 +90,9 @@ GOOGLE_API_KEY=tu-clave-de-api-aqui
 | `LLM_TEMPERATURE` | `0.2` | Temperatura de muestreo (0–2). Valores bajos favorecen respuestas determinísticas y basadas en fuentes |
 | `LLM_MAX_TOKENS` | `1024` | Máximo de tokens en la respuesta generada |
 
-El modelo de lenguaje está fijado a **Gemini 1.5 Flash** — el único modelo integrado en
-esta fase. No se puede seleccionar otro modelo mediante variables de entorno.
+El modelo de lenguaje está fijado a **Llama 3.1 70B Versatile** — el único modelo
+integrado en esta fase. No se puede seleccionar otro modelo mediante variables de
+entorno.
 
 ### ⚠️ Nunca incluir claves en el repositorio
 
@@ -109,10 +110,10 @@ pytest
 ```
 
 Estas pruebas (243) validan dataset, salud del servidor, chunking y extracción de
-PDF (con error paths), el adaptador LLM (Gemini 1.5 Flash con prompts, validación
-y respuestas estructuradas), y el endpoint RAG `/rag/query`. Todas las llamadas a
-la API de Gemini están mockeadas. No descargan el modelo de embeddings ni procesan
-PDFs reales.
+PDF (con error paths), el adaptador LLM (Llama 3.1 70B Versatile con prompts,
+validación y respuestas estructuradas), y el endpoint RAG `/rag/query`. Todas las
+llamadas a la API de Groq están mockeadas. No descargan el modelo de embeddings ni
+procesan PDFs reales.
 
 ### Pruebas lentas (requieren BGE-M3 y PDFs)
 
@@ -136,7 +137,7 @@ eliminación de chunks y generación de citas trazables. El modelo de embeddings
 │   │   └── rag.py         POST /rag/query (consulta clínica con RAG)
 │   ├── llm/               Adaptador de modelo de lenguaje
 │   │   ├── __init__.py
-│   │   ├── config.py      Configuración fija (Gemini 1.5 Flash)
+│   │   ├── config.py      Configuración fija (Llama 3.1 70B)
 │   │   └── adapter.py     Generación validada con citas trazables
 │   ├── data/              Acceso tipado de solo lectura a los datos sintéticos
 │   ├── rag/               RAG pipeline (ingestión, recuperación)

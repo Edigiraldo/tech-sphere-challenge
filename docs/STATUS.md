@@ -3,7 +3,7 @@
 ## Current Phase
 
 Persistence (ChromaDB + SQLite), RAG ingestion/retrieval (extract → chunk → embed →
-store → retrieve), the LLM adapter (Gemini 1.5 Flash), document lifecycle endpoints
+store → retrieve), the LLM adapter (Llama 3.1 70B Versatile via Groq), document lifecycle endpoints
 (POST/GET/DELETE /documents), and the conversation domain foundation (state machine,
 message history, patient/call context) are implemented and tested. Voice adapters
 (STT) and conversation orchestration with RAG-backed dialogue and escalation remain.
@@ -67,19 +67,20 @@ adapter contracts, and phased implementation plan are documented in
 - Fast tests (15) pass: chunking unit tests, extraction error paths, health endpoint.
   Slow tests (10) for full ingestion/retrieval are gated behind ``pytest.mark.slow``.
 - **Phase 3 (LLM adapter):** ``backend/llm/`` — ``config.py`` (model selection,
-  API key, temperature), ``adapter.py`` (Gemini 1.5 Flash integration with structured
-  JSON output, Spanish prompt assembly, citation mapping, and multi-layer safety
-  validation). Open decision D1 resolved: **Gemini 1.5 Flash** selected for its
-  1M-token context window and free tier. Open decision D7 resolved: single provider
-  (no failover chain for Phase 3).
+  API key, temperature), ``adapter.py`` (Llama 3.1 70B Versatile via Groq with
+  structured JSON output, Spanish prompt assembly, citation mapping, and multi-layer
+  safety validation). Open decision D1 resolved: **Llama 3.1 70B Versatile** via
+  **Groq Cloud** selected for its fast inference, native JSON output, and strong
+  Spanish performance. Open decision D7 resolved: single provider (no failover
+  chain for Phase 3).
 - **First RAG endpoint:** ``backend/api/rag.py`` — ``POST /rag/query`` accepts a
   Spanish clinical question, retrieves relevant chunks from ChromaDB, generates a
-  validated answer via Gemini 1.5 Flash, and returns traceable source citations.
-  Falls back to ``insufficient_knowledge: true`` without calling the LLM when no
-  chunk exceeds the similarity threshold.
+  validated answer via Llama 3.1 70B Versatile, and returns traceable source
+  citations.  Falls back to ``insufficient_knowledge: true`` without calling the
+  LLM when no chunk exceeds the similarity threshold.
 - 54 new fast tests (41 LLM adapter, 13 API endpoint) pass; all 58 existing
   dataset tests and 24 RAG tests (14 fast, 10 slow) continue to pass.
-- ``pyproject.toml`` updated with ``google-generativeai>=0.8.0`` dependency.
+- ``pyproject.toml`` updated with ``groq>=0.9.0`` dependency for the LLM adapter.
 - ``backend/main.py`` registers the ``rag_router``.
 - **2026-08-07:** Conversation domain foundation implemented (`backend/conversation/`).
   Finite state machine (``State`` / ``Event`` enums) with 7 valid transitions and
@@ -212,9 +213,10 @@ adapter contracts, and phased implementation plan are documented in
   and UTC ``created_at``.  Stdlib-only, text-only — no voice/frontend/LLM/RAG
   dependencies.  98 tests pass.
 - **2026-08-07 (pm):** First RAG-backed clinical answer endpoint implemented.
-  ``backend/llm/`` (Gemini 1.5 Flash adapter with validation), ``backend/api/rag.py``
-  (``POST /rag/query``), 54 tests pass. Resolved D1 (model = Gemini 1.5 Flash) and
-  D7 (single provider, no failover).
+  ``backend/llm/`` (Llama 3.1 70B Versatile adapter with validation),
+  ``backend/api/rag.py`` (``POST /rag/query``), 54 tests pass. Resolved D1
+  (model = Llama 3.1 70B Versatile via Groq) and D7 (single provider, no
+  failover).
 - **2026-08-07 (pm):** RAG slice audit remediation. Configured ChromaDB collection
   with ``hnsw:space: cosine`` for correct cosine similarity semantics with BGE-M3
   embeddings. Added UTC ``ingested_at`` metadata to every stored chunk. Added
@@ -243,8 +245,8 @@ RAG-backed dialogue and escalation (blocked on D8).
 
 These are tracked in `docs/ARCHITECTURE.md` § Open Decisions. The two open decisions
 (D5, D8) cover audio transport format and patient data loading strategy. Seven 
-decisions (D1, D2, D3, D4, D6, D7, D9) have been resolved: language model (Gemini
-1.5 Flash), STT provider (Groq Whisper Large V3), TTS provider (Kokoro-82M), backend
+decisions (D1, D2, D3, D4, D6, D7, D9) have been resolved: language model (Llama
+3.1 70B Versatile via Groq), STT provider (Groq Whisper Large V3), TTS provider (Kokoro-82M), backend
 framework (FastAPI), chunking strategy (fixed-size with overlap), LLM failover (single
 provider), and PDF extraction library (pdfplumber).  Each open decision has a "resolve by"
 deadline tied to the phase that needs it.

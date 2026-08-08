@@ -632,13 +632,13 @@ class TestRagLlmIntegration:
                 )
             ],
             insufficient_knowledge=False,
-            model="gemini-1.5-flash",
+            model="llama-3.1-70b-versatile",
         )
         mock_generate.return_value = mock_answer
 
         rag_config = make_rag_config()
         llm_config = LlmConfig(
-            model_name="gemini-1.5-flash",
+            model_name="llama-3.1-70b-versatile",
             api_key="fake-key",
         )
         orch = make_orchestrator(
@@ -681,13 +681,13 @@ class TestRagLlmIntegration:
             answer="No tengo suficiente información.",
             citations=[],
             insufficient_knowledge=True,
-            model="gemini-1.5-flash",
+            model="llama-3.1-70b-versatile",
         )
         mock_generate.return_value = mock_answer
 
         rag_config = make_rag_config()
         llm_config = LlmConfig(
-            model_name="gemini-1.5-flash",
+            model_name="llama-3.1-70b-versatile",
             api_key="fake-key",
         )
         orch = make_orchestrator(
@@ -734,7 +734,7 @@ class TestRagLlmIntegration:
 
         rag_config = make_rag_config()
         llm_config = LlmConfig(
-            model_name="gemini-1.5-flash",
+            model_name="llama-3.1-70b-versatile",
             api_key="fake-key",
         )
         orch = make_orchestrator(

@@ -140,7 +140,7 @@ class TestRagQueryEndpoint:
         )
         mock_result.citations = []
         mock_result.insufficient_knowledge = False
-        mock_result.model = "gemini-1.5-flash"
+        mock_result.model = "llama-3.1-70b-versatile"
         mock_result.validation_warnings = []
 
         with patch(
@@ -164,7 +164,7 @@ class TestRagQueryEndpoint:
         data = response.json()
         assert data["insufficient_knowledge"] is False
         assert "herida limpia" in data["answer"]
-        assert data["model"] == "gemini-1.5-flash"
+        assert data["model"] == "llama-3.1-70b-versatile"
 
     @pytest.mark.asyncio
     async def test_answer_with_citations(self):
@@ -194,7 +194,7 @@ class TestRagQueryEndpoint:
             )
         ]
         mock_result.insufficient_knowledge = False
-        mock_result.model = "gemini-1.5-flash"
+        mock_result.model = "llama-3.1-70b-versatile"
         mock_result.validation_warnings = []
 
         with patch(
@@ -240,7 +240,7 @@ class TestRagQueryEndpoint:
         mock_result.answer = "No tengo información sobre ese tema."
         mock_result.citations = []
         mock_result.insufficient_knowledge = True
-        mock_result.model = "gemini-1.5-flash"
+        mock_result.model = "llama-3.1-70b-versatile"
         mock_result.validation_warnings = []
 
         with patch(
@@ -336,7 +336,7 @@ class TestRagQueryEndpoint:
         mock_result.answer = "Respuesta."
         mock_result.citations = []
         mock_result.insufficient_knowledge = False
-        mock_result.model = "gemini-1.5-flash"
+        mock_result.model = "llama-3.1-70b-versatile"
         mock_result.validation_warnings = []
 
         with patch(
@@ -362,4 +362,4 @@ class TestRagQueryEndpoint:
         assert parsed.query == "pregunta"
         assert parsed.answer == "Respuesta."
         assert parsed.insufficient_knowledge is False
-        assert parsed.model == "gemini-1.5-flash"
+        assert parsed.model == "llama-3.1-70b-versatile"
