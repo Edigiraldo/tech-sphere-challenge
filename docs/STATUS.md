@@ -121,6 +121,19 @@ adapter contracts, and phased implementation plan are documented in
   pain, fever, wound, appetite, sleep, and mobility.  Fallback messages
   when RAG/LLM is unavailable or returns insufficient knowledge.  55 new tests pass
   (153 total in the conversation module).
+- **2026-08-08:** Escalation decision engine implemented (``backend/decision/``).
+  ``classify(patient_text, domain)`` returns a typed ``EscalationResult`` with
+  ``Severity`` (GREEN / YELLOW / RED), ``should_escalate``, ``reason``, and
+  ``next_action``.  The engine is stdlib-only, text-only, deterministic, and
+  conservative: false negatives are catastrophic so the engine biases toward
+  YELLOW and RED.  Six symptom domains mirror the follow-up questions (pain,
+  fever, wound, appetite, sleep, mobility).  Classification uses explicit
+  Spanish red-flag lexicons, numeric thresholds (pain >= 8 → RED, temp >= 38.5 → RED),
+  negation handling, ambiguity detection, and cross-cutting critical flags.
+  The standalone engine is complete: 125 tests pass across
+  ``tests/decision/`` (30 lexicon, 13 model, 82 rule engine).  Orchestrator
+  integration (wiring RED/``ESCALATION_TRIGGER`` and two-consecutive-YELLOW
+  escalation into the conversation flow) remains pending.
 
 - **2026-08-08:** STT adapter foundation implemented (``backend/voice/``).
   Typed ``SttProvider`` Protocol, normalised ``TranscriptionResult`` dataclass,
@@ -139,6 +152,8 @@ adapter contracts, and phased implementation plan are documented in
 - TTS adapter (Phase 4, depends on D3/D5).
 - Audio transport format — decision D5 pending (Phase 6).
 - Conversation orchestration with RAG and escalation (Phase 5, depends on D8).
+- Conversation orchestration integration with RAG and decision engine
+  (Phase 5 — decision-engine wiring and full integration tests remain pending D8).
 
 ## Completed (setup)
 
@@ -169,6 +184,11 @@ adapter contracts, and phased implementation plan are documented in
   hierarchy, frozen ``GroqWhisperConfig``, ``GroqWhisperProvider`` adapter, and
    ``transcribe_audio()`` injection API.  56 mocked unit tests pass.  Resolved D2
   (STT provider = Groq Whisper Large V3).  ``groq>=0.9.0`` added to dependencies.
+- **2026-08-08:** Escalation decision engine (``backend/decision/``) implemented.
+  ``classify()`` returns typed ``EscalationResult`` with ``Severity`` (GREEN/YELLOW/RED),
+  deterministic Spanish keyword + numeric classification across 6 symptom domains,
+  negation handling, ambiguity detection, and cross-cutting critical flags.
+  125 tests pass.  Stdlib-only, text-only, no dependencies on RAG/LLM/voice/persistence.
 - **2026-08-07 (pm):** Conversation orchestrator implemented.  ``ConversationOrchestrator``
   drives the state machine through all six phases (IDLE → GREETING → CONSENT →
   QUESTIONS → CLOSING → ENDED), asks 6 structured Spanish follow-up questions,
