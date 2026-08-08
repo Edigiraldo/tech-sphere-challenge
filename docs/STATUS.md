@@ -149,7 +149,7 @@ adapter contracts, and phased implementation plan are documented in
 ## In Progress
 
 - Remaining Phase 1 SQLite tables (calls, summaries, escalation_alerts).
-- TTS adapter (Phase 4, depends on D3/D5).
+- TTS adapter (Phase 4, depends on D5).
 - Audio transport format — decision D5 pending (Phase 6).
 - Conversation orchestration with RAG and escalation (Phase 5, depends on D8).
 - Conversation orchestration integration with RAG and decision engine
@@ -172,7 +172,7 @@ adapter contracts, and phased implementation plan are documented in
   silent WAV (not an invalid payload).  WAV serialisation produces 16-bit PCM mono
   RIFF containers suitable for browser playback.  Decision D3 resolved: **Kokoro-82M**
   selected for its minimal footprint (~0.6 GB RAM), CPU-only inference, and natural
-  Spanish voice quality (``es_002``).  ``kokoro>=0.7.0`` added to optional
+  Spanish voice quality (``ef_dora``).  ``kokoro>=0.7.0`` added to optional
   ``voice`` extras in ``pyproject.toml``.  47 fast tests pass.
 - **2026-08-08:** STT adapter made truly async.  ``GroqWhisperProvider._call_groq``
   now uses ``groq.AsyncGroq`` (instead of synchronous ``groq.Groq``) and awaits the
@@ -241,12 +241,12 @@ RAG-backed dialogue and escalation (blocked on D8).
 
 ## Open Architectural Decisions
 
-These are tracked in `docs/ARCHITECTURE.md` § Open Decisions. The three open decisions
-(D3, D5, D8) cover TTS provider, audio transport format, and patient data loading
-strategy. Six decisions (D1, D2, D4, D6, D7, D9) have been resolved: language
-model (Gemini 1.5 Flash), STT provider (Groq Whisper Large V3), backend framework
-(FastAPI), chunking strategy (fixed-size with overlap), LLM failover (single provider),
-and PDF extraction library (pdfplumber).  Each open decision has a "resolve by"
+These are tracked in `docs/ARCHITECTURE.md` § Open Decisions. The two open decisions
+(D5, D8) cover audio transport format and patient data loading strategy. Seven 
+decisions (D1, D2, D3, D4, D6, D7, D9) have been resolved: language model (Gemini
+1.5 Flash), STT provider (Groq Whisper Large V3), TTS provider (Kokoro-82M), backend
+framework (FastAPI), chunking strategy (fixed-size with overlap), LLM failover (single
+provider), and PDF extraction library (pdfplumber).  Each open decision has a "resolve by"
 deadline tied to the phase that needs it.
 
 ## Known Constraints

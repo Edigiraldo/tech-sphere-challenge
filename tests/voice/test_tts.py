@@ -33,7 +33,7 @@ class TestTTSConfig:
 
     def test_defaults(self) -> None:
         cfg = TTSConfig()
-        assert cfg.voice == "es_002"
+        assert cfg.voice == "ef_dora"
         assert cfg.lang_code == "e"
         assert cfg.speed == 1.0
         assert cfg.sample_rate == 24_000
@@ -353,7 +353,7 @@ class TestKokoroAdapter:
         assert result.audio_bytes[:4] == b"RIFF"
         assert result.text == ""
         assert result.duration_ms == 100.0
-        assert result.voice == "es_002"
+        assert result.voice == "ef_dora"
 
     def test_whitespace_only_returns_valid_wav(self) -> None:
         adapter = KokoroAdapter()
@@ -394,7 +394,7 @@ class TestKokoroAdapter:
         result = adapter.synthesize("hola")
         assert isinstance(result, TTSResult)
         assert result.text == "hola"
-        assert result.voice == "es_002"
+        assert result.voice == "ef_dora"
         assert result.sample_rate == 24_000
         assert result.format == "wav"
         assert len(result.audio_bytes) > 44  # has PCM
@@ -404,7 +404,7 @@ class TestKokoroAdapter:
         assert result.duration_ms == pytest.approx(expected_duration)
 
         # Verify the pipeline was called with correct args.
-        mock_pipeline.assert_called_once_with("hola", voice="es_002", speed=1.0)
+        mock_pipeline.assert_called_once_with("hola", voice="ef_dora", speed=1.0)
 
     def test_synthesize_with_mock_pipeline_custom_config(self) -> None:
         cfg = TTSConfig(voice="es_001", speed=0.9)
@@ -455,6 +455,118 @@ class TestKokoroAdapter:
         result = adapter.synthesize("hola mundo")
         assert len(result.audio_bytes) == 44 + 4 * 2  # 4 samples
         assert result.duration_ms == pytest.approx((4 / 24000) * 1000)
+
+    def test_generator_segment_output_audio_path_concat_and_valid_wav(self) -> None:
+        """Current Kokoro API: pipeline yields segment objects with .output.audio.
+
+        Each segment has ``output.audio`` (torch tensor or numpy array).
+        The adapter iterates over the generator, coerces each audio tensor
+        via ``_coerce_to_array``, concatenates across segments, and
+        produces a valid WAV.
+        """
+        adapter = KokoroAdapter()
+
+        mock_pipeline = MagicMock()
+
+        # Create two mock segment objects, each with .output.audio.
+        class _FakeSegment:
+            def __init__(self, output) -> None:
+                self.output = output
+
+        class _FakeOutput:
+            def __init__(self, audio) -> None:
+                self.audio = audio
+
+        seg1 = _FakeSegment(_FakeOutput(np.array([0.1, 0.2], dtype=np.float32)))
+        seg2 = _FakeSegment(_FakeOutput(np.array([0.3, 0.4], dtype=np.float32)))
+
+        mock_pipeline.return_value = [seg1, seg2]
+        adapter._pipeline = mock_pipeline
+
+        result = adapter.synthesize("hola mundo")
+
+        # Four samples: [0.1, 0.2, 0.3, 0.4] → 44 + 4*2 = 52 bytes.
+        assert len(result.audio_bytes) == 44 + 4 * 2
+        assert result.audio_bytes[:4] == b"RIFF"
+        assert result.audio_bytes[8:12] == b"WAVE"
+        assert result.duration_ms == pytest.approx((4 / 24000) * 1000)
+        assert result.voice == "ef_dora"
+        assert result.text == "hola mundo"
+        assert result.format == "wav"
+        mock_pipeline.assert_called_once_with(
+            "hola mundo", voice="ef_dora", speed=1.0
+        )
+
+    def test_generator_segment_empty_audio_raises(self) -> None:
+        """If every segment lacks .output.audio, a ValueError is raised."""
+        adapter = KokoroAdapter()
+
+        mock_pipeline = MagicMock()
+
+        class _FakeSegment:
+            def __init__(self, output) -> None:
+                self.output = output
+
+        seg = _FakeSegment(None)  # .output is None → no .audio
+        mock_pipeline.return_value = [seg]
+        adapter._pipeline = mock_pipeline
+
+        with pytest.raises(TTSSynthesisError, match="Kokoro synthesis failed"):
+            adapter.synthesize("hola")
+
+    def test_generator_segment_torch_tensor_audio(self) -> None:
+        """Segment.output.audio may be a torch-like tensor with .numpy()."""
+        adapter = KokoroAdapter()
+
+        mock_pipeline = MagicMock()
+
+        class _FakeTensor:
+            def numpy(self) -> np.ndarray:
+                return np.array([0.5, -0.5], dtype=np.float32)
+
+        class _FakeOutput:
+            def __init__(self, audio) -> None:
+                self.audio = audio
+
+        class _FakeSegment:
+            def __init__(self, output) -> None:
+                self.output = output
+
+        seg = _FakeSegment(_FakeOutput(_FakeTensor()))
+        mock_pipeline.return_value = [seg]
+        adapter._pipeline = mock_pipeline
+
+        result = adapter.synthesize("tensor test")
+        assert len(result.audio_bytes) == 44 + 2 * 2  # 2 samples
+        assert result.audio_bytes[:4] == b"RIFF"
+
+    def test_generator_segment_mixed_some_none_audio(self) -> None:
+        """Segments with output=None or output.audio=None are skipped."""
+        adapter = KokoroAdapter()
+
+        mock_pipeline = MagicMock()
+
+        class _FakeOutput:
+            def __init__(self, audio) -> None:
+                self.audio = audio
+
+        class _FakeSegment:
+            def __init__(self, output) -> None:
+                self.output = output
+
+        seg_no_output = _FakeSegment(None)
+        seg_no_audio = _FakeSegment(_FakeOutput(None))
+        seg_valid = _FakeSegment(
+            _FakeOutput(np.array([0.7, 0.8], dtype=np.float32))
+        )
+
+        mock_pipeline.return_value = [seg_no_output, seg_no_audio, seg_valid]
+        adapter._pipeline = mock_pipeline
+
+        result = adapter.synthesize("mixed segments")
+        # Only the valid segment contributes: 2 samples.
+        assert len(result.audio_bytes) == 44 + 2 * 2
+        assert result.audio_bytes[:4] == b"RIFF"
 
     def test_single_text_chunk_no_leading_trailing_spaces_stripped(self) -> None:
         """Input text is passed verbatim — no silent stripping."""

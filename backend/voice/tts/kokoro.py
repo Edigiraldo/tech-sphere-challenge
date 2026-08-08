@@ -138,8 +138,21 @@ class KokoroAdapter:
         t_start = time.perf_counter()
 
         try:
-            # Kokoro KPipeline returns (audio_numpy, phonemes_list).
-            audio, _ = pipeline(text, voice=cfg.voice, speed=cfg.speed)  # type: ignore[call-arg]
+            # Older Kokoro releases returned (audio, phonemes); current releases
+            # yield Result objects whose output contains the audio tensor.
+            pipeline_result = pipeline(text, voice=cfg.voice, speed=cfg.speed)  # type: ignore[call-arg]
+            if isinstance(pipeline_result, tuple):
+                audio = pipeline_result[0]
+            else:
+                segment_audio: list[np.ndarray] = []
+                for segment in pipeline_result:
+                    output = getattr(segment, "output", None)
+                    audio_tensor = getattr(output, "audio", None)
+                    if audio_tensor is not None:
+                        segment_audio.append(_coerce_to_array(audio_tensor))
+                if not segment_audio:
+                    raise ValueError("Kokoro returned no audio segments")
+                audio = np.concatenate(segment_audio)
         except Exception as exc:
             raise TTSSynthesisError(
                 f"Kokoro synthesis failed for voice={cfg.voice!r}: {exc}",

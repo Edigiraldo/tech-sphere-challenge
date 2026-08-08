@@ -10,14 +10,13 @@ from dataclasses import dataclass, field
 # ---------------------------------------------------------------------------
 # Kokoro-82M default voices for Spanish
 # ---------------------------------------------------------------------------
-# ``es_002`` is the primary Spanish female voice shipped with Kokoro-82M.
-# Alternative Spanish voices (e.g. ``es_001``) may be available depending on
-# the installed voice-pack version.
+# ``ef_dora`` is a Spanish voice identifier available in the current
+# Kokoro-82M voice pack.
 #
 # Lang code ``"e"`` maps to Spanish (español) in Kokoro's lang-to-voice
 # dispatch table.  Sample rate 24 000 Hz is Kokoro's native output rate.
 
-_DEFAULT_VOICE: str = "es_002"
+_DEFAULT_VOICE: str = "ef_dora"
 _DEFAULT_LANG_CODE: str = "e"
 _DEFAULT_SAMPLE_RATE: int = 24_000
 _DEFAULT_SPEED: float = 1.0
@@ -31,7 +30,7 @@ class TTSConfig:
     """
 
     voice: str = _DEFAULT_VOICE
-    """Kokoro voice identifier (e.g. ``"es_002"``)."""
+    """Kokoro voice identifier (e.g. ``"ef_dora"``)."""
 
     lang_code: str = _DEFAULT_LANG_CODE
     """Kokoro language code (``"e"`` = Spanish)."""
