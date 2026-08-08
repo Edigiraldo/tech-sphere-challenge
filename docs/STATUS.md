@@ -109,6 +109,13 @@ adapter contracts, and phased implementation plan are documented in
   WAV audio playback), ``admin.html`` / ``admin.js`` (administration console with
   upload, listing, status polling, refresh, deletion), metrics frontend view. 8 tests
   pass. ``backend/main.py`` serves assets via ``FileResponse`` and ``StaticFiles``.
+- Frontend-backend contract integration tests: ``tests/test_frontend_integration.py`` —
+  26 fast tests covering the HTTP contract consumed by ``call.js`` and ``app.js``:
+  ``POST /calls`` and ``POST /calls/{call_id}/turn`` response shapes, base64 audio
+  round-trip, full call flow from GREETING to ENDED, escalation info shape and timing,
+  citation structure, error-handling contract, patient_transcription rendering contract
+  (content and type semantics), agent transcription preservation across every turn,
+  and call-state progression with monotonic ordering.
 - Metrics instrumentation: ``backend/metrics/`` — ``InMemoryMetricsCollector``
   (thread-safe, ``asyncio.Lock``), ``TurnMetrics`` / ``CallMetrics`` /
   ``MetricsSummary``, cost estimation, P50/P95 percentiles. 82 tests pass.
@@ -152,7 +159,7 @@ adapter contracts, and phased implementation plan are documented in
   ``GET /metrics/calls``, and ``GET /metrics/calls/{call_id}`` endpoints and metrics
   frontend view; metrics collector module is distinct from the reporting API.
 
-Test totals: 822 fast tests (pytest), 16 slow tests (`pytest -m slow`).
+Test totals: 833 fast tests (pytest), 16 slow tests (`pytest -m slow`).
 
 ## In Progress
 

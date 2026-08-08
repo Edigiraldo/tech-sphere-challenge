@@ -796,3 +796,638 @@ class TestCreateCallResponseIsSelfContained:
         # Verify greeting audio is valid base64
         decoded = base64.b64decode(data["audio_base64"])
         assert len(decoded) > 0
+
+
+# ---------------------------------------------------------------------------
+# Patient transcription rendering contract
+# ---------------------------------------------------------------------------
+
+
+class TestPatientTranscriptionContract:
+    """Verify the patient_transcription field contract that call.js depends on.
+
+    call.js line 415-418 reads::
+
+        addMessage(
+            "patient",
+            data.patient_transcription || "🎤 [grabación enviada]"
+        );
+
+    The field must always be present and its value must faithfully reflect the
+    STT output for the patient's speech.  The frontend uses JavaScript
+    false-coalescing (``||``), so ``null``, ``undefined`` (missing key), and
+    ``""`` would all trigger the fallback string.
+    """
+
+    @pytest.fixture
+    async def call_id(self):
+        """Create a call and return its ID."""
+        transport = ASGITransport(app=app)
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            response = await client.post(
+                "/calls",
+                json={
+                    "patient_id": "P001",
+                    "dia_postop": 3,
+                    "procedimiento": "Apendicectomía laparoscópica",
+                    "nombre_completo": "Paciente 001",
+                    "eps": "EPS",
+                },
+            )
+        assert response.status_code == 201
+        cid = response.json()["call_id"]
+        yield cid
+        await global_store.remove(cid)
+
+    @pytest.mark.asyncio
+    async def test_patient_transcription_contains_stt_output(self, call_id):
+        """The patient_transcription field must be a non-empty string that
+        matches the STT provider's transcription output.
+
+        This is the primary path — when STT succeeds the frontend renders
+        the patient's exact transcribed words in the conversation history.
+        """
+        original_stt_output = "Sí, acepto continuar con la llamada."
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            response = await client.post(
+                f"/calls/{call_id}/turn",
+                json={"audio_base64": _MOCK_AUDIO_B64},
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+
+        # Key assertion: the field exists and matches the mock STT output
+        assert "patient_transcription" in data
+        assert data["patient_transcription"] == original_stt_output
+        assert isinstance(data["patient_transcription"], str)
+        assert len(data["patient_transcription"]) > 0
+
+    @pytest.mark.asyncio
+    async def test_patient_transcription_is_never_missing_key(self, call_id):
+        """The key 'patient_transcription' must always be present in every
+        TurnResponse.  Even when the value is ``None`` the key itself must
+        exist so that ``data.patient_transcription || "..."`` works without
+        a ReferenceError in the browser."""
+        transport = ASGITransport(app=app)
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            response = await client.post(
+                f"/calls/{call_id}/turn",
+                json={"audio_base64": _MOCK_AUDIO_B64},
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+
+        # The key is unconditionally present
+        assert "patient_transcription" in data
+        # Value is either a non-empty string or None (never absent / undefined)
+        assert data["patient_transcription"] is None or (
+            isinstance(data["patient_transcription"], str)
+            and len(data["patient_transcription"]) > 0
+        )
+
+    @pytest.mark.asyncio
+    async def test_patient_transcription_value_across_multiple_turns(
+        self, call_id
+    ):
+        """The patient_transcription reflects the STT output for *each*
+        turn, not a stale value from a previous turn."""
+        transport = ASGITransport(app=app)
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            # Turn 1: greeting response → CONSENT
+            resp1 = await client.post(
+                f"/calls/{call_id}/turn",
+                json={"audio_base64": _MOCK_AUDIO_B64},
+            )
+            assert resp1.status_code == 200
+            pt1 = resp1.json()["patient_transcription"]
+
+            # Turn 2: consent → QUESTIONS (q=0)
+            resp2 = await client.post(
+                f"/calls/{call_id}/turn",
+                json={"audio_base64": _MOCK_AUDIO_B64},
+            )
+            assert resp2.status_code == 200
+            pt2 = resp2.json()["patient_transcription"]
+
+        # Both turns used the same mock STT output, so values match
+        assert pt1 == pt2 == "Sí, acepto continuar con la llamada."
+        assert isinstance(pt1, str) and len(pt1) > 0
+        assert isinstance(pt2, str) and len(pt2) > 0
+
+
+# ---------------------------------------------------------------------------
+# Agent transcription preservation
+# ---------------------------------------------------------------------------
+
+
+class TestAgentTranscriptionContract:
+    """Verify that the agent ``transcription`` field is always a non-empty
+    string in every TurnResponse.
+
+    call.js line 421-423 reads::
+
+        if (data.transcription) {
+            addMessage("agent", data.transcription, data.citations || []);
+        }
+
+    A missing, null, or empty transcription would silently skip the agent
+    message, breaking the conversation history the patient sees.
+    """
+
+    @pytest.mark.asyncio
+    async def test_agent_transcription_never_empty(self):
+        """Walk through a full call and verify *every* TurnResponse has a
+        non-empty agent transcription string."""
+        transport = ASGITransport(app=app)
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            # Create call
+            resp = await client.post(
+                "/calls",
+                json={
+                    "patient_id": "P002",
+                    "dia_postop": 5,
+                    "procedimiento": "Colecistectomía",
+                    "nombre_completo": "Paciente 002",
+                    "eps": "EPS",
+                },
+            )
+            assert resp.status_code == 201
+            call_id = resp.json()["call_id"]
+
+            # Advance through every turn and check agent transcription
+            responses = []
+            for _ in range(10):
+                r = await client.post(
+                    f"/calls/{call_id}/turn",
+                    json={"audio_base64": _MOCK_AUDIO_B64},
+                )
+                responses.append(r)
+                if r.json().get("call_ended"):
+                    break
+
+            # Clean up
+            await global_store.remove(call_id)
+
+        turn_responses = [
+            r for r in responses if r.status_code == 200
+        ]
+        assert len(turn_responses) >= 7, (
+            f"Expected at least 7 turns, got {len(turn_responses)}"
+        )
+
+        for i, r in enumerate(turn_responses):
+            data = r.json()
+            transcription = data.get("transcription")
+            assert transcription is not None, (
+                f"Turn {i}: agent transcription is missing"
+            )
+            assert isinstance(transcription, str), (
+                f"Turn {i}: agent transcription is {type(transcription)}"
+            )
+            assert len(transcription) > 0, (
+                f"Turn {i}: agent transcription is empty"
+            )
+
+    @pytest.mark.asyncio
+    async def test_agent_transcription_across_state_transitions(self):
+        """The agent transcription field is populated at every state
+        transition: GREETING→CONSENT, CONSENT→QUESTIONS, QUESTIONS→…,
+        CLOSING→ENDED."""
+        transport = ASGITransport(app=app)
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            resp = await client.post(
+                "/calls",
+                json={
+                    "patient_id": "P003",
+                    "dia_postop": 2,
+                    "procedimiento": "Hernioplastia inguinal",
+                    "nombre_completo": "Paciente 003",
+                    "eps": "EPS",
+                },
+            )
+            assert resp.status_code == 201
+            call_id = resp.json()["call_id"]
+
+            # GREETING → CONSENT
+            r1 = await client.post(
+                f"/calls/{call_id}/turn",
+                json={"audio_base64": _MOCK_AUDIO_B64},
+            )
+            assert r1.status_code == 200
+            assert r1.json()["state"] == State.CONSENT.value
+            assert isinstance(r1.json()["transcription"], str)
+            assert len(r1.json()["transcription"]) > 0
+
+            # CONSENT → QUESTIONS (q=0)
+            r2 = await client.post(
+                f"/calls/{call_id}/turn",
+                json={"audio_base64": _MOCK_AUDIO_B64},
+            )
+            assert r2.status_code == 200
+            assert r2.json()["state"] == State.QUESTIONS.value
+            assert isinstance(r2.json()["transcription"], str)
+            assert len(r2.json()["transcription"]) > 0
+
+            # Answer all questions until ENDED
+            for _attempt in range(8):
+                r = await client.post(
+                    f"/calls/{call_id}/turn",
+                    json={"audio_base64": _MOCK_AUDIO_B64},
+                )
+                assert r.status_code == 200
+                assert isinstance(r.json()["transcription"], str)
+                assert len(r.json()["transcription"]) > 0
+                if r.json().get("call_ended"):
+                    break
+
+            await global_store.remove(call_id)
+
+
+# ---------------------------------------------------------------------------
+# Citations through call-flow states
+# ---------------------------------------------------------------------------
+
+
+class TestCitationsCallFlowContract:
+    """Verify citations shape at each conversation phase.
+
+    call.js passes ``data.citations || []`` to ``addMessage`` and renders
+    each citation's ``source_filename``, ``document_id``, and ``page_number``
+    in a ``.citations-list`` div.
+    """
+
+    @pytest.mark.asyncio
+    async def test_citations_list_through_all_phases(self):
+        """The ``citations`` field must be a list at every phase and each
+        citation, when present, must have the fields call.js renders."""
+        transport = ASGITransport(app=app)
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            resp = await client.post(
+                "/calls",
+                json={
+                    "patient_id": "P004",
+                    "dia_postop": 4,
+                    "procedimiento": "Cesárea",
+                    "nombre_completo": "Paciente 004",
+                    "eps": "EPS",
+                },
+            )
+            assert resp.status_code == 201
+            call_id = resp.json()["call_id"]
+
+            phases_checked = 0
+            for _turn in range(10):
+                r = await client.post(
+                    f"/calls/{call_id}/turn",
+                    json={"audio_base64": _MOCK_AUDIO_B64},
+                )
+                if r.status_code != 200:
+                    break
+                data = r.json()
+                # citations is always a list
+                assert isinstance(data["citations"], list), (
+                    f"State {data['state']}: citations is {type(data['citations'])}, expected list"
+                )
+                # validate each citation when present
+                for cit in data["citations"]:
+                    assert "chunk_id" in cit
+                    assert "document_id" in cit
+                    assert "source_filename" in cit
+                    assert "page_number" in cit
+                    assert isinstance(cit["page_number"], int)
+                    assert cit["page_number"] >= 1
+                phases_checked += 1
+                if data.get("call_ended"):
+                    break
+
+            await global_store.remove(call_id)
+
+        # Must have covered at least CONSENT, QUESTIONS, CLOSING, ENDED
+        assert phases_checked >= 4, (
+            f"Expected at least 4 phases, got {phases_checked}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Escalation timing contract
+# ---------------------------------------------------------------------------
+
+
+class TestEscalationTimingContract:
+    """Verify when the ``escalation`` field is None vs populated.
+
+    call.js line 426 reads::
+
+        showEscalation(data.escalation || null);
+
+    and ``showEscalation`` hides the banner when the value is falsy.
+    The escalation verdict is only populated during the QUESTIONS phase
+    (one per answered question) and at CLOSING.
+    """
+
+    @pytest.mark.asyncio
+    async def test_escalation_null_before_questions(self):
+        """During GREETING and CONSENT phases, escalation must be None."""
+        transport = ASGITransport(app=app)
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            resp = await client.post(
+                "/calls",
+                json={
+                    "patient_id": "P005",
+                    "dia_postop": 7,
+                    "procedimiento": "Reemplazo total de cadera",
+                    "nombre_completo": "Paciente 005",
+                    "eps": "EPS",
+                },
+            )
+            assert resp.status_code == 201
+            call_id = resp.json()["call_id"]
+
+            # Turn 1: GREETING response → CONSENT
+            r1 = await client.post(
+                f"/calls/{call_id}/turn",
+                json={"audio_base64": _MOCK_AUDIO_B64},
+            )
+            assert r1.status_code == 200
+            assert r1.json()["state"] == State.CONSENT.value
+            assert r1.json()["escalation"] is None, (
+                "escalation must be None during CONSENT response"
+            )
+
+            # Turn 2: CONSENT → QUESTIONS (q=0)
+            r2 = await client.post(
+                f"/calls/{call_id}/turn",
+                json={"audio_base64": _MOCK_AUDIO_B64},
+            )
+            assert r2.status_code == 200
+            assert r2.json()["state"] == State.QUESTIONS.value
+            assert r2.json()["escalation"] is None, (
+                "escalation must be None after consent (no answer to classify yet)"
+            )
+
+            await global_store.remove(call_id)
+
+    @pytest.mark.asyncio
+    async def test_escalation_present_for_every_question(self):
+        """Every answered question during the QUESTIONS phase must produce
+        a non-None escalation verdict so the banner is never silently hidden
+        for a turn that should show severity."""
+        transport = ASGITransport(app=app)
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            resp = await client.post(
+                "/calls",
+                json={
+                    "patient_id": "P001",
+                    "dia_postop": 3,
+                    "procedimiento": "Apendicectomía laparoscópica",
+                    "nombre_completo": "Paciente 001",
+                    "eps": "EPS",
+                },
+            )
+            assert resp.status_code == 201
+            call_id = resp.json()["call_id"]
+
+            # Skip to QUESTIONS
+            await client.post(
+                f"/calls/{call_id}/turn",
+                json={"audio_base64": _MOCK_AUDIO_B64},
+            )  # GREETING → CONSENT
+            await client.post(
+                f"/calls/{call_id}/turn",
+                json={"audio_base64": _MOCK_AUDIO_B64},
+            )  # CONSENT → QUESTIONS q=0
+
+            # Answer all 6 questions
+            for i in range(6):
+                r = await client.post(
+                    f"/calls/{call_id}/turn",
+                    json={"audio_base64": _MOCK_AUDIO_B64},
+                )
+                assert r.status_code == 200
+                data = r.json()
+
+                # Every answered question must have an escalation verdict
+                assert data["escalation"] is not None, (
+                    f"Question {i}: escalation is None — frontend would fail "
+                    f"to show severity banner"
+                )
+                esc = data["escalation"]
+                assert "severity" in esc
+                assert esc["severity"] in ("GREEN", "YELLOW", "RED")
+                assert "should_escalate" in esc
+                assert isinstance(esc["should_escalate"], bool)
+                assert "reason" in esc
+                assert "next_action" in esc
+                assert "domain" in esc
+                # domain must be a non-empty string for the banner label
+                assert isinstance(esc["domain"], str)
+                assert len(esc["domain"]) > 0
+
+            await global_store.remove(call_id)
+
+    @pytest.mark.asyncio
+    async def test_escalation_at_closing_and_ended(self):
+        """At CLOSING the escalation verdict for the final question is
+        present.  Once the call reaches ENDED the field may be None or
+        the final verdict — the frontend's showEscalation handles both."""
+        transport = ASGITransport(app=app)
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            resp = await client.post(
+                "/calls",
+                json={
+                    "patient_id": "P002",
+                    "dia_postop": 5,
+                    "procedimiento": "Colecistectomía",
+                    "nombre_completo": "Paciente 002",
+                    "eps": "EPS",
+                },
+            )
+            assert resp.status_code == 201
+            call_id = resp.json()["call_id"]
+
+            # Walk through every turn until ENDED
+            for _turn in range(10):
+                r = await client.post(
+                    f"/calls/{call_id}/turn",
+                    json={"audio_base64": _MOCK_AUDIO_B64},
+                )
+                if r.status_code != 200:
+                    break
+                data = r.json()
+                state = data["state"]
+
+                if state == State.CLOSING.value:
+                    # At CLOSING: the final question's escalation is present
+                    assert data["escalation"] is not None, (
+                        "escalation must be present at CLOSING"
+                    )
+                    assert data["escalation"]["domain"] == "movilidad"
+                elif state == State.ENDED.value:
+                    # At ENDED: field exists (None or final verdict — both ok)
+                    assert "escalation" in data
+                    break
+
+            await global_store.remove(call_id)
+
+
+# ---------------------------------------------------------------------------
+# Call-state progression contract
+# ---------------------------------------------------------------------------
+
+
+class TestCallStateProgressionContract:
+    """Verify the exact sequence of state transitions the frontend observes.
+
+    call.js maintains a ``currentState`` variable and updates it from every
+    TurnResponse like::
+
+        if (data.state) {
+            setCallState(data.state);
+        }
+
+    ``setCallState`` updates the badge CSS class and text content.  States
+    outside the known ``STATES`` array are silently ignored (console.warn),
+    so every state value at every turn must be one of the six allowed
+    values.
+    """
+
+    VALID_STATES = frozenset(
+        {"IDLE", "GREETING", "CONSENT", "QUESTIONS", "CLOSING", "ENDED"}
+    )
+
+    @pytest.mark.asyncio
+    async def test_state_progression_greeting_to_ended(self):
+        """The backend must return a strict, reproducible state sequence:
+        GREETING → CONSENT → QUESTIONS → CLOSING → ENDED."""
+        transport = ASGITransport(app=app)
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            # Create call
+            resp = await client.post(
+                "/calls",
+                json={
+                    "patient_id": "P003",
+                    "dia_postop": 2,
+                    "procedimiento": "Hernioplastia inguinal",
+                    "nombre_completo": "Paciente 003",
+                    "eps": "EPS",
+                },
+            )
+            assert resp.status_code == 201
+            create_data = resp.json()
+            call_id = create_data["call_id"]
+
+            # CreateCallResponse initial state
+            assert create_data["state"] == State.GREETING.value
+            assert create_data["state"] in self.VALID_STATES
+
+            # Walk the full flow and record states
+            observed = [State.GREETING.value]
+            for _turn in range(10):
+                r = await client.post(
+                    f"/calls/{call_id}/turn",
+                    json={"audio_base64": _MOCK_AUDIO_B64},
+                )
+                if r.status_code != 200:
+                    break
+                state = r.json()["state"]
+                assert state in self.VALID_STATES, (
+                    f"Unknown state '{state}' returned — frontend would ignore it"
+                )
+                observed.append(state)
+                if r.json().get("call_ended"):
+                    break
+
+            await global_store.remove(call_id)
+
+        # Minimum valid sequence
+        assert observed[0] == State.GREETING.value
+        assert State.CONSENT.value in observed
+        assert State.QUESTIONS.value in observed
+        assert State.CLOSING.value in observed
+        assert observed[-1] == State.ENDED.value
+
+        # No regression to earlier states (monotonic progression)
+        state_order = {
+            State.IDLE.value: 0,
+            State.GREETING.value: 1,
+            State.CONSENT.value: 2,
+            State.QUESTIONS.value: 3,
+            State.CLOSING.value: 4,
+            State.ENDED.value: 5,
+        }
+        prev_idx = -1
+        for s in observed:
+            idx = state_order[s]
+            assert idx >= prev_idx, (
+                f"State regression: {observed[observed.index(s)-1] if observed.index(s) > 0 else 'start'} "
+                f"→ {s}"
+            )
+            prev_idx = idx
+
+    @pytest.mark.asyncio
+    async def test_call_ended_flag_only_at_end(self):
+        """The ``call_ended`` flag must be False throughout the call and
+        only become True at the ENDED state."""
+        transport = ASGITransport(app=app)
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            resp = await client.post(
+                "/calls",
+                json={
+                    "patient_id": "P004",
+                    "dia_postop": 4,
+                    "procedimiento": "Cesárea",
+                    "nombre_completo": "Paciente 004",
+                    "eps": "EPS",
+                },
+            )
+            assert resp.status_code == 201
+            call_id = resp.json()["call_id"]
+
+            for _turn in range(10):
+                r = await client.post(
+                    f"/calls/{call_id}/turn",
+                    json={"audio_base64": _MOCK_AUDIO_B64},
+                )
+                if r.status_code != 200:
+                    break
+                data = r.json()
+                if data.get("call_ended"):
+                    assert data["state"] == State.ENDED.value, (
+                        "call_ended=True but state is not ENDED"
+                    )
+                    assert data["requires_response"] is False
+                    break
+                else:
+                    assert data["state"] != State.ENDED.value, (
+                        "call_ended=False but state is already ENDED"
+                    )
+
+            await global_store.remove(call_id)
