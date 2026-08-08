@@ -51,12 +51,24 @@ else:
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):  # type: ignore[arg-type]
-    """Wire STT and TTS providers on application startup.
+    """Wire STT and TTS providers and initialise SQLite on startup.
 
     Construction errors are caught and logged — a broken provider leaves its
     injection slot at ``None`` so that non-voice endpoints remain reachable.
     """
+    from pathlib import Path as _Path
+    from os import getenv as _getenv
+
     from backend.voice.initialization import configure_providers
+
+    # Initialise SQLite for voice-persistence before any requests arrive.
+    # Uses the same database path convention as the document lifecycle
+    # module so all data lives in one database.
+    _db_path = _Path(_getenv("DOCUMENTS_DB_PATH", "data/documents.db"))
+    _db_path.parent.mkdir(parents=True, exist_ok=True)
+    from backend.persistence.sqlite import init_sqlite
+    init_sqlite(_db_path)
+    logger.info("SQLite initialised at %s.", _db_path)
 
     logger.info("Application startup — wiring voice providers …")
     configure_providers()

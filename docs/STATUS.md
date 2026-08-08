@@ -123,16 +123,25 @@ adapter contracts, and phased implementation plan are documented in
 - Summaries module: ``backend/summaries/`` — deterministic Spanish summary generator
   (patient demographics, procedure, six symptom domains, escalation decision, next
   steps). 44 tests pass. Stdlib-only.
- - Voice turn endpoints: ``backend/api/calls.py`` — ``POST /calls`` creates a call
-   and returns the agent greeting as base64 WAV; ``POST /calls/{call_id}/turn``
-   transcribes patient audio (STT), runs the orchestrator (with live ``RagConfig``
-   and ``LlmConfig``), classifies escalation, synthesises a TTS response, and
-   returns base64 WAV + transcription + patient transcription + citations +
-   escalation info. ``TurnResponse`` includes ``patient_transcription`` (the STT
-   output for the patient's speech) for frontend display. Real patient profiles
-   are loaded from the dataset when available, with a request-body fallback for
-   patients not found in the dataset. ``backend/api/call_store.py`` — thread-safe
-   in-memory ``CallStore``. 49 tests pass.
+ - Voice turn endpoints with persistence: ``backend/api/calls.py`` — ``POST /calls``
+   creates a call and returns the agent greeting as base64 WAV;
+   ``POST /calls/{call_id}/turn`` transcribes patient audio (STT), runs the
+   orchestrator (with live ``RagConfig`` and ``LlmConfig``), classifies escalation,
+   synthesises a TTS response, and returns base64 WAV + transcription + patient
+   transcription + citations + escalation info. ``TurnResponse`` includes
+   ``patient_transcription`` (the STT output for the patient's speech) for frontend
+   display. Real patient profiles are loaded from the dataset when available, with a
+   request-body fallback for patients not found in the dataset.
+   ``backend/api/call_store.py`` — thread-safe in-memory ``CallStore`` for runtime
+   orchestrator instances. Voice persistence is fully integrated with the SQLite
+   layer: call creation inserts a ``CallRecord``; each turn persists
+   ``ConversationTurnRecord`` entries; YELLOW/RED escalation classifications persist
+   ``EscalationAlertRecord``; call completion generates a structured summary via
+   ``backend/summaries/generator.py`` and persists a ``SummaryRecord``. Incomplete
+   calls are tracked with ``ended_at=None``. SQLite is initialised at application
+   startup in ``backend/main.py``. Calls, turns, summaries, and alerts are
+   restart-safe: they survive process restarts because the data is in SQLite, not
+   only in memory. 57 tests pass (8 persistence-focused).
 - Escalation classification wired in voice turn endpoints: domain inferred from
   question index during QUESTIONS phase; ``EscalationInfo`` returned in
   ``TurnResponse``.
@@ -159,7 +168,7 @@ adapter contracts, and phased implementation plan are documented in
   ``GET /metrics/calls``, and ``GET /metrics/calls/{call_id}`` endpoints and metrics
   frontend view; metrics collector module is distinct from the reporting API.
 
-Test totals: 833 fast tests (pytest), 16 slow tests (`pytest -m slow`).
+Test totals: 830 fast tests (pytest), 16 slow tests (`pytest -m slow`), 846 tests total.
 
 ## In Progress
 

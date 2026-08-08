@@ -91,11 +91,13 @@ def setup_voice_mocks(mock_stt, mock_tts):
     files.  Tests that need to verify config or patient wiring must opt
     out via their own ``patch`` calls.
     """
-    from backend.api.calls import _call_turn_index
+    from backend.api.calls import _call_escalations, _call_turn_index, _call_citations
     from backend.api.metrics import metrics_collector
 
     metrics_collector.reset()
     _call_turn_index.clear()
+    _call_escalations.clear()
+    _call_citations.clear()
 
     with patch("backend.api.calls._stt", mock_stt), patch(
         "backend.api.calls._tts", mock_tts
@@ -113,6 +115,8 @@ def setup_voice_mocks(mock_stt, mock_tts):
 
     metrics_collector.reset()
     _call_turn_index.clear()
+    _call_escalations.clear()
+    _call_citations.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -1621,3 +1625,554 @@ class TestTurnMetricsIntegration:
         assert summary["total_rag_queries"] == 0
         # Without LLM invocation, model_calls should be 0.
         assert summary["total_model_calls"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Voice persistence integration tests
+# ---------------------------------------------------------------------------
+
+
+class TestVoicePersistence:
+    """Verify that voice call data is persisted to SQLite.
+
+    These tests initialise a temporary SQLite database and walk through
+    call creation, turns, and completion, then assert that the expected
+    records exist in the database tables.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _persistence_setup(self, tmp_path):
+        """Initialise SQLite with a temp database so persistence calls
+        succeed in every test in this class."""
+        from backend.persistence.sqlite import _reset_sqlite, init_sqlite
+
+        _reset_sqlite()
+        db_path = tmp_path / "test_voice.db"
+        init_sqlite(db_path)
+        yield
+        _reset_sqlite()
+
+    # -- call creation persistence -------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_call_creation_persists_call_record(self):
+        """After POST /calls, a CallRecord is inserted into SQLite."""
+        from backend.persistence.sqlite import get_call_by_id
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            response = await client.post(
+                "/calls",
+                json={
+                    "patient_id": "pac-persist-1",
+                    "dia_postop": 4,
+                    "procedimiento": "Colecistectomía",
+                    "nombre_completo": "Persistencia Test",
+                    "eps": "Sura EPS",
+                },
+            )
+
+        assert response.status_code == 201
+        call_id = response.json()["call_id"]
+
+        record = get_call_by_id(call_id)
+        assert record is not None, (
+            "CallRecord must be inserted in SQLite after call creation"
+        )
+        assert record.paciente_id == "pac-persist-1"
+        assert record.nombre_completo == "Persistencia Test"
+        assert record.procedimiento == "Colecistectomía"
+        assert record.dia_postop == 4
+        assert record.eps == "Sura EPS"
+        assert record.ended_at is None, (
+            "Incomplete call must have ended_at=None"
+        )
+        assert record.total_turns == 0
+        assert not record.escalated
+
+        # Clean up
+        await global_store.remove(call_id)
+
+    @pytest.mark.asyncio
+    async def test_incomplete_call_state_in_sqlite(self):
+        """A call that has been created but not yet ended has ended_at=None
+        and state reflects the current conversation phase."""
+        from backend.persistence.sqlite import get_call_by_id
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            resp = await client.post(
+                "/calls",
+                json={
+                    "patient_id": "pac-incomplete",
+                    "dia_postop": 1,
+                    "procedimiento": "Apendicectomía",
+                    "nombre_completo": "Incomplete Test",
+                    "eps": "EPS",
+                },
+            )
+        call_id = resp.json()["call_id"]
+        assert resp.json()["state"] == "GREETING"
+
+        record = get_call_by_id(call_id)
+        assert record is not None
+        assert record.ended_at is None
+        # State at creation is GREETING (after start_call)
+        assert record.state in ("GREETING", "IDLE")
+        assert record.total_turns == 0
+
+        await global_store.remove(call_id)
+
+    # -- turn persistence ----------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_turn_persistence(self):
+        """After processing a turn, ConversationTurnRecord entries are
+        inserted for both patient and agent messages."""
+        from backend.persistence.sqlite import get_turns_for_call
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            # Create call
+            resp = await client.post(
+                "/calls",
+                json={
+                    "patient_id": "pac-turn-p",
+                    "dia_postop": 2,
+                    "procedimiento": "Apendicectomía",
+                    "nombre_completo": "Turn Persist",
+                    "eps": "EPS",
+                },
+            )
+            call_id = resp.json()["call_id"]
+
+            # First turn
+            await client.post(
+                f"/calls/{call_id}/turn",
+                json={"audio_base64": _MOCK_AUDIO_B64},
+            )
+
+        turns = get_turns_for_call(call_id)
+        assert len(turns) == 2, (
+            f"Expected 2 turns (1 patient + 1 agent), got {len(turns)}"
+        )
+
+        # First turn is patient (index 0), second is agent (index 1)
+        roles = [t.role for t in turns]
+        assert "PATIENT" in roles
+        assert "AGENT" in roles
+
+        # Patient turn has the STT transcription
+        patient_turn = [t for t in turns if t.role == "PATIENT"][0]
+        assert "acepto" in patient_turn.text.lower()
+
+        # Agent turn has the consent request
+        agent_turn = [t for t in turns if t.role == "AGENT"][0]
+        assert "continuar" in agent_turn.text.lower()
+
+        await global_store.remove(call_id)
+
+    @pytest.mark.asyncio
+    async def test_turn_indices_are_sequential(self):
+        """Turn indices across multiple HTTP turns are sequential
+        (patient=even, agent=odd)."""
+        from backend.persistence.sqlite import get_turns_for_call
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            resp = await client.post(
+                "/calls",
+                json={
+                    "patient_id": "pac-seq",
+                    "dia_postop": 3,
+                    "procedimiento": "Apendicectomía",
+                    "nombre_completo": "Seq Test",
+                    "eps": "EPS",
+                },
+            )
+            call_id = resp.json()["call_id"]
+
+            # Process 3 turns (greeting→consent, consent→questions, q0_answer)
+            for _ in range(3):
+                await client.post(
+                    f"/calls/{call_id}/turn",
+                    json={"audio_base64": _MOCK_AUDIO_B64},
+                )
+
+        turns = get_turns_for_call(call_id)
+        assert len(turns) >= 6, (
+            f"Expected at least 6 turns for 3 HTTP calls, got {len(turns)}"
+        )
+        indices = [t.turn_index for t in turns]
+        assert indices == sorted(indices), (
+            "Turn indices must be in ascending order"
+        )
+
+        await global_store.remove(call_id)
+
+    # -- escalation alert persistence ----------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_escalation_alert_persisted_for_red(self):
+        """When a RED escalation is classified, an EscalationAlertRecord
+        is inserted into SQLite."""
+        from backend.persistence.sqlite import get_alerts_for_call
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            # Create call
+            resp = await client.post(
+                "/calls",
+                json={
+                    "patient_id": "pac-red-a",
+                    "dia_postop": 3,
+                    "procedimiento": "Apendicectomía",
+                    "nombre_completo": "Red Alert",
+                    "eps": "EPS",
+                },
+            )
+            call_id = resp.json()["call_id"]
+
+            # Advance through greeting + consent
+            await client.post(
+                f"/calls/{call_id}/turn",
+                json={"audio_base64": _MOCK_AUDIO_B64},
+            )
+            await client.post(
+                f"/calls/{call_id}/turn",
+                json={"audio_base64": _MOCK_AUDIO_B64},
+            )
+
+            # Send RED response for pain question (NRS 9)
+            async def _pain_red_stt(audio_data):
+                return TranscriptionResult(
+                    text="Me duele muchísimo, un 9 de 10, no soporto el dolor.",
+                    language="es",
+                    duration_seconds=2.0,
+                    model="whisper-large-v3",
+                )
+
+            with patch("backend.api.calls._stt", _pain_red_stt):
+                await client.post(
+                    f"/calls/{call_id}/turn",
+                    json={"audio_base64": _MOCK_AUDIO_B64},
+                )
+
+        alerts = get_alerts_for_call(call_id)
+        assert len(alerts) >= 1, (
+            f"Expected at least 1 escalation alert for RED pain, got {len(alerts)}"
+        )
+        red_alert = [a for a in alerts if a.severity == "RED"]
+        assert len(red_alert) >= 1
+        assert red_alert[0].domain == "dolor"
+
+        await global_store.remove(call_id)
+
+    @pytest.mark.asyncio
+    async def test_no_alert_persisted_for_green(self):
+        """GREEN escalation classifications are not persisted as alerts."""
+        from backend.persistence.sqlite import get_alerts_for_call
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            resp = await client.post(
+                "/calls",
+                json={
+                    "patient_id": "pac-green",
+                    "dia_postop": 3,
+                    "procedimiento": "Apendicectomía",
+                    "nombre_completo": "Green Test",
+                    "eps": "EPS",
+                },
+            )
+            call_id = resp.json()["call_id"]
+
+            # Advance through greeting + consent → QUESTIONS
+            await client.post(
+                f"/calls/{call_id}/turn",
+                json={"audio_base64": _MOCK_AUDIO_B64},
+            )
+            await client.post(
+                f"/calls/{call_id}/turn",
+                json={"audio_base64": _MOCK_AUDIO_B64},
+            )
+
+            # Answer pain with benign response
+            async def _benign_stt(audio_data):
+                return TranscriptionResult(
+                    text="Muy bien, no tengo dolor, un nivel 1.",
+                    language="es",
+                    duration_seconds=1.0,
+                    model="whisper-large-v3",
+                )
+
+            with patch("backend.api.calls._stt", _benign_stt):
+                await client.post(
+                    f"/calls/{call_id}/turn",
+                    json={"audio_base64": _MOCK_AUDIO_B64},
+                )
+
+        alerts = get_alerts_for_call(call_id)
+        # No alerts should be persisted for GREEN
+        assert len(alerts) == 0, (
+            f"GREEN classifications must not be persisted as alerts, got {len(alerts)}"
+        )
+
+        await global_store.remove(call_id)
+
+    # -- completed-call summary persistence ----------------------------------
+
+    @pytest.mark.asyncio
+    async def test_summary_persisted_on_call_end(self):
+        """When a call completes through to ENDED, a SummaryRecord is
+        inserted into SQLite.  RAG citations accumulated across all turns
+        are reflected in the ``sources_json`` field."""
+        from backend.persistence.sqlite import (
+            get_summary_for_call,
+            get_call_by_id,
+        )
+        from backend.conversation.orchestrator import OrchestratorTurn
+
+        # ------------------------------------------------------------------
+        # Mock citations: each turn returns a different set so the
+        # per-call accumulator collects unique document IDs across turns
+        # and deduplicates on document_id.  Duplicate document_id
+        # entries simulate the same source being cited across multiple
+        # turns — the accumulator must keep only one.
+        # ------------------------------------------------------------------
+        _CITATIONS_BY_TURN: tuple[list[dict], ...] = (
+            [  # turn 0 — greeting → consent
+                {"chunk_id": "ch-a1", "document_id": "doc-rag-a",
+                 "source_filename": "guia_clinica_postop.pdf", "page_number": 3},
+            ],
+            [  # turn 1 — consent → questions (same doc-a = dedup)
+                {"chunk_id": "ch-a2", "document_id": "doc-rag-a",
+                 "source_filename": "guia_clinica_postop.pdf", "page_number": 7},
+            ],
+            [  # turn 2 — answer pain (new source)
+                {"chunk_id": "ch-b1", "document_id": "doc-rag-b",
+                 "source_filename": "manejo_dolor.pdf", "page_number": 2},
+            ],
+            [  # turn 3 — answer fever (another new source)
+                {"chunk_id": "ch-c1", "document_id": "doc-rag-c",
+                 "source_filename": "protocolo_fiebre.pdf", "page_number": 5},
+            ],
+            [  # turn 4 — answer wound (dup of doc-b)
+                {"chunk_id": "ch-b2", "document_id": "doc-rag-b",
+                 "source_filename": "manejo_dolor.pdf", "page_number": 10},
+            ],
+            [],  # turn 5 — answer appetite
+            [  # turn 6 — answer sleep (new source)
+                {"chunk_id": "ch-d1", "document_id": "doc-rag-d",
+                 "source_filename": "cuidados_generales.pdf", "page_number": 1},
+            ],
+            [],  # turn 7 — answer mobility
+            [],  # turn 8 — closing
+        )
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            # Create call
+            resp = await client.post(
+                "/calls",
+                json={
+                    "patient_id": "pac-summary",
+                    "dia_postop": 3,
+                    "procedimiento": "Apendicectomía",
+                    "nombre_completo": "Summary Test",
+                    "eps": "Coosalud EPS",
+                },
+            )
+            call_id = resp.json()["call_id"]
+
+            # ---- Patch the orchestrator instance to inject mock citations ----
+            orch = await global_store.get(call_id)
+            assert orch is not None, "Orchestrator must be in call_store"
+            _original_process = orch.process_patient_message
+            _call_count = [0]
+
+            def _patched_process(patient_text: str) -> OrchestratorTurn:
+                idx = _call_count[0]
+                _call_count[0] += 1
+                result = _original_process(patient_text)
+                if idx < len(_CITATIONS_BY_TURN) and _CITATIONS_BY_TURN[idx]:
+                    result.citations = _CITATIONS_BY_TURN[idx]
+                return result
+
+            orch.process_patient_message = _patched_process  # type: ignore[method-assign]
+
+            # Walk through all turns to ENDED
+            # greeting → consent → 6 questions → closing → ENDED = 9 turns
+            for _ in range(9):
+                resp = await client.post(
+                    f"/calls/{call_id}/turn",
+                    json={"audio_base64": _MOCK_AUDIO_B64},
+                )
+                if resp.status_code != 200:
+                    break
+
+        assert resp.status_code == 200
+        assert resp.json()["call_ended"] is True
+
+        # Verify call record is updated
+        call = get_call_by_id(call_id)
+        assert call is not None
+        assert call.ended_at is not None, "Ended call must have ended_at set"
+        assert call.state == "ENDED"
+        assert call.total_turns >= 2
+
+        # Verify summary is persisted
+        summary = get_summary_for_call(call_id)
+        assert summary is not None, (
+            "SummaryRecord must be persisted when call ends"
+        )
+        assert summary.call_id == call_id
+        assert len(summary.patient_summary) > 0
+        assert len(summary.procedure_summary) > 0
+        assert len(summary.symptoms_summary) > 0
+        assert len(summary.decision_summary) > 0
+        assert len(summary.next_steps) > 0
+
+        # sources_json must be a valid JSON array containing
+        # the unique document IDs accumulated across turns.
+        import json as _json
+        sources = _json.loads(summary.sources_json)
+        assert isinstance(sources, list)
+
+        # Expected unique document IDs after deduplication:
+        # doc-rag-a, doc-rag-b, doc-rag-c, doc-rag-d
+        expected_doc_ids = {"doc-rag-a", "doc-rag-b", "doc-rag-c", "doc-rag-d"}
+        actual_doc_ids = {s[0] for s in sources}
+        assert actual_doc_ids == expected_doc_ids, (
+            f"Summary sources must include all unique RAG citation "
+            f"document IDs accumulated across turns.\n"
+            f"Expected: {sorted(expected_doc_ids)}\n"
+            f"Got:      {sorted(actual_doc_ids)}"
+        )
+
+        # Verify expected filenames are present
+        expected_filenames = {
+            "guia_clinica_postop.pdf",
+            "manejo_dolor.pdf",
+            "protocolo_fiebre.pdf",
+            "cuidados_generales.pdf",
+        }
+        actual_filenames = {s[1] for s in sources}
+        assert actual_filenames == expected_filenames, (
+            f"Summary sources must include source filenames.\n"
+            f"Expected: {sorted(expected_filenames)}\n"
+            f"Got:      {sorted(actual_filenames)}"
+        )
+
+    # -- restart-safe retrieval ----------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_restart_safe_retrieval(self):
+        """After a call completes, clearing the in-memory store does not
+        affect data retrieval from SQLite.  This simulates an application
+        restart: the CallStore is empty, but call data, turns, summary,
+        and alerts can still be read from the database."""
+        from backend.persistence.sqlite import (
+            get_call_by_id,
+            get_turns_for_call,
+            get_summary_for_call,
+            get_alerts_for_call,
+        )
+
+        # Step 1: run a complete call with RED escalation
+        transport = ASGITransport(app=app)
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            resp = await client.post(
+                "/calls",
+                json={
+                    "patient_id": "pac-restart",
+                    "dia_postop": 5,
+                    "procedimiento": "Colecistectomía",
+                    "nombre_completo": "Restart Test",
+                    "eps": "Nueva EPS",
+                },
+            )
+            call_id = resp.json()["call_id"]
+
+            # greeting → consent
+            await client.post(
+                f"/calls/{call_id}/turn",
+                json={"audio_base64": _MOCK_AUDIO_B64},
+            )
+            await client.post(
+                f"/calls/{call_id}/turn",
+                json={"audio_base64": _MOCK_AUDIO_B64},
+            )
+
+            # Send RED pain response
+            async def _red_stt(audio_data):
+                return TranscriptionResult(
+                    text="Me duele muchísimo, un 9 de 10.",
+                    language="es",
+                    duration_seconds=2.0,
+                    model="whisper-large-v3",
+                )
+
+            with patch("backend.api.calls._stt", _red_stt):
+                await client.post(
+                    f"/calls/{call_id}/turn",
+                    json={"audio_base64": _MOCK_AUDIO_B64},
+                )
+
+            # Walk remaining turns to ENDED using default STT
+            for _ in range(6):
+                resp = await client.post(
+                    f"/calls/{call_id}/turn",
+                    json={"audio_base64": _MOCK_AUDIO_B64},
+                )
+                if resp.status_code != 200:
+                    break
+
+        assert resp.status_code == 200
+        assert resp.json()["call_ended"] is True
+
+        # Step 2: simulate restart — clear the in-memory CallStore
+        # The global_store should already be empty (call ended removes it),
+        # but let's be explicit.
+        from backend.api.call_store import call_store as cs
+        await cs.remove(call_id)
+
+        # Data must still be retrievable from SQLite
+        call = get_call_by_id(call_id)
+        assert call is not None
+        assert call.paciente_id == "pac-restart"
+        assert call.ended_at is not None
+        assert call.escalated is True, (
+            "RED escalation should mark call.escalated=True"
+        )
+
+        turns = get_turns_for_call(call_id)
+        assert len(turns) >= 2
+        assert any(t.role == "PATIENT" for t in turns)
+        assert any(t.role == "AGENT" for t in turns)
+
+        summary = get_summary_for_call(call_id)
+        assert summary is not None
+
+        alerts = get_alerts_for_call(call_id)
+        assert len(alerts) >= 1
+        assert any(a.severity == "RED" for a in alerts)
+
+        # Call store should be empty (simulating restart)
+        assert not await cs.exists(call_id)
