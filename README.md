@@ -56,27 +56,32 @@ Documentación interactiva de la API (Swagger UI) en `http://127.0.0.1:8000/docs
 
 ## Variables de entorno
 
-La aplicación utiliza variables de entorno para la configuración en tiempo de
-ejecución. La única variable requerida es `GOOGLE_API_KEY` para el acceso al
-modelo de lenguaje (Gemini 1.5 Flash).
+La aplicación carga automáticamente las variables de entorno desde un archivo
+`.env` ubicado en la raíz del proyecto (usando `python-dotenv`). La carga
+ocurre antes de leer cualquier configuración, por lo que los valores definidos
+en `.env` están disponibles desde el inicio.
+
+Si el archivo `.env` no existe, la aplicación continúa normalmente usando las
+variables ya presentes en el entorno del sistema.
+
+### Crear el archivo `.env`
+
+Copia este contenido en un archivo nuevo llamado `.env` en la raíz del proyecto:
+
+```ini
+# Tech Sphere Challenge — configuración de entorno local
+GOOGLE_API_KEY=tu-clave-de-api-aqui
+
+# Opcionales (con sus valores por defecto)
+# LLM_TEMPERATURE=0.2
+# LLM_MAX_TOKENS=1024
+```
 
 ### Requerida
 
 | Variable | Descripción |
 | --- | --- |
 | `GOOGLE_API_KEY` | Clave de API de Google AI Studio para el modelo Gemini 1.5 Flash |
-
-Configurar la variable en **PowerShell**:
-
-```powershell
-$env:GOOGLE_API_KEY = "tu-clave-de-api"
-```
-
-En **Linux/macOS (Bash)**:
-
-```bash
-export GOOGLE_API_KEY="tu-clave-de-api"
-```
 
 ### Opcionales
 
@@ -90,8 +95,8 @@ esta fase. No se puede seleccionar otro modelo mediante variables de entorno.
 
 ### ⚠️ Nunca incluir claves en el repositorio
 
-Las claves de API, secretos y archivos `.env` **no deben ser versionados**.
-Agrega `.env` a tu `.gitignore` local si decides usar uno. La sección
+El archivo `.env` está incluido en `.gitignore` y **no debe ser versionado**.
+Nunca subas claves de API, secretos ni credenciales al repositorio. La sección
 [Privacidad y seguridad](#privacidad-y-seguridad) detalla las políticas del
 proyecto.
 
@@ -103,7 +108,7 @@ proyecto.
 pytest
 ```
 
-Estas pruebas (127) validan dataset, salud del servidor, chunking y extracción de
+Estas pruebas (243) validan dataset, salud del servidor, chunking y extracción de
 PDF (con error paths), el adaptador LLM (Gemini 1.5 Flash con prompts, validación
 y respuestas estructuradas), y el endpoint RAG `/rag/query`. Todas las llamadas a
 la API de Gemini están mockeadas. No descargan el modelo de embeddings ni procesan

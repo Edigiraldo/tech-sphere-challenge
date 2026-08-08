@@ -8,6 +8,7 @@ network access or an API key.
 from __future__ import annotations
 
 import json
+import os
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -29,7 +30,13 @@ from backend.llm.config import LlmConfig
 
 
 class TestLlmConfig:
-    def test_defaults(self):
+    def test_defaults(self, monkeypatch):
+        # LlmConfig reads GOOGLE_API_KEY from os.environ via a
+        # default_factory lambda.  Since backend.main now calls
+        # load_dotenv() at import time, the env var may already be set.
+        # Clear it for this test so we assert the default (empty string).
+        monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+
         cfg = LlmConfig()
         assert cfg.model_name == "gemini-1.5-flash"
         assert cfg.temperature == 0.2
