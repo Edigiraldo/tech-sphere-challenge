@@ -145,9 +145,14 @@ The auditor must verify, when applicable:
 ## Documentation Maintenance
 
 - The planner must include a `Documentation Impact` section in every plan.
+- For documentation impact, identify every current-state section that may become stale,
+  not only the section where new information will be added.
 - The coder must update only the relevant documentation when behavior, architecture,
   interfaces, dependencies, milestones, or blockers change.
-- The coder must remove or correct stale documentation found in the affected documents.
+- When updating documentation, the coder must reconcile all affected current-state
+  sections and remove contradictory or obsolete statements. Do not append new status text
+  while leaving stale claims elsewhere in the same document.
 - The auditor must verify that changed documentation matches the code and that no stale
-  statements remain in the affected scope.
+  statements or contradictions remain anywhere in the affected documents. A locally
+  accurate addition does not pass if the document remains globally inconsistent.
 - Do not create a new document for a routine implementation step.

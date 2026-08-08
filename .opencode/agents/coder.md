@@ -38,7 +38,9 @@ the approved plan explicitly requires it.
   run the relevant tests.
 - Apply the planner's Documentation Impact instructions. Update concise English project
   documentation when architecture, interfaces, dependencies, milestones, or blockers
-  change. Remove stale text in the affected documentation.
+  change. Reconcile all affected current-state sections and remove contradictory or
+  obsolete statements; do not append a new status entry while leaving stale claims in
+  the same document.
 - Do not commit, amend, reset, or push.
 
 ## Audit remediation

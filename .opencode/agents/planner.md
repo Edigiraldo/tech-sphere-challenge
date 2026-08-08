@@ -53,4 +53,9 @@ Return exactly these sections:
 - **Verification Commands:** exact commands to run.
 - **Documentation Impact:** documents that must be updated, or `None` with a reason.
 
+For `Documentation Impact`, identify every current-state section that may become stale,
+not only the section where new information will be added. Consider README status,
+current phase, completed work, in-progress work, next milestones, open decisions, test
+counts, endpoints, dependencies, and known constraints.
+
 Do not include implementation code or silently expand the File Impact list.

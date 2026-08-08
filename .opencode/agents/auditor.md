@@ -38,7 +38,10 @@ or dataset unless the change requires it.
 - For RAG changes, check retrieval, source metadata, missing knowledge, and deletion.
 - For decision changes, check conservative escalation and unsafe advice handling.
 - For voice changes, check the affected browser/API path when available.
-- Check documentation affected by the plan for accuracy and stale statements.
+- Check the complete affected documents for accuracy, stale paths, outdated counts,
+  obsolete milestones, contradictory current-state claims, and false implementation
+  statements. A locally accurate addition does not pass if the document remains globally
+  inconsistent.
 - Reserve full challenge gates, fifteen-minute setup, end-to-end voice, metrics, privacy,
   and final delivery checks for explicit integration or final audits.
 
