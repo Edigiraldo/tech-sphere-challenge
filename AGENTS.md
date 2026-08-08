@@ -13,6 +13,28 @@ The planner must not write implementation code. The coder must not expand the sc
 without returning to the planner. The auditor must verify behavior, safety, tests, and
 the challenge gates.
 
+## Orchestrator Responsibilities
+
+The orchestrator coordinates the three specialized agents; it does not duplicate their
+work.
+
+- Do not independently implement code that belongs to `@coder`.
+- Do not independently rerun tests, linting, builds, or audits already reported by
+  `@auditor` unless a report is missing, contradictory, or the user explicitly asks for
+  an independent verification.
+- Do not repeat repository-wide exploration already performed by `@planner`.
+- Trust the specialized agent's report as the source of truth for its assigned phase.
+- Forward the planner proposal to the user for approval before invoking `@coder`.
+- Forward auditor findings to `@coder` or `@planner` according to the escalation rules.
+- Summarize agent reports and workflow state without replacing their technical checks.
+
+### Planner approval gate
+
+- `@planner` must only inspect and produce a proposal.
+- `@planner` must stop after returning the proposal.
+- `@coder` must not be invoked until the user explicitly approves the plan.
+- If the user requests changes, return to `@planner` before implementation.
+
 ## Project context
 
 This repository is a voice-based postoperative follow-up agent for synthetic Colombian
@@ -47,6 +69,10 @@ At the start of every coding session:
 4. If already inside a task worktree, do not create another nested worktree.
 5. Report the active worktree and branch before implementation begins.
 
+Before creating a task worktree, verify that the primary worktree does not contain
+uncommitted or staged baseline changes required by the task. If it does, stop and ask the
+user whether those changes should be committed or otherwise handled first.
+
 ### Parallel work rules
 
 - Use one worktree per independent task or feature branch.
@@ -67,6 +93,17 @@ At the start of every coding session:
 - After every remediation, rerun the auditor checks.
 - Finish only with an `APPROVED` audit and no unresolved findings, or a clearly
   documented blocker explicitly accepted by the user.
+
+### Definition of done
+
+A task is complete only when:
+
+- The approved scope is implemented.
+- Relevant checks have been run by `@auditor`.
+- Documentation impact is resolved.
+- `@auditor` returns `APPROVED`.
+- No findings, doubts, or suggestions remain unresolved.
+- The worktree is clean, unless the user explicitly requests a staged or uncommitted result.
 
 ## Required audit focus
 
