@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tech Sphere Challenge — Seguimiento Postoperatorio</title>
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+
+<header class="app-header">
+    <h1>Tech Sphere Challenge</h1>
+    <span class="app-subtitle">Seguimiento Postoperatorio — Agente de Voz</span>
+</header>
+
+<main class="main-content">
+    <section class="card patient-selector">
+        <h2>Seleccionar Paciente</h2>
+        <p class="card-description">
+            Elija un paciente sintético para iniciar una llamada de seguimiento postoperatorio.
+        </p>
+
+        <div class="form-group">
+            <label for="patient-select">Paciente:</label>
+            <select id="patient-select" class="select-control">
+                <option value="">-- Seleccione un paciente --</option>
+            </select>
+        </div>
+
+        <div id="patient-details" class="patient-details hidden">
+            <h3>Información del Paciente</h3>
+            <dl>
+                <dt>ID</dt>
+                <dd id="detail-id">—</dd>
+                <dt>Edad</dt>
+                <dd id="detail-age">—</dd>
+                <dt>Procedimiento</dt>
+                <dd id="detail-procedure">—</dd>
+                <dt>Día Postoperatorio</dt>
+                <dd id="detail-day">—</dd>
+            </dl>
+        </div>
+
+        <div class="action-bar">
+            <button id="start-call-btn" class="btn btn-primary" disabled>
+                Iniciar Llamada
+            </button>
+        </div>
+
+        <div id="error-message" class="error-message hidden"></div>
+    </section>
+</main>
+
+<footer class="app-footer">
+    <p>Datos sintéticos — Sin fines clínicos reales</p>
+</footer>
+
+<script src="/static/data.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>

@@ -15,8 +15,11 @@ llamada.
 Fase 1 (persistencia) y Fase 2 (RAG) parciales: la aplicación arranca, expone un
 endpoint de salud, y el pipeline completo de RAG (extracción → chunking → embedding
 BGE-M3 → almacenamiento ChromaDB → recuperación con citas trazables) está implementado
-y probado. Las fases subsecuentes agregarán voz, conversación y las dos superficies de
-navegador.
+y probado. El shell frontal local (vanilla HTML/CSS/JS) está disponible en `/` y
+`/call` con selector de pacientes sintéticos, controles de llamada simulados,
+historial de conversación, área de transcripción y placeholder de audio. Las fases
+subsecuentes agregarán voz, integración backend-frontend y la consola de
+administración.
 
 ## Requisitos
 
@@ -108,11 +111,12 @@ proyecto.
 pytest
 ```
 
-Estas pruebas (243) validan dataset, salud del servidor, chunking y extracción de
+Estas pruebas (537) validan dataset, salud del servidor, chunking y extracción de
 PDF (con error paths), el adaptador LLM (Gemini 1.5 Flash con prompts, validación
-y respuestas estructuradas), y el endpoint RAG `/rag/query`. Todas las llamadas a
-la API de Gemini están mockeadas. No descargan el modelo de embeddings ni procesan
-PDFs reales.
+y respuestas estructuradas), el endpoint RAG `/rag/query`, la capa de persistencia,
+los módulos de voz (STT/TTS), el motor de conversación, el clasificador de
+escalamiento y el shell frontal. Todas las llamadas a la API de Gemini y Groq están
+mockeadas. No descargan el modelo de embeddings ni procesan PDFs reales.
 
 ### Pruebas lentas (requieren BGE-M3 y PDFs)
 
@@ -120,7 +124,7 @@ PDFs reales.
 pytest -m slow
 ```
 
-Estas pruebas (10) validan el pipeline completo de RAG: ingestión de PDFs reales
+Estas pruebas (16) validan el pipeline completo de RAG: ingestión de PDFs reales
 (Apendicectomía en inglés y español), embedding con BGE-M3, recuperación por similitud,
 eliminación de chunks y generación de citas trazables. El modelo de embeddings
 (~2 GB) se descarga automáticamente en el primer uso.
@@ -131,9 +135,10 @@ eliminación de chunks y generación de citas trazables. El modelo de embeddings
 .
 ├── backend/               Aplicación Python (FastAPI)
 │   ├── __init__.py
-│   ├── main.py
+│   ├── main.py            Punto de entrada, incluye servido de archivos estáticos
 │   ├── api/               Endpoints REST
-│   │   └── rag.py         POST /rag/query (consulta clínica con RAG)
+│   │   ├── rag.py         POST /rag/query (consulta clínica con RAG)
+│   │   └── documents.py   POST/GET/DELETE /documents
 │   ├── llm/               Adaptador de modelo de lenguaje
 │   │   ├── __init__.py
 │   │   ├── config.py      Configuración fija (Gemini 1.5 Flash)
@@ -147,19 +152,35 @@ eliminación de chunks y generación de citas trazables. El modelo de embeddings
 │   │   ├── ingestion.py
 │   │   ├── retrieval.py
 │   │   └── store.py
+│   ├── documents/         Ciclo de vida de documentos
+│   ├── decision/          Clasificación de escalamiento
+│   ├── conversation/      Orquestación de conversación
+│   ├── voice/             Adaptadores STT y TTS
 │   └── persistence/       Acceso a SQLite y ChromaDB
-│       └── chroma.py
+│       ├── chroma.py
+│       └── sqlite.py
+├── frontend/              Shell frontal (HTML/CSS/JS vanilla)
+│   ├── index.html         Página de selección de paciente
+│   ├── call.html          Interfaz de llamada simulada
+│   ├── styles.css         Estilos compartidos
+│   ├── data.js            Catálogo compartido de pacientes sintéticos
+│   ├── app.js             Lógica de selección de paciente
+│   └── call.js            Lógica de interfaz de llamada
 ├── tests/                 Pruebas automatizadas
 │   ├── __init__.py
+│   ├── test_frontend.py   Pruebas de servido de archivos estáticos (8)
 │   ├── test_health.py
 │   ├── test_llm.py        Pruebas del adaptador LLM (41)
 │   ├── test_rag_api.py    Pruebas del endpoint /rag/query (13)
 │   ├── test_dataset/      Pruebas de acceso a datos sintéticos (58)
-│   └── rag/
-│       ├── conftest.py
-│       ├── test_chunking.py
-│       ├── test_extract.py
-│       └── test_ingestion_retrieval.py
+│   ├── rag/
+│   │   ├── conftest.py
+│   │   ├── test_chunking.py
+│   │   ├── test_extract.py
+│   │   └── test_ingestion_retrieval.py
+│   ├── decision/          Pruebas del motor de escalamiento
+│   ├── conversation/      Pruebas de orquestación
+│   └── voice/             Pruebas de adaptadores de voz
 ├── docs/                  Documentación del proyecto
 │   ├── ARCHITECTURE.md
 │   ├── PROJECT.md
