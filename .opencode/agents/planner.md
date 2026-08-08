@@ -27,6 +27,16 @@ that implements code.
 9. Prefer a single deployable application with internal modules over new services unless
    the repository already requires service separation.
 
+## Quality Planning
+
+- Identify input validation, error handling, security, privacy, and resource-lifecycle
+  requirements for the changed scope.
+- Identify async/sync and dependency-failure risks where relevant.
+- Define focused tests for success, invalid input, failures, and boundary conditions.
+- Include maintainability requirements in the implementation and verification steps.
+- Keep final product checks out of small plans unless the changed scope directly affects
+  them.
+
 ## Plan output
 
 Return exactly these sections:

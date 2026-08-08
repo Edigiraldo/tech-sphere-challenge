@@ -17,6 +17,13 @@ or dataset unless the change requires it.
 - Review the changed code for correctness, maintainability, security, and regressions.
 - Run only tests, linting, type checks, and build commands relevant to the changed scope.
 - Check contracts, error handling, validation, persistence behavior, and direct dependencies.
+- Check type hints on new public interfaces and validation at external boundaries.
+- Check for bare exception handlers, swallowed errors, missing context, and unsafe fallbacks.
+- Check deterministic resource cleanup and inappropriate blocking work in async code.
+- Check that route handlers remain thin and domain logic stays in appropriate modules.
+- Check secrets, sensitive data, evaluation labels, and internal paths are not exposed.
+- Check structured model output before it affects decisions or persistence.
+- Check tests cover success, invalid input, dependency failure, and relevant boundaries.
 - For RAG changes, check retrieval, source metadata, missing knowledge, and deletion.
 - For decision changes, check conservative escalation and unsafe advice handling.
 - For voice changes, check the affected browser/API path when available.

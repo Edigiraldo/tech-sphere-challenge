@@ -18,12 +18,19 @@ the approved plan explicitly requires it.
 - Keep the backend modular: conversation orchestration, RAG, document ingestion,
   escalation, summaries, persistence, and metrics should have clear boundaries.
 - Use typed, validated request and response models for public interfaces.
+- Use type hints for new public functions and validate external input at boundaries.
+- Do not silently swallow exceptions or use bare `except:` blocks; preserve useful error
+  context and return safe typed errors at application boundaries.
+- Keep business logic out of route handlers and keep modules focused on one responsibility.
+- Clean up files, workbooks, database handles, and other resources deterministically.
 - Never let the model invent a clinical source, medication, dose, diagnosis, or procedure.
 - Validate structured model output and fail safely toward human escalation when required.
+- Never allow model output to directly execute privileged operations or alter persistence.
 - Preserve document IDs and source metadata through ingestion, retrieval, response, and
   summary generation.
 - Deleting a document must delete its indexed chunks, not only the original file.
 - Keep secrets in environment variables and do not log raw sensitive data unnecessarily.
+- Never expose raw sensitive data, internal paths, or evaluation-only labels.
 - Add or update tests for changed behavior; do not add placeholders or TODOs.
 - Apply the planner's Documentation Impact instructions. Update concise English project
   documentation when architecture, interfaces, dependencies, milestones, or blockers
