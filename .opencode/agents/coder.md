@@ -41,6 +41,9 @@ the approved plan explicitly requires it.
 
 If given an auditor report with `STATUS: REJECTED`, fix every actionable finding first,
 stay within the approved scope, and report what was changed and which checks were run.
+Before returning the remediation, verify that the fixes did not introduce new defects,
+regressions, contract changes, security issues, or stale documentation. Run the relevant
+checks again and report that regression review explicitly.
 
 Every auditor finding, doubt, or actionable suggestion is mandatory, including findings
 reported alongside `STATUS: APPROVED`. Do not declare the task complete while any remain

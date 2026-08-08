@@ -24,6 +24,10 @@ or dataset unless the change requires it.
 - Check secrets, sensitive data, evaluation labels, and internal paths are not exposed.
 - Check structured model output before it affects decisions or persistence.
 - Check tests cover success, invalid input, dependency failure, and relevant boundaries.
+- During remediation audits, verify that the coder checked for new defects, regressions,
+  contract changes, security issues, and stale documentation introduced by the fixes.
+- Do not assume a remediation is safe merely because the original finding was addressed;
+  review the changed scope again for newly introduced problems.
 - For RAG changes, check retrieval, source metadata, missing knowledge, and deletion.
 - For decision changes, check conservative escalation and unsafe advice handling.
 - For voice changes, check the affected browser/API path when available.
