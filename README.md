@@ -12,41 +12,36 @@ llamada.
 
 ## Estado
 
-Fase 1 (persistencia) y Fase 2 (RAG) parciales: la aplicación arranca, expone un
-endpoint de salud, y el pipeline completo de RAG (extracción → chunking → embedding
-BGE-M3 → almacenamiento ChromaDB → recuperación con citas trazables) está implementado
-y probado. El shell frontal local (vanilla HTML/CSS/JS) está disponible en `/`
-(selección de pacientes), `/call` (interfaz de llamada simulada), `/admin` (consola
-de administración para documentos clínicos) y `/metrics` (panel de métricas del
-sistema).
+La aplicación implementa el pipeline completo de RAG (extracción → chunking →
+embedding BGE-M3 → almacenamiento ChromaDB → recuperación con citas trazables), el
+adaptador LLM (Llama 3.1 70B Versatile vía Groq), ciclo de vida de documentos
+(POST/GET/DELETE /documents con eliminación de chunks indexados), adaptadores de
+voz (STT Groq Whisper Large V3, TTS Kokoro-82M), endpoints de turnos de voz HTTP
+(POST /calls, POST /calls/{call_id}/turn con audio WAV base64), orquestación de
+conversación (máquina de estados, preguntas de seguimiento, RAG+LLM integrados),
+motor de escalamiento (clasificación GREEN/YELLOW/RED con lexicones en español),
+módulo de resúmenes estructurados, colector de métricas, y capa de persistencia
+(SQLite + ChromaDB).
 
-### API de Métricas
+El frontal (vanilla HTML/CSS/JS) está disponible en `/` y `/call` con
+selector de pacientes, interfaz de llamada con integración real de micrófono
+(MediaRecorder), llamadas `fetch()` a los endpoints de voz, historial de
+conversación, área de transcripción, visualización de citas trazables e
+información de escalamiento, y reproducción de audio WAV del navegador.
 
-La aplicación expone endpoints de solo lectura para observar el rendimiento del
-sistema.  Las métricas se almacenan **únicamente en memoria** — los datos se pierden
-al reiniciar el servidor.
+El endpoint ``POST /calls/{call_id}/turn`` implementa el pipeline de voz completo:
+transcripción STT → orquestador → clasificación de escalamiento → síntesis TTS,
+devolviendo audio WAV base64, transcripción del agente, citas trazables e
+información de escalamiento en cada turno. La API REST de documentos
+(``POST/GET/DELETE /documents``) gestiona el ciclo de vida completo incluyendo
+purgado de chunks en ChromaDB. El módulo colector de métricas
+(``InMemoryMetricsCollector``) está expuesto mediante un endpoint API de solo
+lectura tipado (``GET /metrics/summary``, ``GET /metrics/calls`` y
+``GET /metrics/calls/{call_id}``) y una vista frontal de métricas. El colector
+y la API de reporte son módulos independientes.
 
-| Método | Ruta | Descripción |
-| --- | --- | --- |
-| `GET` | `/metrics/summary` | Agregado global de todas las llamadas finalizadas |
-| `GET` | `/metrics/calls` | Lista de agregados por llamada (finalizadas) |
-| `GET` | `/metrics/calls/{call_id}` | Detalle por llamada con desglose por turno |
-
-**GET /metrics/summary** devuelve: `call_count`, `total_turns`,
-`total_input_tokens`, `total_output_tokens`, `total_rag_queries`,
-`total_model_calls`, `total_estimated_cost_usd`, `latency_p50_ms`,
-`latency_p95_ms`, `tts_p50_ms`, `tts_p95_ms`, `stt_p50_ms`, `stt_p95_ms`,
-`llm_p50_ms`, `llm_p95_ms`.  Los campos opcionales (tokens, costos, percentiles de
-componentes) se serializan como `null` cuando no hay datos.
-
-**GET /metrics/calls** devuelve `{"calls": [...]}` con `call_id`, `patient_id`,
-`turn_count`, `total_latency_ms`, `total_input_tokens`, `total_output_tokens`,
-`total_rag_queries`, `model_calls`, `estimated_cost_usd` por llamada.
-
-**GET /metrics/calls/{call_id}** devuelve los mismos campos de agregado más un
-array `turns` con `call_id`, `turn_index`, `total_latency_ms`, `model`,
-`rag_queries`, `timestamp`, `tts_duration_ms`, `stt_duration_ms`,
-`llm_duration_ms`, `input_tokens`, `output_tokens`, `estimated_cost_usd` por turno.
+**Pendiente (futuro):**
+- Transporte WebSocket/streaming para conversación de voz en tiempo real.
 
 ## Requisitos
 
@@ -141,11 +136,12 @@ pytest
 
 Estas pruebas (775) validan dataset, salud del servidor, chunking y extracción de
 PDF (con error paths), el adaptador LLM (Llama 3.1 70B Versatile con prompts,
-validación y respuestas estructuradas), el endpoint RAG `/rag/query`, la capa de persistencia,
-los módulos de voz (STT/TTS), el motor de conversación, el clasificador de
-escalamiento, el shell frontal, y los endpoints y colector de métricas.
-Todas las llamadas a la API de Gemini y Groq están mockeadas. No descargan el modelo
-de embeddings ni procesan PDFs reales.
+validación y respuestas estructuradas), el endpoint RAG `/rag/query`, la capa de
+persistencia, los módulos de voz (STT/TTS), el motor de conversación, el
+clasificador de escalamiento, los endpoints de turnos de voz, el módulo de
+resúmenes, el colector de métricas y el frontal del navegador. Todas las llamadas a las
+APIs de Groq están mockeadas. No descargan el modelo de embeddings ni procesan
+PDFs reales.
 
 ### Pruebas lentas (requieren BGE-M3 y PDFs)
 
@@ -168,8 +164,8 @@ eliminación de chunks y generación de citas trazables. El modelo de embeddings
 │   ├── api/               Endpoints REST
 │   │   ├── rag.py         POST /rag/query (consulta clínica con RAG)
 │   │   ├── documents.py   POST/GET/DELETE /documents
-│   │   ├── calls.py       POST /calls, POST /calls/{call_id}/turn
-│   │   └── metrics.py     GET /metrics/summary, /metrics/calls, /metrics/calls/{call_id}
+│   │   ├── calls.py       POST /calls, POST /calls/{id}/turn (voz)
+│   │   └── call_store.py  Almacenamiento en memoria de llamadas
 │   ├── llm/               Adaptador de modelo de lenguaje
 │   │   ├── __init__.py
 │   │   ├── config.py      Configuración fija (Llama 3.1 70B)
@@ -187,41 +183,44 @@ eliminación de chunks y generación de citas trazables. El modelo de embeddings
 │   ├── decision/          Clasificación de escalamiento
 │   ├── conversation/      Orquestación de conversación
 │   ├── voice/             Adaptadores STT y TTS
-│   ├── metrics/            Instrumentación de métricas
-│   │   ├── collector.py    Colector thread-safe en memoria
-│   │   ├── models.py       Modelos de datos (TurnMetrics, CallMetrics, MetricsSummary)
-│   │   ├── cost.py         Estimación de costos de tokens
-│   │   └── percentiles.py  Cómputo de percentiles por interpolación lineal
+│   ├── summaries/         Generación de resúmenes estructurados
+│   ├── metrics/           Instrumentación de latencia, tokens y costo
 │   └── persistence/       Acceso a SQLite y ChromaDB
 │       ├── chroma.py
 │       └── sqlite.py
-├── frontend/              Shell frontal (HTML/CSS/JS vanilla)
+├── frontend/              Frontal de navegador (HTML/CSS/JS vanilla)
 │   ├── index.html         Página de selección de paciente
-│   ├── call.html          Interfaz de llamada simulada
-│   ├── metrics.html       Panel de métricas del sistema
+│   ├── call.html          Interfaz de llamada con MediaRecorder e integración API de voz
 │   ├── admin.html         Consola de administración de documentos
+│   ├── metrics.html       Vista frontal de métricas
 │   ├── styles.css         Estilos compartidos
 │   ├── data.js            Catálogo compartido de pacientes sintéticos
 │   ├── app.js             Lógica de selección de paciente
-│   ├── call.js            Lógica de interfaz de llamada
-│   ├── admin.js            Lógica de consola de administración
-│   └── metrics.js          Lógica del panel de métricas
+│   ├── call.js            Lógica de UI de llamada con captura de micrófono y API
+│   ├── admin.js           Lógica de administración con sondeo de estado
+│   └── metrics.js         Lógica de visualización de métricas
 ├── tests/                 Pruebas automatizadas
 │   ├── __init__.py
 │   ├── test_frontend.py   Pruebas de servido de archivos estáticos (8)
-│   ├── test_health.py
+│   ├── test_health.py     Prueba del endpoint /health (1)
 │   ├── test_llm.py        Pruebas del adaptador LLM (41)
-│   ├── test_rag_api.py          Pruebas del endpoint /rag/query (13)
-│   ├── test_admin_console.py    Pruebas de la consola de administración (12)
-│   ├── test_dataset/            Pruebas de acceso a datos sintéticos (58)
-│   ├── rag/
+│   ├── test_rag_api.py    Pruebas del endpoint /rag/query (13)
+│   ├── test_documents.py  Pruebas del ciclo de vida de documentos (15)
+│   ├── test_calls_api.py  Pruebas de endpoints de turnos de voz (41)
+│   ├── test_persistence_extended.py  Pruebas de capa SQLite extendida (41)
+│   ├── test_summaries.py  Pruebas del generador de resúmenes (44)
+│   ├── test_voice.py      Pruebas del adaptador STT (56)
+│   ├── test_env_loading.py  Pruebas de carga de .env (8)
+│   ├── test_dataset/      Pruebas de acceso a datos sintéticos (58)
+│   ├── rag/               Pruebas del pipeline RAG (24)
 │   │   ├── conftest.py
 │   │   ├── test_chunking.py
 │   │   ├── test_extract.py
 │   │   └── test_ingestion_retrieval.py
-│   ├── decision/          Pruebas del motor de escalamiento
-│   ├── conversation/      Pruebas de orquestación
-│   └── voice/             Pruebas de adaptadores de voz
+│   ├── decision/          Pruebas del motor de escalamiento (125)
+│   ├── conversation/      Pruebas de orquestación (153)
+│   ├── metrics/           Pruebas del colector de métricas (82)
+│   └── voice/             Pruebas del adaptador TTS (51)
 ├── docs/                  Documentación del proyecto
 │   ├── ARCHITECTURE.md
 │   ├── PROJECT.md
@@ -271,15 +270,25 @@ y editores y se incluyen como material de referencia del reto.
 
 El desarrollo sigue el plan de fases documentado en
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md#phased-implementation-plan). La
-arquitectura es un monolito modular con backend Python (FastAPI) y dos superficies
-de navegador.
+arquitectura es un monolito modular con backend Python (FastAPI), un frontal
+de navegador y una API REST de administración.
 
-La aplicación incluirá dos superficies funcionales:
+La aplicación expone:
 
-- Una interfaz de llamada desde el navegador (conversación por voz en español)
-  accesible desde `/` y `/call`.
-- Una consola de administración en `/admin` para subir, listar y eliminar
-  documentos del conocimiento clínico.
+- Una interfaz de llamada desde el navegador en `/` y `/call` con selección
+  de pacientes, integración de micrófono real (MediaRecorder), envío de audio
+  a los endpoints ``POST /calls`` y ``POST /calls/{call_id}/turn``, historial
+  de conversación, visualización de transcripciones, citas trazables e
+  información de escalamiento, y reproducción de audio WAV.
+- Una consola de administración gráfica en ``/admin`` para subir, listar con
+  sondeo de estado, refrescar y eliminar documentos del conocimiento con
+  purgado de chunks indexados. El ciclo de vida de documentos en el backend
+  (``POST/GET/DELETE /documents``) es un módulo independiente de la consola
+  de administración.
+- Endpoints de métricas de solo lectura tipados (``GET /metrics/summary``,
+  ``GET /metrics/calls`` y ``GET /metrics/calls/{call_id}``) y una
+  vista frontal de métricas. El colector de métricas (``InMemoryMetricsCollector``)
+  es un módulo independiente del endpoint de reporte.
 
 El flujo esperado es:
 
