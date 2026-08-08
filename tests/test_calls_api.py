@@ -1382,3 +1382,242 @@ class TestOrchestratorConfigWiring:
         )
 
         await global_store.remove(call_id)
+
+
+# ---------------------------------------------------------------------------
+# TurnMetrics integration — STT/TTS/LLM duration, token counts, RAG queries
+# ---------------------------------------------------------------------------
+
+
+class TestTurnMetricsIntegration:
+    """Verify that TurnMetrics are populated with component durations
+    and per-turn metadata after voice endpoints process a turn."""
+
+    @pytest.mark.asyncio
+    async def test_stt_and_tts_durations_recorded(self):
+        """After a turn, the metrics collector records non-zero STT and TTS
+        durations."""
+        transport = ASGITransport(app=app)
+
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            # Create call
+            resp = await client.post(
+                "/calls",
+                json={
+                    "patient_id": "pac-metrics-1",
+                    "dia_postop": 3,
+                    "procedimiento": "Apendicectomía",
+                    "nombre_completo": "Metrics Test",
+                    "eps": "EPS",
+                },
+            )
+            assert resp.status_code == 201
+            call_id = resp.json()["call_id"]
+
+            # Process a turn (greeting response → consent)
+            await client.post(
+                f"/calls/{call_id}/turn",
+                json={"audio_base64": _MOCK_AUDIO_B64},
+            )
+
+        # Verify metrics were recorded via the collector's internal state.
+        from backend.api.metrics import metrics_collector
+
+        turns = metrics_collector.get_call_turns(call_id)
+        # The call hasn't been ended yet, so get_call_turns returns [].
+        # Use the raw internal lookup for testing.
+        with metrics_collector._lock:
+            raw_turns = metrics_collector._turns.get(call_id, [])
+
+        assert len(raw_turns) >= 1
+        t = raw_turns[0]
+        assert t.stt_duration_ms is not None
+        assert t.stt_duration_ms >= 0
+        assert t.tts_duration_ms is not None
+        assert t.tts_duration_ms >= 0
+
+    @pytest.mark.asyncio
+    async def test_rag_queries_zero_when_rag_disabled(self):
+        """When RAG is not configured (default test fixture), rag_queries
+        is 0 for every turn."""
+        transport = ASGITransport(app=app)
+
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            resp = await client.post(
+                "/calls",
+                json={
+                    "patient_id": "pac-metrics-2",
+                    "dia_postop": 3,
+                    "procedimiento": "Apendicectomía",
+                    "nombre_completo": "RAG Zero Test",
+                    "eps": "EPS",
+                },
+            )
+            call_id = resp.json()["call_id"]
+
+            # Process all turns to end the call
+            for _ in range(9):
+                r = await client.post(
+                    f"/calls/{call_id}/turn",
+                    json={"audio_base64": _MOCK_AUDIO_B64},
+                )
+                if r.status_code != 200:
+                    break
+
+        # Verify via the metrics endpoint
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            detail_resp = await client.get(f"/metrics/calls/{call_id}")
+
+        assert detail_resp.status_code == 200
+        detail = detail_resp.json()
+        for t in detail["turns"]:
+            assert t["rag_queries"] == 0, (
+                f"rag_queries should be 0 when RAG is disabled, "
+                f"got {t['rag_queries']} at turn {t['turn_index']}"
+            )
+
+    @pytest.mark.asyncio
+    async def test_model_field_in_metrics(self):
+        """The model field in TurnMetrics reflects the LLM config model
+        name (or the default when no LLM is configured)."""
+        transport = ASGITransport(app=app)
+
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            resp = await client.post(
+                "/calls",
+                json={
+                    "patient_id": "pac-metrics-3",
+                    "dia_postop": 3,
+                    "procedimiento": "Apendicectomía",
+                    "nombre_completo": "Model Test",
+                    "eps": "EPS",
+                },
+            )
+            call_id = resp.json()["call_id"]
+
+            # Process all turns to end the call
+            for _ in range(9):
+                r = await client.post(
+                    f"/calls/{call_id}/turn",
+                    json={"audio_base64": _MOCK_AUDIO_B64},
+                )
+                if r.status_code != 200:
+                    break
+
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            detail_resp = await client.get(f"/metrics/calls/{call_id}")
+
+        assert detail_resp.status_code == 200
+        detail = detail_resp.json()
+        for t in detail["turns"]:
+            assert t["model"] == "llama-3.1-70b-versatile", (
+                f"model should be the default model name, "
+                f"got {t['model']} at turn {t['turn_index']}"
+            )
+
+    @pytest.mark.asyncio
+    async def test_turn_metrics_include_optional_fields_in_response(self):
+        """After a full call, the metrics detail endpoint returns
+        the optional component-duration and token fields (even when
+        they are None due to no LLM being invoked)."""
+        transport = ASGITransport(app=app)
+
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            resp = await client.post(
+                "/calls",
+                json={
+                    "patient_id": "pac-metrics-4",
+                    "dia_postop": 3,
+                    "procedimiento": "Apendicectomía",
+                    "nombre_completo": "Optional Fields Test",
+                    "eps": "EPS",
+                },
+            )
+            call_id = resp.json()["call_id"]
+
+            for _ in range(9):
+                await client.post(
+                    f"/calls/{call_id}/turn",
+                    json={"audio_base64": _MOCK_AUDIO_B64},
+                )
+
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            detail_resp = await client.get(f"/metrics/calls/{call_id}")
+
+        assert detail_resp.status_code == 200
+        detail = detail_resp.json()
+        assert detail["turn_count"] >= 1
+
+        t0 = detail["turns"][0]
+        # Optional component-duration fields should exist (even if None).
+        assert "tts_duration_ms" in t0
+        assert "stt_duration_ms" in t0
+        assert "llm_duration_ms" in t0
+        assert "input_tokens" in t0
+        assert "output_tokens" in t0
+
+        # When no LLM was invoked, llm_duration_ms and tokens are None.
+        assert t0["llm_duration_ms"] is None
+        assert t0["input_tokens"] is None
+        assert t0["output_tokens"] is None
+
+        # STT and TTS durations should be non-None (recorded).
+        assert t0["stt_duration_ms"] is not None
+        assert t0["stt_duration_ms"] >= 0
+        assert t0["tts_duration_ms"] is not None
+        assert t0["tts_duration_ms"] >= 0
+
+    @pytest.mark.asyncio
+    async def test_metrics_include_rag_queries_and_model_calls(self):
+        """The metrics summary endpoint correctly aggregates rag_queries
+        and model_calls from turns (zero when no RAG/LLM configured)."""
+        transport = ASGITransport(app=app)
+
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            resp = await client.post(
+                "/calls",
+                json={
+                    "patient_id": "pac-metrics-5",
+                    "dia_postop": 3,
+                    "procedimiento": "Apendicectomía",
+                    "nombre_completo": "Aggregation Test",
+                    "eps": "EPS",
+                },
+            )
+            call_id = resp.json()["call_id"]
+
+            for _ in range(9):
+                await client.post(
+                    f"/calls/{call_id}/turn",
+                    json={"audio_base64": _MOCK_AUDIO_B64},
+                )
+
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            summary_resp = await client.get("/metrics/summary")
+
+        assert summary_resp.status_code == 200
+        summary = summary_resp.json()
+        assert summary["call_count"] == 1
+        assert summary["total_turns"] >= 1
+        # Without RAG, rag_queries should be 0 for all turns.
+        assert summary["total_rag_queries"] == 0
+        # Without LLM invocation, model_calls should be 0.
+        assert summary["total_model_calls"] == 0

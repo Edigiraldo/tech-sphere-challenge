@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -54,6 +55,11 @@ class RagAnswer:
         model: Model identifier used to generate the answer.
         validation_warnings: Diagnostic messages from the safety validator
             (empty when the answer passed all checks).
+        llm_duration_ms: Optional duration of the LLM inference call in
+            milliseconds.  ``None`` when the LLM was not invoked (e.g.
+            fallback paths).
+        prompt_tokens: Optional number of input tokens consumed by the LLM.
+        completion_tokens: Optional number of output tokens consumed.
     """
 
     answer: str
@@ -61,6 +67,9 @@ class RagAnswer:
     insufficient_knowledge: bool = False
     model: str = ""
     validation_warnings: list[str] = field(default_factory=list)
+    llm_duration_ms: float | None = None
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -237,6 +246,7 @@ def _call_groq(
     )
 
     try:
+        start = time.time()
         response = client.chat.completions.create(
             model=config.model_name,
             messages=[
@@ -247,10 +257,16 @@ def _call_groq(
             max_tokens=config.max_output_tokens,
             response_format={"type": "json_object"},
         )
+        llm_duration_ms = (time.time() - start) * 1000.0
     except Exception as exc:
         raise RuntimeError(
             f"Error al llamar a {config.model_name}: {exc}"
         ) from exc
+
+    # Extract token usage from the Groq response.
+    usage = getattr(response, "usage", None)
+    prompt_tokens = getattr(usage, "prompt_tokens", None) if usage is not None else None
+    completion_tokens = getattr(usage, "completion_tokens", None) if usage is not None else None
 
     raw_text = (response.choices[0].message.content or "").strip()
 
@@ -272,6 +288,12 @@ def _call_groq(
         raise ValueError(
             "El modelo devolvió JSON pero no es un objeto (dict)."
         )
+
+    # Attach internal metadata so the caller can extract token usage
+    # and LLM duration without a second Groq response object.
+    parsed["_llm_duration_ms"] = llm_duration_ms
+    parsed["_prompt_tokens"] = prompt_tokens
+    parsed["_completion_tokens"] = completion_tokens
 
     return parsed
 
@@ -346,6 +368,11 @@ def generate_rag_answer(
             validation_warnings=[str(exc)] if debug else [],
         )
 
+    # Pop internal metadata before processing the response.
+    llm_duration_ms = parsed.pop("_llm_duration_ms", None)
+    prompt_tokens = parsed.pop("_prompt_tokens", None)
+    completion_tokens = parsed.pop("_completion_tokens", None)
+
     raw_answer = str(parsed.get("answer", ""))
     cited_chunk_ids = [
         str(cid)
@@ -374,6 +401,9 @@ def generate_rag_answer(
             insufficient_knowledge=True,
             model=config.model_name,
             validation_warnings=warnings if debug else [],
+            llm_duration_ms=llm_duration_ms,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
         )
 
     # Build traceable citations (only for valid chunk_ids)
@@ -405,6 +435,9 @@ def generate_rag_answer(
             insufficient_knowledge=True,
             model=config.model_name,
             validation_warnings=combined_warnings if debug else [],
+            llm_duration_ms=llm_duration_ms,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
         )
 
     # If model flagged insufficient_knowledge, use its answer verbatim
@@ -415,6 +448,9 @@ def generate_rag_answer(
             insufficient_knowledge=True,
             model=config.model_name,
             validation_warnings=warnings if debug else [],
+            llm_duration_ms=llm_duration_ms,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
         )
 
     return RagAnswer(
@@ -423,4 +459,7 @@ def generate_rag_answer(
         insufficient_knowledge=False,
         model=config.model_name,
         validation_warnings=warnings if debug else [],
+        llm_duration_ms=llm_duration_ms,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
     )
