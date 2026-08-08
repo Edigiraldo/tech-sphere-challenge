@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Consola de Administración — Tech Sphere Challenge</title>
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+
+<header class="app-header">
+    <h1>Tech Sphere Challenge</h1>
+    <span class="app-subtitle">Consola de Administración — Gestión de Documentos</span>
+</header>
+
+<main class="main-content">
+    <!-- Upload card -->
+    <section class="card upload-card">
+        <h2>Subir Documento</h2>
+        <p class="card-description">
+            Cargue un documento clínico en formato PDF para incorporarlo a la base de
+            conocimiento del RAG. El documento será procesado y sus fragmentos estarán
+            disponibles para recuperación.
+        </p>
+
+        <div class="form-group">
+            <label for="upload-file-input">Archivo PDF:</label>
+            <input type="file" id="upload-file-input" accept=".pdf" class="file-input">
+        </div>
+
+        <div class="action-bar">
+            <button id="upload-btn" class="btn btn-primary" disabled>
+                Subir y Procesar
+            </button>
+            <span id="upload-status" class="inline-status hidden"></span>
+        </div>
+
+        <div id="upload-error" class="error-message hidden"></div>
+    </section>
+
+    <!-- Document list card -->
+    <section class="card document-list-card">
+        <h2>Documentos</h2>
+
+        <div class="documents-toolbar">
+            <div class="form-group toolbar-filter">
+                <label for="status-filter">Filtrar por estado:</label>
+                <select id="status-filter" class="select-control">
+                    <option value="">Todos</option>
+                    <option value="pending">Pendiente</option>
+                    <option value="processing">Procesando</option>
+                    <option value="ready">Listo</option>
+                    <option value="failed">Fallido</option>
+                    <option value="deleted">Eliminado</option>
+                </select>
+            </div>
+
+            <button id="refresh-btn" class="btn btn-secondary" title="Actualizar lista de documentos">
+                Actualizar
+            </button>
+        </div>
+
+        <div id="list-error" class="error-message hidden"></div>
+
+        <div class="document-table-wrapper">
+            <table id="document-table" class="document-table">
+                <thead>
+                    <tr>
+                        <th>Archivo</th>
+                        <th>Estado</th>
+                        <th>Tamaño</th>
+                        <th>Subido</th>
+                        <th>Acciones</th>
+                    </tr>
+                </thead>
+                <tbody id="document-tbody">
+                    <tr class="table-empty-row">
+                        <td colspan="5" class="placeholder-text">Cargando documentos…</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+
+        <p id="documents-count" class="documents-count hidden"></p>
+    </section>
+</main>
+
+<footer class="app-footer">
+    <p>Datos sintéticos — Sin fines clínicos reales</p>
+</footer>
+
+<script src="/static/admin.js"></script>
+</body>
+</html>

@@ -88,6 +88,10 @@ def create_app() -> FastAPI:
         async def _serve_call() -> FileResponse:
             return FileResponse(_frontend_dir / "call.html")
 
+        @app.get("/admin")
+        async def _serve_admin() -> FileResponse:
+            return FileResponse(_frontend_dir / "admin.html")
+
         app.mount(
             "/static",
             StaticFiles(directory=str(_frontend_dir)),

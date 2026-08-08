@@ -14,6 +14,21 @@ adapter contracts, and phased implementation plan are documented in
 
 ## Completed
 
+- **2026-08-08:** Admin console implemented.  ``frontend/admin.html`` and
+  ``frontend/admin.js`` provide a standalone browser interface (lang es) for
+  live clinical knowledge management via the existing ``POST``/``GET``/``DELETE
+  /documents`` endpoints.  Features: PDF upload with extension and size
+  validation, document table with status-coloured badges, status filter
+  dropdown, manual refresh, 5-second auto-polling, delete with confirmation
+  dialog, and visible success/error/loading states.  The ``ready`` status is
+  clearly marked as available for retrieval.  ``backend/main.py`` serves the
+  page at ``GET /admin``.  ``frontend/styles.css`` extended with admin-specific
+  table, status-badge, file-input, toolbar, and inline-status styles.
+  12 focused tests (page serving, static asset serving, regression, and status
+  badge safety) pass.
+  No modifications to the document lifecycle backend, RAG pipeline, voice,
+  escalation, LLM adapter, or existing patient/call frontend.
+
 - Challenge documentation reviewed: stack-tecnico, requerimientos, rubrica-evaluacion,
   flujo-de-conocimiento, habeas-data, terminos-y-condiciones.
 - Synthetic dataset inventoried: 4 XLSX files (40 patients, 160 trajectory days,
