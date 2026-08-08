@@ -541,7 +541,9 @@ async def process_turn(
 
     # 3. Transcribe
     turn_start_ms = time.time() * 1000.0
+    stt_start_ms = turn_start_ms
     patient_text = await _transcribe(audio_bytes)
+    stt_duration_ms = max(0.0, time.time() * 1000.0 - stt_start_ms)
     if not patient_text:
         raise HTTPException(
             status_code=400,
@@ -584,7 +586,9 @@ async def process_turn(
     )
 
     # 6. Synthesise agent response
+    tts_start_ms = time.time() * 1000.0
     wav_bytes = _synthesize(turn.agent_message)
+    tts_duration_ms = max(0.0, time.time() * 1000.0 - tts_start_ms)
     audio_b64 = base64.b64encode(wav_bytes).decode("ascii")
 
     # Read turn_index *before* call-ended cleanup so the final turn
@@ -598,17 +602,29 @@ async def process_turn(
         _call_turn_index.pop(call_id, None)
         logger.info("Call %s ended — orchestrator removed from store.", call_id)
 
-    # Record turn metrics
+    # Record turn metrics with component timings
     turn_end_ms = time.time() * 1000.0
     total_latency_ms = max(0.0, turn_end_ms - turn_start_ms)
+
+    # Determine the model identifier: use the LLM config when available,
+    # otherwise fall back to the default placeholder.
+    model_id: str = _DEFAULT_MODEL
+    if orchestrator._llm_config is not None:
+        model_id = orchestrator._llm_config.model_name
+
     try:
         metrics_collector.record_turn(
             TurnMetrics(
                 call_id=call_id,
                 turn_index=turn_index,
                 total_latency_ms=total_latency_ms,
-                model=_DEFAULT_MODEL,
-                rag_queries=len(turn.citations),
+                model=model_id,
+                rag_queries=turn.rag_queries,
+                tts_duration_ms=tts_duration_ms,
+                stt_duration_ms=stt_duration_ms,
+                llm_duration_ms=turn.llm_duration_ms,
+                input_tokens=turn.prompt_tokens,
+                output_tokens=turn.completion_tokens,
             )
         )
         # Only advance the index when the call has *not* ended (after

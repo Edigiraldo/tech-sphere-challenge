@@ -495,3 +495,91 @@ async def test_calls_list_sorted_by_call_id():
     data = resp.json()
     call_ids = [c["call_id"] for c in data["calls"]]
     assert call_ids == ["c-aaa", "c-bbb", "c-ccc"]
+
+
+# ---------------------------------------------------------------------------
+# Token and component-duration fields in turn detail
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_call_detail_includes_token_fields_when_populated():
+    """When a turn has non-None token counts, they appear in the
+    per-turn detail response."""
+    metrics_collector.start_call("c-tokens", "p-tokens")
+    metrics_collector.record_turn(
+        _make_turn(
+            call_id="c-tokens",
+            turn_index=0,
+            total_latency_ms=200.0,
+            model="test-model",
+            rag_queries=1,
+            tts_duration_ms=80.0,
+            stt_duration_ms=120.0,
+            llm_duration_ms=500.0,
+            input_tokens=1024,
+            output_tokens=256,
+        )
+    )
+    metrics_collector.end_call("c-tokens")
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/metrics/calls/c-tokens")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    t0 = data["turns"][0]
+    assert t0["turn_index"] == 0
+    assert t0["tts_duration_ms"] == 80.0
+    assert t0["stt_duration_ms"] == 120.0
+    assert t0["llm_duration_ms"] == 500.0
+    assert t0["input_tokens"] == 1024
+    assert t0["output_tokens"] == 256
+    assert t0["rag_queries"] == 1
+    assert t0["model"] == "test-model"
+    # estimated_cost_usd is computed when both token fields are present.
+    assert t0["estimated_cost_usd"] is not None
+    assert t0["estimated_cost_usd"] == 0.0  # default zero-cost rates
+
+
+@pytest.mark.asyncio
+async def test_summary_includes_model_calls():
+    """The summary correctly counts model_calls (turns with llm_duration_ms)."""
+    metrics_collector.start_call("c-mc", "p-mc")
+    # Turn with LLM invocation
+    metrics_collector.record_turn(
+        _make_turn(
+            call_id="c-mc",
+            turn_index=0,
+            total_latency_ms=100.0,
+            model="test",
+            rag_queries=1,
+            llm_duration_ms=300.0,
+            input_tokens=500,
+            output_tokens=200,
+        )
+    )
+    # Turn without LLM invocation
+    metrics_collector.record_turn(
+        _make_turn(
+            call_id="c-mc",
+            turn_index=1,
+            total_latency_ms=50.0,
+            model="test",
+            rag_queries=0,
+            # No llm_duration_ms
+        )
+    )
+    metrics_collector.end_call("c-mc")
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/metrics/summary")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["call_count"] == 1
+    assert data["total_turns"] == 2
+    assert data["total_rag_queries"] == 1
+    assert data["total_model_calls"] == 1

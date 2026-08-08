@@ -95,6 +95,14 @@ class OrchestratorTurn:
     total_questions : int
         Total number of follow-up questions (always ``len(FOLLOW_UP_QUESTIONS)``
         once known, 0 otherwise).
+    llm_duration_ms : float or None
+        Optional duration of the LLM inference call in milliseconds.
+    prompt_tokens : int or None
+        Optional number of input tokens consumed by the LLM.
+    completion_tokens : int or None
+        Optional number of output tokens consumed by the LLM.
+    rag_queries : int
+        Number of RAG retrieval queries executed during this turn (>= 0).
     """
 
     agent_message: str
@@ -104,6 +112,10 @@ class OrchestratorTurn:
     requires_response: bool = True
     question_index: Optional[int] = None
     total_questions: int = _NUM_QUESTIONS
+    llm_duration_ms: float | None = None
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    rag_queries: int = 0
 
     def __post_init__(self) -> None:
         if not self.agent_message.strip():
@@ -321,7 +333,7 @@ class ConversationOrchestrator:
         2. Ask the next question (or close if done).
         """
         # --- RAG + LLM response for this answer ---
-        response_msg, citations = self._generate_clinical_response(
+        response_msg, citations, meta = self._generate_clinical_response(
             patient_text=patient_text,
             question_index=self._question_index,
         )
@@ -339,9 +351,14 @@ class ConversationOrchestrator:
                 response_msg,
                 citations=citations,
                 question_index=answered_idx + 1,
+                llm_meta=meta,
             )
         else:
-            return self._ask_next_question(after_message=response_msg, citations=citations)
+            return self._ask_next_question(
+                after_message=response_msg,
+                citations=citations,
+                llm_meta=meta,
+            )
 
     def _handle_closing_response(self, patient_text: str) -> OrchestratorTurn:
         """Last patient acknowledgment → end the call."""
@@ -353,15 +370,19 @@ class ConversationOrchestrator:
         self,
         after_message: Optional[str] = None,
         citations: Optional[list[dict[str, Any]]] = None,
+        llm_meta: Optional[dict[str, Any]] = None,
     ) -> OrchestratorTurn:
         """Ask the current follow-up question.
 
         If *after_message* is provided, it is recorded as the agent's
         response to the previous answer, then the next question is appended.
         If *citations* are provided, they are included in the turn.
+        If *llm_meta* is provided, its LLM metrics (``llm_duration_ms``,
+        ``prompt_tokens``, ``completion_tokens``, ``rag_queries``) are
+        propagated into the turn.
         """
         if self._question_index >= _NUM_QUESTIONS:
-            return self._close_questions(after_message, citations=citations)
+            return self._close_questions(after_message, citations=citations, llm_meta=llm_meta)
 
         question = FOLLOW_UP_QUESTIONS[self._question_index]
 
@@ -377,6 +398,7 @@ class ConversationOrchestrator:
             citations=citations or [],
             question_index=self._question_index,
             requires_response=True,
+            llm_meta=llm_meta,
         )
 
     # -- helper: close questions phase ---------------------------------------
@@ -386,6 +408,7 @@ class ConversationOrchestrator:
         final_message: Optional[str] = None,
         citations: Optional[list[dict[str, Any]]] = None,
         question_index: Optional[int] = None,
+        llm_meta: Optional[dict[str, Any]] = None,
     ) -> OrchestratorTurn:
         """Transition QUESTIONS → CLOSING and produce closing message.
 
@@ -395,6 +418,10 @@ class ConversationOrchestrator:
             When provided (after the last follow-up question was answered),
             this equals ``_NUM_QUESTIONS`` so the escalation layer can
             infer the ``movilidad`` domain for the final answer.
+        llm_meta : dict or None
+            Optional LLM metrics from the last question's clinical
+            response.  Propagates ``rag_queries``, ``llm_duration_ms``,
+            ``prompt_tokens``, and ``completion_tokens`` into the turn.
         """
         self._transition(Event.QUESTIONS_COMPLETE)
 
@@ -419,6 +446,7 @@ class ConversationOrchestrator:
             citations=citations or [],
             question_index=question_index,
             requires_response=True,
+            llm_meta=llm_meta,
         )
 
     # -- helper: end call ----------------------------------------------------
@@ -449,20 +477,32 @@ class ConversationOrchestrator:
         self,
         patient_text: str,
         question_index: int,
-    ) -> tuple[str, list[dict[str, Any]]]:
+    ) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
         """Retrieve clinical knowledge and generate a validated response.
 
-        Returns a ``(response_text, citations)`` tuple where *citations* is
-        a list of dicts with ``chunk_id``, ``document_id``,
-        ``source_filename``, and ``page_number``.
+        Returns a ``(response_text, citations, metadata)`` tuple where
+        *citations* is a list of dicts with ``chunk_id``, ``document_id``,
+        ``source_filename``, and ``page_number`` and *metadata* is a dict
+        with optional keys ``rag_queries``, ``llm_duration_ms``,
+        ``prompt_tokens``, and ``completion_tokens``.
 
         Falls back to safe messages when RAG is unavailable or returns no
         results.
         """
         question = FOLLOW_UP_QUESTIONS[question_index]
 
+        # Default metadata
+        meta: dict[str, Any] = {
+            "rag_queries": 0,
+            "llm_duration_ms": None,
+            "prompt_tokens": None,
+            "completion_tokens": None,
+        }
+
         # --- Retrieve ---
         retrieval_result = self._retrieve(patient_text, question)
+        if retrieval_result is not None:
+            meta["rag_queries"] = 1
 
         if not retrieval_result or not retrieval_result.has_results:
             return (
@@ -471,6 +511,7 @@ class ConversationOrchestrator:
                 "orientación más detallada sobre este punto en este "
                 "momento. Si tiene dudas, consulte a su médico tratante.",
                 [],
+                meta,
             )
 
         # --- Generate ---
@@ -480,6 +521,7 @@ class ConversationOrchestrator:
                 "que cualquier síntoma que le preocupe debe ser "
                 "consultado con su médico tratante.",
                 [],
+                meta,
             )
 
         query = (
@@ -514,7 +556,13 @@ class ConversationOrchestrator:
                 "procesar su respuesta en este momento. Por favor, "
                 "consulte a su médico tratante si tiene dudas.",
                 [],
+                meta,
             )
+
+        # Propagate LLM metrics
+        meta["llm_duration_ms"] = answer.llm_duration_ms
+        meta["prompt_tokens"] = answer.prompt_tokens
+        meta["completion_tokens"] = answer.completion_tokens
 
         if answer.insufficient_knowledge:
             return (
@@ -523,6 +571,7 @@ class ConversationOrchestrator:
                 "recuperación. Le sugiero consultar a su médico si "
                 "tiene inquietudes.",
                 [],
+                meta,
             )
 
         # Build response with citations
@@ -545,7 +594,7 @@ class ConversationOrchestrator:
             for c in answer.citations
         ]
 
-        return response, citations_list
+        return response, citations_list, meta
 
     def _retrieve(
         self,
@@ -626,8 +675,25 @@ class ConversationOrchestrator:
         citations: Optional[list[dict[str, Any]]] = None,
         question_index: Optional[int] = None,
         call_ended: bool = False,
+        llm_meta: Optional[dict[str, Any]] = None,
     ) -> OrchestratorTurn:
-        """Build an ``OrchestratorTurn`` from the current call state."""
+        """Build an ``OrchestratorTurn`` from the current call state.
+
+        Parameters
+        ----------
+        llm_meta : dict or None
+            Optional LLM metrics dict with keys ``rag_queries``,
+            ``llm_duration_ms``, ``prompt_tokens``, and
+            ``completion_tokens``.  When ``None`` (non-question turns),
+            the metrics fields default to zero / ``None``.
+        """
+        extra: dict[str, Any] = {}
+        if llm_meta is not None:
+            extra["rag_queries"] = llm_meta.get("rag_queries", 0)
+            extra["llm_duration_ms"] = llm_meta.get("llm_duration_ms")
+            extra["prompt_tokens"] = llm_meta.get("prompt_tokens")
+            extra["completion_tokens"] = llm_meta.get("completion_tokens")
+
         return OrchestratorTurn(
             agent_message=agent_message,
             state=self._call_context.state,
@@ -636,4 +702,5 @@ class ConversationOrchestrator:
             requires_response=requires_response,
             question_index=question_index,
             total_questions=_NUM_QUESTIONS,
+            **extra,
         )
