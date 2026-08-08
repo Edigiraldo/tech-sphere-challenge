@@ -50,6 +50,17 @@ class MetricsCollector(Protocol):
         """Return a global aggregate across all completed calls."""
         ...
 
+    def get_all_call_metrics(self) -> list[CallMetrics]:
+        """Return per-call aggregates for all ended calls."""
+        ...
+
+    def get_call_turns(self, call_id: str) -> list[TurnMetrics]:
+        """Return raw per-turn observations for an ended call."""
+        ...
+
+
+
+
 
 # ---------------------------------------------------------------------------
 # In-memory implementation
@@ -84,6 +95,13 @@ class InMemoryMetricsCollector:
         self._ended: set[str] = set()
 
     # -- lifecycle ----------------------------------------------------------
+
+    def reset(self) -> None:
+        """Clear all internal state (useful for test isolation)."""
+        with self._lock:
+            self._turns.clear()
+            self._patients.clear()
+            self._ended.clear()
 
     def start_call(self, call_id: str, patient_id: str) -> None:
         """Register a new call.
@@ -148,6 +166,46 @@ class InMemoryMetricsCollector:
             turns_copy = list(turns)
 
         return CallMetrics.from_turns(turns_copy, patient_id=patient_id)
+
+    def get_all_call_metrics(self) -> list[CallMetrics]:
+        """Return per-call aggregates for all ended calls.
+
+        Only calls that have been explicitly ended and have at least one
+        recorded turn are included.  Results are sorted by *call_id*.
+
+        The method snapshots the raw data under the lock and builds
+        ``CallMetrics`` aggregates outside the lock, consistent with
+        ``get_summary()``.
+        """
+        with self._lock:
+            snapshots: list[tuple[str, str, list[TurnMetrics]]] = []
+            for call_id in sorted(self._ended):
+                turns = self._turns.get(call_id)
+                if turns is None or len(turns) == 0:
+                    continue
+                patient_id = self._patients[call_id]
+                turns_copy = list(turns)
+                snapshots.append((call_id, patient_id, turns_copy))
+
+        return [
+            CallMetrics.from_turns(turns, patient_id=patient_id)
+            for call_id, patient_id, turns in snapshots
+        ]
+
+    def get_call_turns(self, call_id: str) -> list[TurnMetrics]:
+        """Return raw per-turn observations for *call_id*.
+
+        Only ended calls with at least one recorded turn return data.
+        Returns an empty list when *call_id* has not been started, has
+        not been ended, or has no turns.
+        """
+        with self._lock:
+            if call_id not in self._ended:
+                return []
+            turns = self._turns.get(call_id)
+            if turns is None or len(turns) == 0:
+                return []
+            return list(turns)
 
     def get_summary(self) -> MetricsSummary:
         """Return a global aggregate across all ended calls with

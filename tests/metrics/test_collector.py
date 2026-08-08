@@ -467,3 +467,151 @@ class TestDefensiveRecording:
         assert cm.total_output_tokens is None
         assert cm.model_calls == 0
         assert cm.estimated_cost_usd is None
+
+
+# ---------------------------------------------------------------------------
+# get_all_call_metrics — per-call aggregates for all ended calls
+# ---------------------------------------------------------------------------
+
+
+class TestGetAllCallMetrics:
+    """Tests for ``InMemoryMetricsCollector.get_all_call_metrics()``."""
+
+    def test_empty_when_no_calls(self):
+        c = InMemoryMetricsCollector()
+        assert c.get_all_call_metrics() == []
+
+    def test_empty_when_no_ended_calls(self):
+        c = InMemoryMetricsCollector()
+        c.start_call("c1", "p1")
+        c.record_turn(_turn("c1"))
+        # Not ended
+        assert c.get_all_call_metrics() == []
+
+    def test_empty_when_ended_but_no_turns(self):
+        """A call with start/end but no turns is excluded."""
+        c = InMemoryMetricsCollector()
+        c.start_call("c1", "p1")
+        c.end_call("c1")
+        assert c.get_all_call_metrics() == []
+
+    def test_returns_ended_calls_only(self):
+        c = InMemoryMetricsCollector()
+        c.start_call("c1", "p1")
+        c.record_turn(_turn("c1"))
+        c.end_call("c1")
+
+        c.start_call("c2", "p2")
+        c.record_turn(_turn("c2"))
+        # c2 not ended
+
+        results = c.get_all_call_metrics()
+        assert len(results) == 1
+        assert results[0].call_id == "c1"
+
+    def test_sorted_by_call_id(self):
+        c = InMemoryMetricsCollector()
+        for cid in ("c-ccc", "c-aaa", "c-bbb"):
+            c.start_call(cid, "p")
+            c.record_turn(_turn(cid))
+            c.end_call(cid)
+
+        results = c.get_all_call_metrics()
+        call_ids = [cm.call_id for cm in results]
+        assert call_ids == ["c-aaa", "c-bbb", "c-ccc"]
+
+    def test_multiple_calls_correct_aggregates(self):
+        c = InMemoryMetricsCollector()
+        c.start_call("c1", "p1")
+        c.record_turn(_turn("c1", turn_index=0, total_latency_ms=100.0, rag_queries=1))
+        c.record_turn(_turn("c1", turn_index=1, total_latency_ms=200.0, rag_queries=2))
+        c.end_call("c1")
+
+        c.start_call("c2", "p2")
+        c.record_turn(_turn("c2", turn_index=0, total_latency_ms=50.0, rag_queries=0))
+        c.end_call("c2")
+
+        results = c.get_all_call_metrics()
+        assert len(results) == 2
+
+        c1 = next(cm for cm in results if cm.call_id == "c1")
+        assert c1.turn_count == 2
+        assert c1.total_latency_ms == 300.0
+        assert c1.total_rag_queries == 3
+
+        c2 = next(cm for cm in results if cm.call_id == "c2")
+        assert c2.turn_count == 1
+        assert c2.total_latency_ms == 50.0
+        assert c2.total_rag_queries == 0
+
+
+# ---------------------------------------------------------------------------
+# get_call_turns — raw per-turn observations for an ended call
+# ---------------------------------------------------------------------------
+
+
+class TestGetCallTurns:
+    """Tests for ``InMemoryMetricsCollector.get_call_turns()``."""
+
+    def test_empty_for_unknown_call(self):
+        c = InMemoryMetricsCollector()
+        assert c.get_call_turns("no-such") == []
+
+    def test_empty_for_not_ended_call(self):
+        c = InMemoryMetricsCollector()
+        c.start_call("c1", "p1")
+        c.record_turn(_turn("c1"))
+        assert c.get_call_turns("c1") == []
+
+    def test_empty_for_ended_with_no_turns(self):
+        c = InMemoryMetricsCollector()
+        c.start_call("c1", "p1")
+        c.end_call("c1")
+        assert c.get_call_turns("c1") == []
+
+    def test_returns_turns_for_ended_call(self):
+        c = InMemoryMetricsCollector()
+        c.start_call("c1", "p1")
+        c.record_turn(_turn("c1", turn_index=0, total_latency_ms=100.0))
+        c.record_turn(_turn("c1", turn_index=1, total_latency_ms=200.0))
+        c.end_call("c1")
+
+        turns = c.get_call_turns("c1")
+        assert len(turns) == 2
+        assert turns[0].turn_index == 0
+        assert turns[0].total_latency_ms == 100.0
+        assert turns[1].turn_index == 1
+        assert turns[1].total_latency_ms == 200.0
+
+    def test_returns_copy_not_reference(self):
+        """Returned list must be a copy, not a reference to internal state."""
+        c = InMemoryMetricsCollector()
+        c.start_call("c1", "p1")
+        c.record_turn(_turn("c1", turn_index=0))
+        c.end_call("c1")
+
+        turns = c.get_call_turns("c1")
+        turns.append(_turn("c1", turn_index=1))  # Should not affect internal state
+
+        turns2 = c.get_call_turns("c1")
+        assert len(turns2) == 1  # Still only one turn internally
+
+    def test_optional_fields_preserved(self):
+        c = InMemoryMetricsCollector()
+        c.start_call("c1", "p1")
+        c.record_turn(
+            _turn("c1", turn_index=0, total_latency_ms=75.0, model="m", rag_queries=0,
+                  input_tokens=None, output_tokens=None,
+                  llm_duration_ms=None, tts_duration_ms=None,
+                  stt_duration_ms=None)
+        )
+        c.end_call("c1")
+
+        turns = c.get_call_turns("c1")
+        assert len(turns) == 1
+        t = turns[0]
+        assert t.input_tokens is None
+        assert t.output_tokens is None
+        assert t.tts_duration_ms is None
+        assert t.stt_duration_ms is None
+        assert t.llm_duration_ms is None

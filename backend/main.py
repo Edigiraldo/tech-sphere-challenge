@@ -30,6 +30,7 @@ from fastapi.staticfiles import StaticFiles
 
 from backend.api.calls import calls_router
 from backend.api.documents import documents_router
+from backend.api.metrics import metrics_router
 from backend.api.rag import rag_router
 
 logger = logging.getLogger(__name__)
@@ -70,6 +71,7 @@ def create_app() -> FastAPI:
     # API routers
     # -----------------------------------------------------------------------
     app.include_router(calls_router)
+    app.include_router(metrics_router)
     app.include_router(rag_router)
     app.include_router(documents_router)
 
@@ -91,6 +93,10 @@ def create_app() -> FastAPI:
         @app.get("/admin")
         async def _serve_admin() -> FileResponse:
             return FileResponse(_frontend_dir / "admin.html")
+
+        @app.get("/metrics")
+        async def _serve_metrics() -> FileResponse:
+            return FileResponse(_frontend_dir / "metrics.html")
 
         app.mount(
             "/static",

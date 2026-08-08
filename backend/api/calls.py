@@ -15,12 +15,14 @@ import base64
 import binascii
 import datetime
 import logging
+import time
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from backend.api.call_store import call_store
+from backend.api.metrics import metrics_collector
 from backend.conversation.context import PatientContext
 from backend.conversation.orchestrator import (
     ConversationOrchestrator,
@@ -30,6 +32,7 @@ from backend.conversation.state import State
 from backend.conversation.transitions import InvalidTransitionError
 from backend.data.models import Patient as DataPatient
 from backend.decision import classify, EscalationResult, Severity
+from backend.metrics.models import TurnMetrics
 from backend.voice.api import SttDependency, transcribe_audio
 from backend.voice.models import SttError
 from backend.voice.tts.config import TTSConfig
@@ -65,6 +68,12 @@ _tts: TTSProvider | None = None
 
 _tts_config: TTSConfig = TTSConfig()
 """Default TTS configuration, may be replaced through ``set_tts()``."""
+
+_call_turn_index: dict[str, int] = {}
+"""Per-call turn index counter for metrics instrumentation."""
+
+_DEFAULT_MODEL: str = "llama-3.1-70b-versatile"
+"""Default model identifier for metrics when LLM is not invoked."""
 
 
 def set_stt(stt: SttDependency) -> None:
@@ -396,6 +405,10 @@ async def create_call(body: CreateCallRequest) -> CreateCallResponse:
     # Store the orchestrator for subsequent turn requests
     await call_store.put(patient_context.call_id, orchestrator)
 
+    # Register with metrics collector
+    metrics_collector.start_call(patient_context.call_id, body.patient_id)
+    _call_turn_index[patient_context.call_id] = 0
+
     logger.info(
         "Call %s created for patient %s (state=%s)",
         patient_context.call_id,
@@ -442,6 +455,7 @@ async def process_turn(
     audio_bytes = _decode_base64_audio(body.audio_base64)
 
     # 3. Transcribe
+    turn_start_ms = time.time() * 1000.0
     patient_text = await _transcribe(audio_bytes)
     if not patient_text:
         raise HTTPException(
@@ -488,10 +502,47 @@ async def process_turn(
     wav_bytes = _synthesize(turn.agent_message)
     audio_b64 = base64.b64encode(wav_bytes).decode("ascii")
 
+    # Read turn_index *before* call-ended cleanup so the final turn
+    # retains its sequential index instead of falling back to 0.
+    turn_index = _call_turn_index.get(call_id, 0)
+
     # 7. If call has ended, clean up the orchestrator
     if turn.call_ended:
         await call_store.remove(call_id)
+        metrics_collector.end_call(call_id)
+        _call_turn_index.pop(call_id, None)
         logger.info("Call %s ended — orchestrator removed from store.", call_id)
+
+    # Record turn metrics
+    turn_end_ms = time.time() * 1000.0
+    total_latency_ms = max(0.0, turn_end_ms - turn_start_ms)
+    try:
+        metrics_collector.record_turn(
+            TurnMetrics(
+                call_id=call_id,
+                turn_index=turn_index,
+                total_latency_ms=total_latency_ms,
+                model=_DEFAULT_MODEL,
+                rag_queries=len(turn.citations),
+            )
+        )
+        # Only advance the index when the call has *not* ended (after
+        # the call ends the key has been popped — re-adding it would
+        # leak a stale counter).
+        if not turn.call_ended:
+            _call_turn_index[call_id] = turn_index + 1
+    except ValueError as exc:
+        # Silently skip only the known "call not started in collector"
+        # case; re-raise or log unexpected ValueErrors so that
+        # validation / instrumentation defects are visible.
+        if "has not been started" in str(exc):
+            pass
+        else:
+            logger.warning(
+                "Unexpected ValueError recording metrics for call %s: %s",
+                call_id,
+                exc,
+            )
 
     return TurnResponse(
         call_id=call_id,
