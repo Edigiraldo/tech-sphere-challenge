@@ -6,7 +6,7 @@ Persistence (ChromaDB + SQLite), RAG ingestion/retrieval (extract → chunk → 
 store → retrieve), the LLM adapter (Gemini 1.5 Flash), document lifecycle endpoints
 (POST/GET/DELETE /documents), and the conversation domain foundation (state machine,
 message history, patient/call context) are implemented and tested. Voice adapters
-(STT/TTS) and conversation orchestration with RAG-backed dialogue and escalation remain.
+(STT) and conversation orchestration with RAG-backed dialogue and escalation remain.
 
 The modular monolith architecture, module boundaries, data flows, persistence design,
 adapter contracts, and phased implementation plan are documented in
@@ -125,7 +125,8 @@ adapter contracts, and phased implementation plan are documented in
 ## In Progress
 
 - Remaining Phase 1 SQLite tables (calls, summaries, escalation_alerts).
-- Voice adapters (STT/TTS — Phase 4, depends on D2/D3/D5).
+- STT adapter — decision D2 pending (Phase 4).
+- Audio transport format — decision D5 pending (Phase 6).
 - Conversation orchestration with RAG and escalation (Phase 5, depends on D8).
 
 ## Completed (setup)
@@ -138,6 +139,15 @@ adapter contracts, and phased implementation plan are documented in
 
 ## Recent Changes
 
+- **2026-08-08:** TTS foundation implemented.  ``backend/voice/tts/`` with typed
+  ``TTSProvider`` Protocol, ``TTSConfig`` (frozen dataclass, Spanish defaults),
+  ``TTSResult`` (normalised WAV bytes), ``TTSSynthesisError``, and ``KokoroAdapter``
+  with lazy ``kokoro`` dependency loading.  Empty/whitespace text produces valid
+  silent WAV (not an invalid payload).  WAV serialisation produces 16-bit PCM mono
+  RIFF containers suitable for browser playback.  Decision D3 resolved: **Kokoro-82M**
+  selected for its minimal footprint (~0.6 GB RAM), CPU-only inference, and natural
+  Spanish voice quality (``es_002``).  ``kokoro>=0.7.0`` added to optional
+  ``voice`` extras in ``pyproject.toml``.  47 fast tests pass.
 - **2026-08-07 (pm):** Conversation orchestrator implemented.  ``ConversationOrchestrator``
   drives the state machine through all six phases (IDLE → GREETING → CONSENT →
   QUESTIONS → CLOSING → ENDED), asks 6 structured Spanish follow-up questions,
@@ -185,17 +195,18 @@ Implementation Plan (sole source of truth for milestones and deliverables).
 Phase 1 (persistence) and Phase 2 (document lifecycle + RAG) are substantially
 complete. The immediate next step is completing the remaining Phase 1 SQLite tables
 (calls, summaries, escalation_alerts), followed by Phase 4 voice adapters
-(STT/TTS — blocked on D2/D3/D5) and Phase 5 conversation orchestration with
+(STT — blocked on D2) and Phase 5 conversation orchestration with
 RAG-backed dialogue and escalation (blocked on D8).
 
 ## Open Architectural Decisions
 
-These are tracked in `docs/ARCHITECTURE.md` § Open Decisions. The four open decisions
-(D2, D3, D5, D8) cover STT provider, TTS provider, audio transport format, and patient
-data loading strategy. Five decisions (D1, D4, D6, D7, D9) have been resolved: language
-model (Gemini 1.5 Flash), backend framework (FastAPI), chunking strategy (fixed-size
-with overlap), LLM failover (single provider), and PDF extraction library (pdfplumber).
-Each open decision has a "resolve by" deadline tied to the phase that needs it.
+These are tracked in `docs/ARCHITECTURE.md` § Open Decisions. The three open decisions
+(D2, D5, D8) cover STT provider, audio transport format, and patient data loading
+strategy. Six decisions (D1, D3, D4, D6, D7, D9) have been resolved: language model
+(Gemini 1.5 Flash), TTS provider (Kokoro-82M), backend framework (FastAPI), chunking
+strategy (fixed-size with overlap), LLM failover (single provider), and PDF extraction
+library (pdfplumber). Each open decision has a "resolve by" deadline tied to the phase
+that needs it.
 
 ## Known Constraints
 
