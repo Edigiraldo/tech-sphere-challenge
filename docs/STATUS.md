@@ -67,6 +67,18 @@ adapter contracts, and phased implementation plan are documented in
 - Fast tests (15) pass: chunking unit tests, extraction error paths, health endpoint.
   Slow tests (10) for full ingestion/retrieval are gated behind `pytest.mark.slow`.
 
+## Completed (continued)
+
+- **2026-08-07:** Conversation domain foundation implemented (`backend/conversation/`).
+  Finite state machine (``State`` / ``Event`` enums) with 7 valid transitions and
+  ``InvalidTransitionError`` for unsupported pairs.  ``Message`` (frozen slots
+  dataclass with 0-based ``turn_index``, ``MessageRole``, validators) and append-only
+  ``History`` (len, iter, index, tuple snapshot).  ``PatientContext`` wraps
+  ``backend.data.models.Patient`` with ``dia_postop >= 0`` and non-empty
+  ``procedimiento`` guards.  ``CallContext`` aggregates patient, ``State``, ``History``,
+  and UTC ``created_at``.  Stdlib-only, text-only — no voice/frontend/LLM/RAG
+  dependencies.  98 tests pass.
+
 ## In Progress
 
 - Full Phase 1 (SQLite persistence tables for calls, summaries, documents).
