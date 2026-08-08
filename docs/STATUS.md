@@ -138,6 +138,19 @@ adapter contracts, and phased implementation plan are documented in
 
 - **2026-08-08:** STT adapter foundation implemented (``backend/voice/``).
 
+- **2026-08-08:** Phase 1 SQLite tables completed and summaries module implemented.
+  ``backend/persistence/sqlite.py`` extended with frozen typed ``CallRecord``,
+  ``ConversationTurnRecord``, ``SummaryRecord``, ``EscalationAlertRecord`` dataclasses
+  and SQLite schema + CRUD for ``calls``, ``conversation_turns``, ``summaries``, and
+  ``escalation_alerts`` tables.  ``backend/summaries/`` created with pure typed summary
+  generator (``generate_summary``, ``SummaryResult``, ``SummarySection``,
+  ``SourceReference``) — stdlib-only, deterministic, no LLM/RAG/network calls.
+  Generator produces Spanish-language sections for patient demographics, procedure,
+  six symptom domains, escalation decision, and next steps.  41 persistence tests
+  (model validation + CRUD) and 44 summary tests (generator logic, model validation,
+  domain mapping, escalation decision, next steps, determinism) pass.  All 622
+  existing fast tests pass with no regressions.
+
 - **2026-08-08:** Frontend shell implemented.  ``frontend/`` directory with vanilla
   HTML/CSS/JS (no frameworks, no backend API connections, no microphone/audio APIs).
   ``index.html`` provides synthetic patient selection (5 hardcoded patients) and a
@@ -155,12 +168,12 @@ adapter contracts, and phased implementation plan are documented in
   with bytes/file handling and robust error mapping for empty/invalid audio, missing
   API key, rate-limit, auth, network, and provider errors, and public
    ``transcribe_audio()`` dependency-injection entry point.  56 unit tests pass
-   (all Groq API calls mocked).  Open decision D2 resolved: STT provider = Groq
-   Whisper Large V3.  ``groq>=0.9.0`` added to project dependencies.
+    (all Groq API calls mocked).  Open decision D2 resolved: STT provider = Groq
+    Whisper Large V3.  ``groq>=0.9.0`` added to project dependencies.
 
 ## In Progress
 
-- Remaining Phase 1 SQLite tables (calls, summaries, escalation_alerts).
+- TTS adapter (Phase 4, depends on D5).
 - Audio transport format — decision D5 pending (Phase 6).
 
 ## Completed (setup)
@@ -275,11 +288,14 @@ adapter contracts, and phased implementation plan are documented in
 Implementation follows the eight-phase plan in `docs/ARCHITECTURE.md` § Phased
 Implementation Plan (sole source of truth for milestones and deliverables).
 
-Phase 1 (persistence), Phase 2 (document lifecycle + RAG), Phase 3 (LLM adapter),
-Phase 4 (STT + TTS adapters), and Phase 5 (conversation orchestration with
-escalation) are substantially complete.  The immediate next step is completing
-the remaining Phase 1 SQLite tables (calls, summaries, escalation_alerts) and
-resolving the audio transport format decision (D5).
+Phase 1 (persistence) is complete: ChromaDB, SQLite documents table, and the new
+``calls``, ``conversation_turns``, ``summaries``, and ``escalation_alerts`` tables
+are all implemented with typed models and CRUD operations.  Phase 2 (document
+lifecycle + RAG) is substantially complete.  The summaries module
+(``backend/summaries/``) provides a pure deterministic summary generator.
+Phase 3 (LLM adapter), Phase 4 (STT + TTS adapters), and Phase 5 (conversation
+orchestration with escalation) are substantially complete.  The immediate next
+step is resolving the audio transport format decision (D5).
 
 ## Open Architectural Decisions
 

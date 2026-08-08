@@ -79,7 +79,7 @@ voice-call interface).
 | `rag/` | Ingestion (extract → chunk → embed BGE-M3 → store in ChromaDB) and retrieval (embed query → similarity search → return chunks + metadata). | Owns the embedding model, ChromaDB collection, chunking and retrieval. Does not own document lifecycle or know about patients/conversations. |
 | `documents/` | Document lifecycle: upload, list, status, delete. Orchestrates metadata in SQLite and triggers RAG ingestion/deletion. | Calls `rag/` for ingestion and purge. Does not call `rag/` for retrieval. |
 | `decision/` | Escalation classifier (Green / Yellow / Red). Runs after every LLM response using explicit symptom rules cross-checked against the LLM's classification. | Isolated from RAG, voice, and documents. Produces a verdict; does not modify conversation flow. Conservative: false negatives are catastrophic. |
-| `summaries/` | At call end, produces structured summary (patient, procedure, symptoms, decision, cited sources, next steps) and persists to SQLite. | Write-only, read-only on conversation history. |
+| `summaries/` | At call end, produces a structured summary (patient, procedure, symptoms, decision, cited sources, next steps). SQLite persistence of the summary record is handled by the `persistence/` module. | Write-only, read-only on conversation history. |
 | `metrics/` | Observes latency (P50/P95), token consumption, model invocations, RAG queries, estimated cost. Logs structured output; exposed via API. | Non-blocking observer. Never modifies application behavior. |
 | `persistence/` | SQLite (calls, turns, summaries, document metadata, alerts) and ChromaDB (chunks, embeddings, source metadata). | Only owning modules write. `rag/` owns ChromaDB; `documents/`, `conversation/`, `summaries/`, `decision/` own their SQLite tables. |
 
@@ -121,12 +121,17 @@ conversation/ assembles prompt with retrieved chunks and source citations
 ### SQLite schema (conceptual)
 
 ```
-patients             — synthetic profiles loaded at startup (read-only)
-calls                — call_id, patient_id, procedure, postop_day, status, timestamps
-turns                — turn_id, call_id, speaker, text, citations_json, timestamp
-summaries            — call_id, patient_id, procedure, symptoms, decision, sources, next_steps
-documents            — document_id, filename, status, uploaded_at, size_bytes, error_message
-escalation_alerts    — call_id, turn_id, symptoms, timestamp
+calls                — call_id, paciente_id, nombre_completo, procedimiento,
+                       dia_postop, eps, state, started_at, ended_at,
+                       total_turns, escalated
+conversation_turns   — turn_id, call_id, turn_index, role, text, timestamp,
+                       severity, domain
+summaries            — summary_id, call_id, created_at, patient_summary,
+                       procedure_summary, symptoms_summary, decision_summary,
+                       sources_json, next_steps
+documents            — document_id, filename, status, uploaded_at, size_bytes,
+                       error_message
+escalation_alerts    — alert_id, call_id, created_at, severity, reason, domain
 ```
 
 Document deletion uses **soft deletion**: deleting a document changes its ``status``
