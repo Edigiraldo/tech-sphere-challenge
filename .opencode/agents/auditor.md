@@ -27,6 +27,10 @@ or dataset unless the change requires it.
 - Check secrets, sensitive data, evaluation labels, and internal paths are not exposed.
 - Check structured model output before it affects decisions or persistence.
 - Check tests cover success, invalid input, dependency failure, and relevant boundaries.
+- For documentation-only changes, do not require unrelated code-test reruns. Verify links,
+  references, formatting, stale statements, and consistency with affected code. Require
+  relevant tests when documentation changes executable configuration, generated artifacts,
+  or test behavior.
 - During remediation audits, verify that the coder checked for new defects, regressions,
   contract changes, security issues, and stale documentation introduced by the fixes.
 - Do not assume a remediation is safe merely because the original finding was addressed;

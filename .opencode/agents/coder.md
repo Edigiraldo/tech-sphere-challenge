@@ -32,6 +32,10 @@ the approved plan explicitly requires it.
 - Keep secrets in environment variables and do not log raw sensitive data unnecessarily.
 - Never expose raw sensitive data, internal paths, or evaluation-only labels.
 - Add or update tests for changed behavior; do not add placeholders or TODOs.
+- For documentation-only changes, do not rerun unrelated code tests. Verify links,
+  references, formatting, stale statements, and consistency with affected code. If the
+  documentation changes executable configuration, generated artifacts, or test behavior,
+  run the relevant tests.
 - Apply the planner's Documentation Impact instructions. Update concise English project
   documentation when architecture, interfaces, dependencies, milestones, or blockers
   change. Remove stale text in the affected documentation.

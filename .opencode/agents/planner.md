@@ -34,6 +34,9 @@ that implements code.
 - Identify async/sync and dependency-failure risks where relevant.
 - Define focused tests for success, invalid input, failures, and boundary conditions.
 - Include maintainability requirements in the implementation and verification steps.
+- For documentation-only changes, define documentation consistency checks instead of
+  code tests unless documentation changes executable configuration, generated artifacts,
+  or test behavior.
 - Keep final product checks out of small plans unless the changed scope directly affects
   them.
 
