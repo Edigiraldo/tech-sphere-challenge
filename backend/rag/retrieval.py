@@ -80,7 +80,7 @@ def retrieve(
             document_id=str(r.get("document_id", "")),
             source_filename=str(r.get("source_filename", "")),
             chunk_index=int(r.get("chunk_index", 0)),
-            page_number=int(r.get("page_number", 0)),
+            page_number=int(r.get("page_number", 1)),
             text=str(r.get("text", "")),
             similarity=float(r.get("similarity", 0.0)),
         )

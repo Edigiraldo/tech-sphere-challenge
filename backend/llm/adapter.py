@@ -1,0 +1,423 @@
+"""Gemini 1.5 Flash adapter for RAG-grounded clinical answers.
+
+Produces validated Spanish answers with traceable citations and an explicit
+``insufficient_knowledge`` flag when the RAG context cannot support a safe
+clinical response.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import re
+from dataclasses import dataclass, field
+from typing import Any
+
+from backend.llm.config import LlmConfig
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Data-transfer objects
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class RagCitation:
+    """A single traceable citation from the RAG context."""
+
+    chunk_id: str
+    document_id: str
+    source_filename: str
+    page_number: int
+    excerpt: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "chunk_id": self.chunk_id,
+            "document_id": self.document_id,
+            "source_filename": self.source_filename,
+            "page_number": self.page_number,
+            "excerpt": self.excerpt,
+        }
+
+
+@dataclass
+class RagAnswer:
+    """Validated answer from the LLM adapter.
+
+    Attributes:
+        answer: Spanish natural-language response.
+        citations: Traceable source citations (subset of the supplied context).
+        insufficient_knowledge: ``True`` when the model cannot answer safely
+            from the provided sources.
+        model: Model identifier used to generate the answer.
+        validation_warnings: Diagnostic messages from the safety validator
+            (empty when the answer passed all checks).
+    """
+
+    answer: str
+    citations: list[RagCitation] = field(default_factory=list)
+    insufficient_knowledge: bool = False
+    model: str = ""
+    validation_warnings: list[str] = field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Prompt assembly
+# ---------------------------------------------------------------------------
+
+_SYSTEM_PROMPT = """\
+Eres un asistente clínico virtual que ayuda a pacientes postoperatorios \
+en Colombia. Responde ÚNICAMENTE basándote en las fuentes proporcionadas.
+
+REGLAS ESTRICTAS:
+1. NO inventes medicamentos, dosis, procedimientos ni afirmaciones clínicas.
+2. Cita siempre la fuente exacta de cada afirmación con los chunk_id \
+proporcionados.
+3. Responde en español colombiano, con tono claro y empático.
+4. Si las fuentes no contienen información suficiente para responder la \
+pregunta del paciente, debes indicarlo con insufficient_knowledge: true y \
+proporcionar una respuesta breve explicando que no tienes suficiente \
+información.
+5. NO hagas recomendaciones médicas más allá de lo que dicen las fuentes."""
+
+
+_USER_PROMPT_TEMPLATE = """\
+PREGUNTA DEL PACIENTE:
+{query}
+
+FUENTES DISPONIBLES (cada fuente tiene un chunk_id único que debes usar \
+para citar):
+{context}
+
+Responde EXCLUSIVAMENTE en formato JSON. No incluyas texto fuera del JSON.
+{{
+  "answer": "tu respuesta en español colombiano",
+  "cited_chunk_ids": ["chunk_id_1", "chunk_id_2"],
+  "insufficient_knowledge": false
+}}"""
+
+
+def _build_prompt(
+    query: str, context_chunks: list[dict[str, Any]]
+) -> tuple[str, str]:
+    """Build (system_prompt, user_prompt) for the LLM.
+
+    Each context chunk dict must have at least ``chunk_id`` and ``text``.
+    """
+    context_lines: list[str] = []
+    for chunk in context_chunks:
+        chunk_id = chunk.get("chunk_id", "unknown")
+        text = chunk.get("text", "")
+        source = chunk.get("source_filename", "desconocido")
+        page = chunk.get("page_number", "?")
+        context_lines.append(
+            f"[chunk_id: {chunk_id} | fuente: {source}, p. {page}]\n{text}"
+        )
+
+    context_str = "\n\n---\n\n".join(context_lines)
+    user_prompt = _USER_PROMPT_TEMPLATE.format(
+        query=query, context=context_str
+    )
+
+    return _SYSTEM_PROMPT, user_prompt
+
+
+# ---------------------------------------------------------------------------
+# Safety validation
+# ---------------------------------------------------------------------------
+
+# Basic pattern to flag potential medication dosing language.
+# This is not a comprehensive clinical validator — it is a lightweight
+# safety net that raises a warning when the LLM output may contain dosing
+# instructions that cannot be traced to a cited source.
+_MEDICATION_DOSE_RE = re.compile(
+    r"\d+\s*(?:mg|mcg|g|mL|UI|unidades|comprimidos|cápsulas|tabletas|gotas)",
+    re.IGNORECASE,
+)
+
+# Common Spanish stop-words and function words used as a lightweight
+# language heuristic.  A clinical answer that contains zero accented
+# characters OR Spanish question marks is flagged for manual review.
+_SPANISH_MARKERS_RE = re.compile(r"[áéíóúñÁÉÍÓÚÑ¿¡]")
+
+
+def _validate_answer(
+    raw_answer: str,
+    cited_chunk_ids: list[str],
+    available_chunk_ids: set[str],
+    insufficient_knowledge: bool,
+) -> list[str]:
+    """Validate an LLM-produced answer and return diagnostic warnings.
+
+    Returns an empty list when the answer passes all safety checks.
+    Non-empty list = at least one warning or rejection reason.
+    """
+    warnings: list[str] = []
+
+    # 1. Non-empty
+    if not raw_answer or not raw_answer.strip():
+        warnings.append("La respuesta está vacía.")
+        return warnings  # hard stop — empty answer is always rejected
+
+    # 2. Spanish language heuristic
+    if not _SPANISH_MARKERS_RE.search(raw_answer):
+        warnings.append(
+            "La respuesta no contiene caracteres del español "
+            "(áéíóúñ). Posible respuesta en otro idioma."
+        )
+
+    # 3. Citation validity
+    unknown_ids = set(cited_chunk_ids) - available_chunk_ids
+    if unknown_ids:
+        warnings.append(
+            f"La respuesta cita chunk_ids no proporcionados: "
+            f"{sorted(unknown_ids)}. Posible alucinación de fuentes."
+        )
+
+    # 4. Cited sources required when claiming knowledge
+    if not insufficient_knowledge and not cited_chunk_ids:
+        warnings.append(
+            "La respuesta afirma tener conocimiento pero no cita "
+            "ninguna fuente."
+        )
+
+    # 5. Medication dose safety net
+    if _MEDICATION_DOSE_RE.search(raw_answer) and not cited_chunk_ids:
+        warnings.append(
+            "La respuesta parece mencionar dosis de medicamentos "
+            "sin citar fuentes. Revisión requerida."
+        )
+
+    return warnings
+
+
+# ---------------------------------------------------------------------------
+# LLM invocation
+# ---------------------------------------------------------------------------
+
+
+def _call_gemini(
+    system_prompt: str,
+    user_prompt: str,
+    config: LlmConfig,
+) -> dict[str, Any]:
+    """Invoke Gemini 1.5 Flash and return the parsed JSON response.
+
+    Raises:
+        RuntimeError: If the API key is missing or the LLM call fails.
+        ValueError: If the response is not parseable JSON.
+    """
+    if not config.api_key:
+        raise RuntimeError(
+            "GOOGLE_API_KEY no está configurada. "
+            "Defina la variable de entorno GOOGLE_API_KEY con su clave "
+            "de Google AI Studio."
+        )
+
+    try:
+        import google.generativeai as genai  # noqa: WPS433
+    except ImportError as exc:
+        raise RuntimeError(
+            "El paquete google-generativeai no está instalado. "
+            "Ejecute: pip install google-generativeai"
+        ) from exc
+
+    genai.configure(api_key=config.api_key)
+
+    model = genai.GenerativeModel(
+        model_name=config.model_name,
+        system_instruction=system_prompt,
+        generation_config={
+            "temperature": config.temperature,
+            "max_output_tokens": config.max_output_tokens,
+            "response_mime_type": "application/json",
+        },
+    )
+
+    logger.info(
+        "Calling %s (temp=%.2f, max_tokens=%d) …",
+        config.model_name,
+        config.temperature,
+        config.max_output_tokens,
+    )
+
+    try:
+        response = model.generate_content(user_prompt)
+    except Exception as exc:
+        raise RuntimeError(
+            f"Error al llamar a {config.model_name}: {exc}"
+        ) from exc
+
+    raw_text = (response.text or "").strip()
+
+    # Strip markdown code fences if present
+    if raw_text.startswith("```"):
+        raw_text = re.sub(r"^```(?:json)?\s*", "", raw_text)
+        raw_text = re.sub(r"\s*```$", "", raw_text)
+
+    try:
+        parsed = json.loads(raw_text)
+    except json.JSONDecodeError as exc:
+        logger.warning("Failed to parse LLM JSON response: %s", raw_text[:200])
+        raise ValueError(
+            f"El modelo no devolvió JSON válido: {exc}"
+        ) from exc
+
+    if not isinstance(parsed, dict):
+        raise ValueError(
+            "El modelo devolvió JSON pero no es un objeto (dict)."
+        )
+
+    return parsed
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+
+def generate_rag_answer(
+    query: str,
+    context_chunks: list[dict[str, Any]],
+    config: LlmConfig,
+    *,
+    debug: bool = False,
+) -> RagAnswer:
+    """Generate a validated, RAG-grounded answer in Spanish.
+
+    Args:
+        query: The patient's clinical question in Spanish.
+        context_chunks: RAG retrieval results. Each dict must contain
+            ``chunk_id``, ``document_id``, ``source_filename``,
+            ``page_number``, and ``text``.
+        config: LLM configuration (model, API key, temperature, etc.).
+        debug: When ``False`` (the default), ``validation_warnings`` is
+            always empty to avoid leaking internal diagnostic details to
+            callers.  Set to ``True`` only for development / test
+            introspection.  All warnings are always logged server-side
+            regardless of this flag.
+
+    Returns:
+        A ``RagAnswer`` with the validated response and traceable citations.
+        ``insufficient_knowledge`` is ``True`` when the model cannot answer
+        safely from the provided sources, or when validation rejects the
+        output.
+
+    Raises:
+        RuntimeError: If the LLM cannot be reached.
+    """
+    if not context_chunks:
+        logger.info("No context chunks provided — returning insufficient_knowledge.")
+        return RagAnswer(
+            answer=(
+                "No tengo suficiente información para responder a su "
+                "pregunta. Por favor, consulte a su médico tratante para "
+                "obtener orientación específica sobre su caso."
+            ),
+            insufficient_knowledge=True,
+            model=config.model_name,
+        )
+
+    available_ids = {c["chunk_id"] for c in context_chunks}
+
+    # Build chunk-id → full-metadata lookup for citation construction
+    chunk_lookup: dict[str, dict[str, Any]] = {
+        c["chunk_id"]: c for c in context_chunks
+    }
+
+    system_prompt, user_prompt = _build_prompt(query, context_chunks)
+
+    try:
+        parsed = _call_gemini(system_prompt, user_prompt, config)
+    except (RuntimeError, ValueError) as exc:
+        logger.error("LLM call failed: %s", exc)
+        return RagAnswer(
+            answer=(
+                "No puedo procesar su consulta en este momento. "
+                "Por favor, comuníquese con su médico tratante."
+            ),
+            insufficient_knowledge=True,
+            model=config.model_name,
+            validation_warnings=[str(exc)] if debug else [],
+        )
+
+    raw_answer = str(parsed.get("answer", ""))
+    cited_chunk_ids = [
+        str(cid)
+        for cid in parsed.get("cited_chunk_ids", [])
+        if isinstance(cid, (str, int))
+    ]
+    insufficient = bool(parsed.get("insufficient_knowledge", False))
+
+    # Validate
+    warnings = _validate_answer(
+        raw_answer, cited_chunk_ids, available_ids, insufficient
+    )
+
+    if warnings:
+        logger.warning(
+            "Validation warnings for query %r: %s", query[:80], warnings
+        )
+
+    # If validation found hard errors (empty answer), fall back
+    if any("vacía" in w for w in warnings):
+        return RagAnswer(
+            answer=(
+                "No puedo proporcionar una respuesta confiable en este "
+                "momento. Por favor, consulte a su médico tratante."
+            ),
+            insufficient_knowledge=True,
+            model=config.model_name,
+            validation_warnings=warnings if debug else [],
+        )
+
+    # Build traceable citations (only for valid chunk_ids)
+    citations: list[RagCitation] = []
+    for cid in cited_chunk_ids:
+        chunk = chunk_lookup.get(cid)
+        if chunk is not None:
+            citations.append(
+                RagCitation(
+                    chunk_id=cid,
+                    document_id=str(chunk.get("document_id", "")),
+                    source_filename=str(chunk.get("source_filename", "")),
+                    page_number=int(chunk.get("page_number", 1)),
+                    excerpt=str(chunk.get("text", ""))[:200],
+                )
+            )
+
+    # If model claims knowledge but cited no valid sources, force fallback
+    if not insufficient and not citations:
+        combined_warnings = warnings + [
+            "El modelo afirmó conocimiento sin citar fuentes válidas."
+        ]
+        return RagAnswer(
+            answer=(
+                "No tengo suficiente información para responder a su "
+                "pregunta de manera confiable. Por favor, consulte a su "
+                "médico tratante."
+            ),
+            insufficient_knowledge=True,
+            model=config.model_name,
+            validation_warnings=combined_warnings if debug else [],
+        )
+
+    # If model flagged insufficient_knowledge, use its answer verbatim
+    if insufficient:
+        return RagAnswer(
+            answer=raw_answer,
+            citations=citations,
+            insufficient_knowledge=True,
+            model=config.model_name,
+            validation_warnings=warnings if debug else [],
+        )
+
+    return RagAnswer(
+        answer=raw_answer,
+        citations=citations,
+        insufficient_knowledge=False,
+        model=config.model_name,
+        validation_warnings=warnings if debug else [],
+    )

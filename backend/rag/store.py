@@ -98,7 +98,7 @@ def query_similar(
                 "document_id": meta.get("document_id", ""),
                 "source_filename": meta.get("source_filename", ""),
                 "chunk_index": meta.get("chunk_index", 0),
-                "page_number": meta.get("page_number", 0),
+                "page_number": meta.get("page_number", 1),
                 "text": documents[i] if i < len(documents) else "",
                 "similarity": round(similarity, 4),
             }

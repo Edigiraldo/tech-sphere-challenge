@@ -65,7 +65,22 @@ adapter contracts, and phased implementation plan are documented in
   (embed query → similarity search → `RetrievalResult` with citations).
 - Open decision D6 (chunking strategy) resolved: fixed-size with overlap.
 - Fast tests (15) pass: chunking unit tests, extraction error paths, health endpoint.
-  Slow tests (10) for full ingestion/retrieval are gated behind `pytest.mark.slow`.
+  Slow tests (10) for full ingestion/retrieval are gated behind ``pytest.mark.slow``.
+- **Phase 3 (LLM adapter):** ``backend/llm/`` — ``config.py`` (model selection,
+  API key, temperature), ``adapter.py`` (Gemini 1.5 Flash integration with structured
+  JSON output, Spanish prompt assembly, citation mapping, and multi-layer safety
+  validation). Open decision D1 resolved: **Gemini 1.5 Flash** selected for its
+  1M-token context window and free tier. Open decision D7 resolved: single provider
+  (no failover chain for Phase 3).
+- **First RAG endpoint:** ``backend/api/rag.py`` — ``POST /rag/query`` accepts a
+  Spanish clinical question, retrieves relevant chunks from ChromaDB, generates a
+  validated answer via Gemini 1.5 Flash, and returns traceable source citations.
+  Falls back to ``insufficient_knowledge: true`` without calling the LLM when no
+  chunk exceeds the similarity threshold.
+- 54 new fast tests (41 LLM adapter, 13 API endpoint) pass; all 58 existing
+  dataset tests and 24 RAG tests (14 fast, 10 slow) continue to pass.
+- ``pyproject.toml`` updated with ``google-generativeai>=0.8.0`` dependency.
+- ``backend/main.py`` registers the ``rag_router``.
 
 ## Completed (continued)
 
@@ -82,21 +97,25 @@ adapter contracts, and phased implementation plan are documented in
 ## In Progress
 
 - Full Phase 1 (SQLite persistence tables for calls, summaries, documents).
-- Document lifecycle module (`backend/documents/`).
+- Document lifecycle module (``backend/documents/``).
 
 ## Recent Changes
 
+- **2026-08-07 (pm):** First RAG-backed clinical answer endpoint implemented.
+  ``backend/llm/`` (Gemini 1.5 Flash adapter with validation), ``backend/api/rag.py``
+  (``POST /rag/query``), 54 tests pass. Resolved D1 (model = Gemini 1.5 Flash) and
+  D7 (single provider, no failover).
 - **2026-08-07 (pm):** RAG slice audit remediation. Configured ChromaDB collection
   with ``hnsw:space: cosine`` for correct cosine similarity semantics with BGE-M3
   embeddings. Added UTC ``ingested_at`` metadata to every stored chunk. Added
   autouse test fixture resetting the ChromaStore singleton between tests. Added
   security comment for ``trust_remote_code=True``. Documented pdfplumber choice
   and 800/150 defaults rationale in ``docs/ARCHITECTURE.md``.
-- **2026-08-07:** First minimal RAG slice implemented. Added `backend/persistence/`
-  (ChromaDB access), `backend/rag/` (extract, chunk, embed, store, retrieve),
-  `tests/rag/` (fixtures and 25 tests, 10 slow). Updated `pyproject.toml` with
+- **2026-08-07:** First minimal RAG slice implemented. Added ``backend/persistence/``
+  (ChromaDB access), ``backend/rag/`` (extract, chunk, embed, store, retrieve),
+  ``tests/rag/`` (fixtures and 25 tests, 10 slow). Updated ``pyproject.toml`` with
   chromadb, sentence-transformers, pdfplumber dependencies. Added model cache and
-  ChromaDB runtime data to `.gitignore`. Resolved open decision D6 (chunking strategy
+  ChromaDB runtime data to ``.gitignore``. Resolved open decision D6 (chunking strategy
   = fixed-size with overlap).
 
 ## Next Milestones
@@ -109,11 +128,11 @@ The immediate next milestone is completing Phase 1 (SQLite schema) and Phase 2
 
 ## Open Architectural Decisions
 
-These are tracked in `docs/ARCHITECTURE.md` § Open Decisions. The six open decisions
-(D1, D2, D3, D5, D7, D8) cover language model selection, STT provider selection,
-TTS provider selection, audio transport format, LLM failover, and patient data loading
-strategy. Three decisions (D4, D6, D9) have been resolved: backend framework (FastAPI),
-chunking strategy (fixed-size with overlap), and PDF extraction library (pdfplumber).
+These are tracked in `docs/ARCHITECTURE.md` § Open Decisions. The four open decisions
+(D2, D3, D5, D8) cover STT provider, TTS provider, audio transport format, and patient
+data loading strategy. Five decisions (D1, D4, D6, D7, D9) have been resolved: language
+model (Gemini 1.5 Flash), backend framework (FastAPI), chunking strategy (fixed-size
+with overlap), LLM failover (single provider), and PDF extraction library (pdfplumber).
 Each open decision has a "resolve by" deadline tied to the phase that needs it.
 
 ## Known Constraints

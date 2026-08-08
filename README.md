@@ -54,6 +54,47 @@ curl http://127.0.0.1:8000/health
 
 Documentación interactiva de la API (Swagger UI) en `http://127.0.0.1:8000/docs`.
 
+## Variables de entorno
+
+La aplicación utiliza variables de entorno para la configuración en tiempo de
+ejecución. La única variable requerida es `GOOGLE_API_KEY` para el acceso al
+modelo de lenguaje (Gemini 1.5 Flash).
+
+### Requerida
+
+| Variable | Descripción |
+| --- | --- |
+| `GOOGLE_API_KEY` | Clave de API de Google AI Studio para el modelo Gemini 1.5 Flash |
+
+Configurar la variable en **PowerShell**:
+
+```powershell
+$env:GOOGLE_API_KEY = "tu-clave-de-api"
+```
+
+En **Linux/macOS (Bash)**:
+
+```bash
+export GOOGLE_API_KEY="tu-clave-de-api"
+```
+
+### Opcionales
+
+| Variable | Valor por defecto | Descripción |
+| --- | --- | --- |
+| `LLM_TEMPERATURE` | `0.2` | Temperatura de muestreo (0–2). Valores bajos favorecen respuestas determinísticas y basadas en fuentes |
+| `LLM_MAX_TOKENS` | `1024` | Máximo de tokens en la respuesta generada |
+
+El modelo de lenguaje está fijado a **Gemini 1.5 Flash** — el único modelo integrado en
+esta fase. No se puede seleccionar otro modelo mediante variables de entorno.
+
+### ⚠️ Nunca incluir claves en el repositorio
+
+Las claves de API, secretos y archivos `.env` **no deben ser versionados**.
+Agrega `.env` a tu `.gitignore` local si decides usar uno. La sección
+[Privacidad y seguridad](#privacidad-y-seguridad) detalla las políticas del
+proyecto.
+
 ## Pruebas
 
 ### Pruebas rápidas (sin modelo ni PDF)
@@ -62,8 +103,11 @@ Documentación interactiva de la API (Swagger UI) en `http://127.0.0.1:8000/docs
 pytest
 ```
 
-Estas pruebas (15) validan chunking, extracción de PDF (con error paths), y el
-endpoint de salud. No descargan el modelo de embeddings ni procesan PDFs reales.
+Estas pruebas (127) validan dataset, salud del servidor, chunking y extracción de
+PDF (con error paths), el adaptador LLM (Gemini 1.5 Flash con prompts, validación
+y respuestas estructuradas), y el endpoint RAG `/rag/query`. Todas las llamadas a
+la API de Gemini están mockeadas. No descargan el modelo de embeddings ni procesan
+PDFs reales.
 
 ### Pruebas lentas (requieren BGE-M3 y PDFs)
 
@@ -80,15 +124,17 @@ eliminación de chunks y generación de citas trazables. El modelo de embeddings
 
 ```text
 .
-├── backend/           Backend de la aplicación (Python)
-│   ├── main.py
-│   └── data/          Acceso tipado de solo lectura a los datos sintéticos
-├── tests/             Pruebas automatizadas
-├── .challenge-docs/   Documentación disponible del reto
-├── backend/           Aplicación Python (FastAPI)
+├── backend/               Aplicación Python (FastAPI)
 │   ├── __init__.py
 │   ├── main.py
-│   ├── rag/           RAG pipeline (ingestión, recuperación)
+│   ├── api/               Endpoints REST
+│   │   └── rag.py         POST /rag/query (consulta clínica con RAG)
+│   ├── llm/               Adaptador de modelo de lenguaje
+│   │   ├── __init__.py
+│   │   ├── config.py      Configuración fija (Gemini 1.5 Flash)
+│   │   └── adapter.py     Generación validada con citas trazables
+│   ├── data/              Acceso tipado de solo lectura a los datos sintéticos
+│   ├── rag/               RAG pipeline (ingestión, recuperación)
 │   │   ├── config.py
 │   │   ├── chunking.py
 │   │   ├── embeddings.py
@@ -96,23 +142,28 @@ eliminación de chunks y generación de citas trazables. El modelo de embeddings
 │   │   ├── ingestion.py
 │   │   ├── retrieval.py
 │   │   └── store.py
-│   └── persistence/   Acceso a SQLite y ChromaDB
+│   └── persistence/       Acceso a SQLite y ChromaDB
 │       └── chroma.py
-├── tests/             Pruebas automatizadas
+├── tests/                 Pruebas automatizadas
+│   ├── __init__.py
 │   ├── test_health.py
+│   ├── test_llm.py        Pruebas del adaptador LLM (41)
+│   ├── test_rag_api.py    Pruebas del endpoint /rag/query (13)
+│   ├── test_dataset/      Pruebas de acceso a datos sintéticos (58)
 │   └── rag/
 │       ├── conftest.py
 │       ├── test_chunking.py
 │       ├── test_extract.py
 │       └── test_ingestion_retrieval.py
-├── docs/              Documentación del proyecto
+├── docs/                  Documentación del proyecto
 │   ├── ARCHITECTURE.md
 │   ├── PROJECT.md
 │   └── STATUS.md
-├── dataset/           Datos sintéticos y documentos clínicos de referencia
-├── pyproject.toml     Declaración del proyecto y dependencias
-├── LICENSE            Licencia del repositorio
-└── README.md          Información del proyecto
+├── dataset/               Datos sintéticos y documentos clínicos de referencia
+├── .challenge-docs/       Documentación disponible del reto
+├── pyproject.toml         Declaración del proyecto y dependencias
+├── LICENSE                Licencia del repositorio
+└── README.md              Información del proyecto
 ```
 
 Los archivos de configuración del flujo de trabajo del proyecto (`AGENTS.md`,
