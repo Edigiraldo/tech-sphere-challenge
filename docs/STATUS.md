@@ -263,7 +263,21 @@ adapter contracts, and phased implementation plan are documented in
   transcription API call.  All 56 mocked unit tests updated; a focused test
   (``test_async_groq_client_instantiated_and_awaited``) proves ``AsyncGroq`` is
   instantiated and awaited.  Error mapping and behaviour preserved.
-- **2026-08-08:** Voice turn endpoints implemented.
+- **2026-08-08:** Metrics reporting endpoints and frontend dashboard implemented.
+  ``backend/api/metrics.py`` provides read-only ``GET /metrics/summary``,
+  ``GET /metrics/calls``, and ``GET /metrics/calls/{call_id}`` with typed
+  Pydantic response models.  Module-level ``InMemoryMetricsCollector`` singleton
+  shared with calls API for instrumentation.  ``InMemoryMetricsCollector``
+  extended with ``get_all_call_metrics()`` (sorted by ``call_id``) and
+  ``get_call_turns()`` (raw per-turn observations for ended calls), plus
+  ``reset()`` for test isolation.  ``backend/api/calls.py`` instruments
+  ``create_call`` and ``process_turn`` with ``start_call``, ``record_turn``
+  (latency-timed), and ``end_call`` calls without changing provider behaviour.
+  ``/metrics`` frontend page (``metrics.html`` + ``metrics.js``) displays a
+  summary dashboard, calls table, and per-call turn detail using the existing
+  visual language.  New focused tests cover the metrics API (17), collector behaviour (12), and frontend dashboard (2).
+  775 total fast tests pass.  Metrics are **in-memory only** — data is lost
+  on server restart.
   ``backend/api/calls.py`` — ``POST /calls`` (create call, return agent greeting
   as base64-encoded WAV), ``POST /calls/{call_id}/turn`` (transcribe patient audio
   via STT, delegate to ``ConversationOrchestrator``, classify escalation via

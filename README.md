@@ -16,8 +16,37 @@ Fase 1 (persistencia) y Fase 2 (RAG) parciales: la aplicación arranca, expone u
 endpoint de salud, y el pipeline completo de RAG (extracción → chunking → embedding
 BGE-M3 → almacenamiento ChromaDB → recuperación con citas trazables) está implementado
 y probado. El shell frontal local (vanilla HTML/CSS/JS) está disponible en `/`
-(selección de pacientes), `/call` (interfaz de llamada simulada) y `/admin` (consola
-de administración para subir, listar y eliminar documentos clínicos).
+(selección de pacientes), `/call` (interfaz de llamada simulada), `/admin` (consola
+de administración para documentos clínicos) y `/metrics` (panel de métricas del
+sistema).
+
+### API de Métricas
+
+La aplicación expone endpoints de solo lectura para observar el rendimiento del
+sistema.  Las métricas se almacenan **únicamente en memoria** — los datos se pierden
+al reiniciar el servidor.
+
+| Método | Ruta | Descripción |
+| --- | --- | --- |
+| `GET` | `/metrics/summary` | Agregado global de todas las llamadas finalizadas |
+| `GET` | `/metrics/calls` | Lista de agregados por llamada (finalizadas) |
+| `GET` | `/metrics/calls/{call_id}` | Detalle por llamada con desglose por turno |
+
+**GET /metrics/summary** devuelve: `call_count`, `total_turns`,
+`total_input_tokens`, `total_output_tokens`, `total_rag_queries`,
+`total_model_calls`, `total_estimated_cost_usd`, `latency_p50_ms`,
+`latency_p95_ms`, `tts_p50_ms`, `tts_p95_ms`, `stt_p50_ms`, `stt_p95_ms`,
+`llm_p50_ms`, `llm_p95_ms`.  Los campos opcionales (tokens, costos, percentiles de
+componentes) se serializan como `null` cuando no hay datos.
+
+**GET /metrics/calls** devuelve `{"calls": [...]}` con `call_id`, `patient_id`,
+`turn_count`, `total_latency_ms`, `total_input_tokens`, `total_output_tokens`,
+`total_rag_queries`, `model_calls`, `estimated_cost_usd` por llamada.
+
+**GET /metrics/calls/{call_id}** devuelve los mismos campos de agregado más un
+array `turns` con `call_id`, `turn_index`, `total_latency_ms`, `model`,
+`rag_queries`, `timestamp`, `tts_duration_ms`, `stt_duration_ms`,
+`llm_duration_ms`, `input_tokens`, `output_tokens`, `estimated_cost_usd` por turno.
 
 ## Requisitos
 
@@ -110,15 +139,13 @@ proyecto.
 pytest
 ```
 
-Estas pruebas (538) validan dataset, salud del servidor, chunking y extracción de
+Estas pruebas (775) validan dataset, salud del servidor, chunking y extracción de
 PDF (con error paths), el adaptador LLM (Llama 3.1 70B Versatile con prompts,
-validación y respuestas estructuradas), y el endpoint RAG `/rag/query`. Todas las
-llamadas a la API de Groq están mockeadas. No descargan el modelo de embeddings ni
-procesan PDFs reales.
-También cubren la capa de persistencia, los módulos de voz (STT/TTS), el motor de
-conversación, el clasificador de escalamiento y el shell frontal. Todas las llamadas
-a las APIs externas están mockeadas. No descargan el modelo de embeddings ni
-procesan PDFs reales.
+validación y respuestas estructuradas), el endpoint RAG `/rag/query`, la capa de persistencia,
+los módulos de voz (STT/TTS), el motor de conversación, el clasificador de
+escalamiento, el shell frontal, y los endpoints y colector de métricas.
+Todas las llamadas a la API de Gemini y Groq están mockeadas. No descargan el modelo
+de embeddings ni procesan PDFs reales.
 
 ### Pruebas lentas (requieren BGE-M3 y PDFs)
 
@@ -140,7 +167,9 @@ eliminación de chunks y generación de citas trazables. El modelo de embeddings
 │   ├── main.py            Punto de entrada, incluye servido de archivos estáticos
 │   ├── api/               Endpoints REST
 │   │   ├── rag.py         POST /rag/query (consulta clínica con RAG)
-│   │   └── documents.py   POST/GET/DELETE /documents
+│   │   ├── documents.py   POST/GET/DELETE /documents
+│   │   ├── calls.py       POST /calls, POST /calls/{call_id}/turn
+│   │   └── metrics.py     GET /metrics/summary, /metrics/calls, /metrics/calls/{call_id}
 │   ├── llm/               Adaptador de modelo de lenguaje
 │   │   ├── __init__.py
 │   │   ├── config.py      Configuración fija (Llama 3.1 70B)
@@ -158,18 +187,25 @@ eliminación de chunks y generación de citas trazables. El modelo de embeddings
 │   ├── decision/          Clasificación de escalamiento
 │   ├── conversation/      Orquestación de conversación
 │   ├── voice/             Adaptadores STT y TTS
+│   ├── metrics/            Instrumentación de métricas
+│   │   ├── collector.py    Colector thread-safe en memoria
+│   │   ├── models.py       Modelos de datos (TurnMetrics, CallMetrics, MetricsSummary)
+│   │   ├── cost.py         Estimación de costos de tokens
+│   │   └── percentiles.py  Cómputo de percentiles por interpolación lineal
 │   └── persistence/       Acceso a SQLite y ChromaDB
 │       ├── chroma.py
 │       └── sqlite.py
 ├── frontend/              Shell frontal (HTML/CSS/JS vanilla)
 │   ├── index.html         Página de selección de paciente
 │   ├── call.html          Interfaz de llamada simulada
+│   ├── metrics.html       Panel de métricas del sistema
 │   ├── admin.html         Consola de administración de documentos
 │   ├── styles.css         Estilos compartidos
 │   ├── data.js            Catálogo compartido de pacientes sintéticos
 │   ├── app.js             Lógica de selección de paciente
 │   ├── call.js            Lógica de interfaz de llamada
-│   └── admin.js           Lógica de consola de administración
+│   ├── admin.js            Lógica de consola de administración
+│   └── metrics.js          Lógica del panel de métricas
 ├── tests/                 Pruebas automatizadas
 │   ├── __init__.py
 │   ├── test_frontend.py   Pruebas de servido de archivos estáticos (8)

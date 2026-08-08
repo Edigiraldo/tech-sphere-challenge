@@ -77,15 +77,26 @@ def mock_tts():
 
 @pytest.fixture(autouse=True)
 def setup_voice_mocks(mock_stt, mock_tts):
-    """Inject mock STT/TTS into the calls module before each test.
+    """Inject mock STT/TTS into the calls module and reset shared
+    module-level state (metrics collector, turn-index counter) before
+    each test so tests are isolated.
 
     Uses ``unittest.mock.patch`` on the module-level globals so every
     endpoint call goes through the mocks.
     """
+    from backend.api.calls import _call_turn_index
+    from backend.api.metrics import metrics_collector
+
+    metrics_collector.reset()
+    _call_turn_index.clear()
+
     with patch("backend.api.calls._stt", mock_stt), patch(
         "backend.api.calls._tts", mock_tts
     ):
         yield
+
+    metrics_collector.reset()
+    _call_turn_index.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -665,6 +676,47 @@ class TestTurnEndpoint:
                 json={"audio_base64": _MOCK_AUDIO_B64},
             )
         assert resp_after.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_turn_indices_sequential_across_ended_call(self, call_id):
+        """After walking through a full multi-turn call, the metrics
+        collector reports sequential turn indices (0, 1, 2, …) including
+        for the final turn (regression: the final turn was reported as
+        index 0 because ``_call_turn_index`` was popped before the index
+        was read).
+        """
+        transport = ASGITransport(app=app)
+
+        # Walk the full call: greeting → consent → 6 questions → closing → ENDED
+        # That is 2 (greeting + consent) + 6 (question answers) + 1 (closing) = 9 turns
+        for _ in range(9):
+            async with AsyncClient(
+                transport=transport, base_url="http://test"
+            ) as client:
+                resp = await client.post(
+                    f"/calls/{call_id}/turn",
+                    json={"audio_base64": _MOCK_AUDIO_B64},
+                )
+            assert resp.status_code == 200
+
+        # The call should be ended now.
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            detail_resp = await client.get(f"/metrics/calls/{call_id}")
+
+        assert detail_resp.status_code == 200
+        detail = detail_resp.json()
+
+        # All 9 turns must be recorded.
+        assert detail["turn_count"] == 9
+        assert len(detail["turns"]) == 9
+
+        # Turn indices must be exactly 0, 1, 2, …, 8 in order.
+        indices = [t["turn_index"] for t in detail["turns"]]
+        assert indices == list(range(9)), (
+            f"Expected sequential indices 0..8, got {indices}"
+        )
 
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tech Sphere Challenge — Métricas</title>
+    <link rel="stylesheet" href="/static/styles.css">
+    <style>
+        /* Metrics-specific styles */
+        .metrics-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            gap: 1rem;
+            margin-bottom: 1.5rem;
+        }
+
+        .metric-box {
+            background-color: #f8fafc;
+            border: 1px solid #e2e8f0;
+            border-radius: 6px;
+            padding: 0.75rem 1rem;
+            text-align: center;
+        }
+
+        .metric-box .metric-value {
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: #1e3a5f;
+        }
+
+        .metric-box .metric-label {
+            font-size: 0.8rem;
+            color: #64748b;
+            margin-top: 0.25rem;
+        }
+
+        .metric-null {
+            color: #94a3b8 !important;
+            font-style: italic;
+            font-size: 1rem !important;
+        }
+
+        .percentile-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+            gap: 0.75rem;
+            margin-bottom: 1.5rem;
+        }
+
+        .percentile-box {
+            background-color: #f0f4ff;
+            border: 1px solid #dbeafe;
+            border-radius: 6px;
+            padding: 0.6rem 0.75rem;
+        }
+
+        .percentile-box .pct-label {
+            font-size: 0.75rem;
+            font-weight: 600;
+            color: #475569;
+            text-transform: uppercase;
+        }
+
+        .percentile-box .pct-value {
+            font-size: 1.1rem;
+            font-weight: 700;
+            color: #1e3a5f;
+        }
+
+        .calls-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.85rem;
+        }
+
+        .calls-table th,
+        .calls-table td {
+            padding: 0.5rem 0.75rem;
+            text-align: left;
+            border-bottom: 1px solid #e2e8f0;
+        }
+
+        .calls-table th {
+            background-color: #f8fafc;
+            font-weight: 600;
+            color: #475569;
+            font-size: 0.8rem;
+            text-transform: uppercase;
+            letter-spacing: 0.03em;
+        }
+
+        .calls-table tr:hover {
+            background-color: #f8fafc;
+        }
+
+        .calls-table .call-link {
+            color: #2563eb;
+            text-decoration: none;
+            font-weight: 600;
+        }
+
+        .calls-table .call-link:hover {
+            text-decoration: underline;
+        }
+
+        .turn-detail {
+            margin-top: 1rem;
+        }
+
+        .turn-row {
+            background-color: #f8fafc;
+            border: 1px solid #e2e8f0;
+            border-radius: 6px;
+            padding: 0.75rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .turn-row .turn-header {
+            font-weight: 600;
+            color: #1e3a5f;
+            margin-bottom: 0.35rem;
+        }
+
+        .turn-row .turn-field {
+            font-size: 0.85rem;
+            color: #475569;
+            margin: 0.15rem 0;
+        }
+
+        .loading-text {
+            color: #94a3b8;
+            font-style: italic;
+            text-align: center;
+            padding: 2rem 0;
+        }
+
+        .nav-links {
+            display: flex;
+            gap: 1rem;
+            margin-bottom: 1.5rem;
+            flex-wrap: wrap;
+        }
+
+        .nav-link {
+            color: #2563eb;
+            text-decoration: none;
+            font-weight: 600;
+            font-size: 0.9rem;
+            padding: 0.4rem 0.8rem;
+            border: 1px solid #2563eb;
+            border-radius: 6px;
+            transition: background-color 0.2s;
+        }
+
+        .nav-link:hover {
+            background-color: #dbeafe;
+        }
+
+        .nav-link.active {
+            background-color: #2563eb;
+            color: #ffffff;
+        }
+
+        .detail-back {
+            margin-bottom: 1rem;
+        }
+
+        .detail-back a {
+            color: #2563eb;
+            text-decoration: none;
+            font-weight: 600;
+            font-size: 0.9rem;
+        }
+
+        .detail-back a:hover {
+            text-decoration: underline;
+        }
+    </style>
+</head>
+<body>
+
+<header class="app-header">
+    <h1>Tech Sphere Challenge</h1>
+    <span class="app-subtitle">Métricas del Sistema</span>
+</header>
+
+<main class="main-content">
+    <nav class="nav-links" id="nav-links">
+        <a href="/" class="nav-link">Inicio</a>
+        <a href="/metrics" class="nav-link active">Métricas</a>
+    </nav>
+
+    <section id="summary-section" class="card">
+        <h2>Resumen Global</h2>
+        <div id="summary-content" class="loading-text">Cargando métricas...</div>
+    </section>
+
+    <section id="calls-section" class="card">
+        <h2>Llamadas Completadas</h2>
+        <div id="calls-content" class="loading-text">Cargando llamadas...</div>
+    </section>
+
+    <section id="detail-section" class="card hidden">
+        <div class="detail-back">
+            <a href="#" id="detail-back-link">&larr; Volver a la lista de llamadas</a>
+        </div>
+        <h2 id="detail-title">Detalle de Llamada</h2>
+        <div id="detail-content"></div>
+    </section>
+</main>
+
+<footer class="app-footer">
+    <p>Datos sintéticos — Sin fines clínicos reales</p>
+</footer>
+
+<script src="/static/metrics.js"></script>
+</body>
+</html>
