@@ -85,6 +85,24 @@ user whether those changes should be committed or otherwise handled first.
 - Integrate branches only when the user explicitly requests it.
 - Never commit, amend, reset, or push unless the user explicitly authorizes it.
 
+### Commit message format
+
+When the user explicitly authorizes a commit, use a Conventional Commit. Use a
+multi-line message when the change has meaningful scope, multiple files, behavior,
+tests, compatibility notes, or architectural impact. A trivial one-line change may
+use only the concise subject line.
+
+```text
+type: concise summary
+
+- Detailed change or behavior implemented.
+- Relevant tests or verification performed.
+- Important scope or compatibility notes.
+```
+
+The first line must be a single concise subject line. The body must explain what was
+implemented in enough detail to be useful in the project history.
+
 ## Escalation loop
 
 - If the auditor rejects due to an implementation defect, send the report to `@coder`.
