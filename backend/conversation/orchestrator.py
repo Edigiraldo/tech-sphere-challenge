@@ -326,10 +326,20 @@ class ConversationOrchestrator:
             question_index=self._question_index,
         )
 
-        # Advance question index and ask the next one
+        # The question index *just answered* is used for escalation
+        # classification; the orchestrator advances it afterwards to
+        # point to the *next* question the agent will ask.
+        answered_idx = self._question_index
         self._question_index += 1
+
         if self._question_index >= _NUM_QUESTIONS:
-            return self._close_questions(response_msg, citations=citations)
+            # All questions answered → CLOSING.  Pass answered_idx+1 so
+            # the escalation layer can infer the mobility domain (index 5).
+            return self._close_questions(
+                response_msg,
+                citations=citations,
+                question_index=answered_idx + 1,
+            )
         else:
             return self._ask_next_question(after_message=response_msg, citations=citations)
 
@@ -375,8 +385,17 @@ class ConversationOrchestrator:
         self,
         final_message: Optional[str] = None,
         citations: Optional[list[dict[str, Any]]] = None,
+        question_index: Optional[int] = None,
     ) -> OrchestratorTurn:
-        """Transition QUESTIONS → CLOSING and produce closing message."""
+        """Transition QUESTIONS → CLOSING and produce closing message.
+
+        Parameters
+        ----------
+        question_index : int or None
+            When provided (after the last follow-up question was answered),
+            this equals ``_NUM_QUESTIONS`` so the escalation layer can
+            infer the ``movilidad`` domain for the final answer.
+        """
         self._transition(Event.QUESTIONS_COMPLETE)
 
         pc = self._call_context.patient_context
@@ -395,7 +414,12 @@ class ConversationOrchestrator:
             full = closing
 
         self._record_agent(full)
-        return self._make_turn(full, citations=citations or [], requires_response=True)
+        return self._make_turn(
+            full,
+            citations=citations or [],
+            question_index=question_index,
+            requires_response=True,
+        )
 
     # -- helper: end call ----------------------------------------------------
 

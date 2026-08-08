@@ -161,11 +161,7 @@ adapter contracts, and phased implementation plan are documented in
 ## In Progress
 
 - Remaining Phase 1 SQLite tables (calls, summaries, escalation_alerts).
-- TTS adapter (Phase 4, depends on D5).
 - Audio transport format — decision D5 pending (Phase 6).
-- Conversation orchestration with RAG and escalation (Phase 5, depends on D8).
-- Conversation orchestration integration with RAG and decision engine
-  (Phase 5 — decision-engine wiring and full integration tests remain pending D8).
 
 ## Completed (setup)
 
@@ -211,6 +207,19 @@ adapter contracts, and phased implementation plan are documented in
   transcription API call.  All 56 mocked unit tests updated; a focused test
   (``test_async_groq_client_instantiated_and_awaited``) proves ``AsyncGroq`` is
   instantiated and awaited.  Error mapping and behaviour preserved.
+- **2026-08-08:** Voice turn endpoints implemented.
+  ``backend/api/calls.py`` — ``POST /calls`` (create call, return agent greeting
+  as base64-encoded WAV), ``POST /calls/{call_id}/turn`` (transcribe patient audio
+  via STT, delegate to ``ConversationOrchestrator``, classify escalation via
+  ``backend/decision/classify``, synthesise agent response via TTS, return
+  base64-encoded WAV).  ``backend/api/call_store.py`` — thread-safe in-memory
+  ``CallStore`` (``asyncio.Lock``-protected ``dict``).  Orchestrator runs with
+  ``rag_config=None``, ``llm_config=None`` (deterministic fallback messages).
+  Escalation classification is wired during the QUESTIONS phase: domain is
+  inferred from question index.  STT/TTS are injectable via module-level
+  ``set_stt()`` / ``set_tts()``.  41 focused tests pass (all STT/TTS calls
+  mocked).  ``backend/main.py`` registers the ``calls_router``.
+  All 278 existing conversation + decision tests continue to pass.
 - **2026-08-08:** STT adapter foundation (Phase 4 partial).  ``backend/voice/`` with
   typed ``SttProvider`` Protocol, ``TranscriptionResult``, ``SttError`` exception
   hierarchy, frozen ``GroqWhisperConfig``, ``GroqWhisperProvider`` adapter, and
@@ -266,11 +275,11 @@ adapter contracts, and phased implementation plan are documented in
 Implementation follows the eight-phase plan in `docs/ARCHITECTURE.md` § Phased
 Implementation Plan (sole source of truth for milestones and deliverables).
 
-Phase 1 (persistence) and Phase 2 (document lifecycle + RAG) are substantially
-complete. The immediate next step is completing the remaining Phase 1 SQLite tables
-(calls, summaries, escalation_alerts), followed by the Phase 4 TTS adapter and
-Phase 5 conversation orchestration with
-RAG-backed dialogue and escalation (blocked on D8).
+Phase 1 (persistence), Phase 2 (document lifecycle + RAG), Phase 3 (LLM adapter),
+Phase 4 (STT + TTS adapters), and Phase 5 (conversation orchestration with
+escalation) are substantially complete.  The immediate next step is completing
+the remaining Phase 1 SQLite tables (calls, summaries, escalation_alerts) and
+resolving the audio transport format decision (D5).
 
 ## Open Architectural Decisions
 

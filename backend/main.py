@@ -28,8 +28,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from backend.api.rag import rag_router
+from backend.api.calls import calls_router
 from backend.api.documents import documents_router
+from backend.api.rag import rag_router
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +69,7 @@ def create_app() -> FastAPI:
     # -----------------------------------------------------------------------
     # API routers
     # -----------------------------------------------------------------------
+    app.include_router(calls_router)
     app.include_router(rag_router)
     app.include_router(documents_router)
 
