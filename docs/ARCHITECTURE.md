@@ -134,10 +134,11 @@ escalation_alerts    — call_id, turn_id, symptoms, timestamp
 
 ```
 collection: clinical_knowledge
+  distance: cosine  (configured via hnsw:space metadata)
   id: uuid
-  embedding: BGE-M3 float vector (1024 dimensions)
+  embedding: BGE-M3 float vector (1024 dimensions, L2-normalised)
   document: chunk text
-  metadata: document_id, source_filename, chunk_index, page_number, ingested_at
+  metadata: document_id, source_filename, chunk_index, page_number, ingested_at (UTC ISO-8601)
 ```
 
 ### Key rules
@@ -224,12 +225,19 @@ These decisions affect multiple modules or have meaningful alternatives. Each ha
 | D1 | Language model selection | Gemini 1.5 Flash / Llama 3.1 70B (Groq) / Llama 3.2 local / Phi-3.5 Mini local | D4 | Start of Phase 3 |
 | D2 | STT provider | Groq Whisper Large V3 / browser Web Speech API / local Whisper (Ollama) | D4, D5 | Start of Phase 4 |
 | D3 | TTS provider | Kokoro-82M / Piper | D4, D5 | Start of Phase 4 |
-| D4 | Backend framework | FastAPI (async, WebSocket-native) vs. Flask-SocketIO | — | Start of Phase 1 |
 | D5 | Audio transport format | Raw PCM16 / Opus-encoded / MediaRecorder chunks | D4 | Start of Phase 6 |
-| D6 | Chunking strategy | Fixed-size with overlap vs. semantic/sentence-boundary splitting | — | Start of Phase 2 |
 | D7 | LLM provider failover | Single provider vs. fallback chain | D1 | Start of Phase 3 |
 | D8 | Patient data loading | Load all 40 profiles at startup vs. lazy-load per call | D1, D4 | Start of Phase 5 |
 
-When an open decision is resolved, move it to a resolved section with the chosen option
-and rationale. Add decisions here only when they affect multiple modules, are difficult
-to reverse, or have meaningful alternatives — avoid routine implementation steps.
+## Resolved Decisions
+
+| # | Decision | Chosen option | Rationale | Resolved |
+|---|----------|--------------|-----------|----------|
+| D4 | Backend framework | **FastAPI** (async, WebSocket-native) | Required for WebSocket call interface (Phase 6), async-native, strong OpenAPI support for the administration console (Phase 7). Already implemented in Phase 1. | Phase 1 |
+| D6 | Chunking strategy | **Fixed-size with overlap** (800 chars, 150 overlap) | Simple, predictable, well-tested. The 800-character default balances context completeness against retrieval precision for the challenge's clinical PDFs (typically 1–3 paragraphs per page). The 150-character overlap prevents splitting mid-sentence while keeping the duplication ratio below 19 %. Both values are tunable via env vars (``RAG_CHUNK_SIZE``, ``RAG_CHUNK_OVERLAP``). Implemented in Phase 2. | Phase 2 |
+| D9 | PDF text extraction library | **pdfplumber** | Reliable character-level extraction, explicit page numbers, and consistent Unicode handling for Spanish clinical text. pdfplumber is actively maintained, has no external system dependencies, and produces structured page-by-page output — all critical for traceable source citations. pyMuPDF was considered but its AGPL license is incompatible with the challenge's proprietary license. | Phase 2 |
+
+When an open decision is resolved, move it to this resolved section with the chosen
+option and rationale. Add decisions here only when they affect multiple modules, are
+difficult to reverse, or have meaningful alternatives — avoid routine implementation
+steps.

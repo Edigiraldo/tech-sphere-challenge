@@ -39,3 +39,7 @@ Thumbs.db
 *.db
 *.sqlite3
 chroma_data/
+
+# Model cache (downloaded embeddings and sentence-transformers models)
+sentence_transformers_cache/
+.cache/

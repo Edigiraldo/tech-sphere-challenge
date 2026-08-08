@@ -2,11 +2,14 @@
 
 ## Current Phase
 
-Phase 1 in progress: the FastAPI project skeleton, `/health` endpoint, and normalized
-read-only dataset access package are implemented and tested. Persistence and the RAG
-foundation are the next deliverables. The modular monolith architecture, module
-boundaries, data flows, persistence design, adapter contracts, and phased plan are
-documented in `docs/ARCHITECTURE.md`.
+Phase 1 (persistence) and Phase 2 (RAG ingestion/retrieval) core are implemented as
+the first minimal RAG slice. The ChromaDB access layer and full RAG pipeline (extract →
+chunk → embed → store → retrieve) are available and tested. No HTTP endpoints, document
+lifecycle, voice, or LLM modules have been added yet.
+
+The modular monolith architecture, module boundaries, data flows, persistence design,
+adapter contracts, and phased implementation plan are documented in
+`docs/ARCHITECTURE.md`.
 
 ## Completed
 
@@ -22,14 +25,6 @@ documented in `docs/ARCHITECTURE.md`.
   ``Trajectory``, ``Conversation``, ``ConversationTurn``, ``PDFReference``), XLSX
   loaders, and PDF path resolver.  ``label_ground_truth`` is isolated from runtime
   code via module boundaries and static tests.  58 dataset tests pass.
-
-## In Progress
-
-- Phase 1 continuation: project skeleton (backend framework, config) and persistence
-  layer (SQLite + ChromaDB initialisation).  Framework decision D4 is the next open
-  decision to resolve.
-
-## Recent Changes
 
 - **2026-08-07:** ``backend/data/`` dataset access package implemented.  Normalized
   read-only models for patients (merged clinical + demographic), trajectories,
@@ -54,20 +49,60 @@ documented in `docs/ARCHITECTURE.md`.
   conciseness and sustainability; duplicated milestones table removed from STATUS.md
   in favor of a pointer to the architecture roadmap; README.md updated with link to
   full technical architecture.
+- FastAPI project skeleton: `pyproject.toml` with dependencies, local venv setup
+  instructions, `backend/main.py` with CORS middleware and `GET /health` returning
+  `{"status": "ok"}`, and entry-point script (`tech-sphere`).
+- `tests/test_health.py` validates the `/health` endpoint.
+- **Persistence layer (partial):** `backend/persistence/chroma.py` — ChromaDB
+  `ChromaStore` wrapper with collection init, chunk insertion, document-chunk deletion,
+  and module-level singleton. SQLite tables remain unimplemented (deferred to later
+  Phase 1 work).
+- **RAG pipeline:** `backend/rag/` — `config.py` (dataclass with env-var overrides),
+  `extract.py` (pdfplumber-based PDF text extraction), `chunking.py` (fixed-size
+  overlapping chunks with full metadata), `embeddings.py` (BGE-M3 via
+  sentence-transformers as ChromaDB embedding function), `store.py` (ChromaDB add/query
+  ops), `ingestion.py` (extract → chunk → store pipeline), `retrieval.py`
+  (embed query → similarity search → `RetrievalResult` with citations).
+- Open decision D6 (chunking strategy) resolved: fixed-size with overlap.
+- Fast tests (15) pass: chunking unit tests, extraction error paths, health endpoint.
+  Slow tests (10) for full ingestion/retrieval are gated behind `pytest.mark.slow`.
+
+## In Progress
+
+- Full Phase 1 (SQLite persistence tables for calls, summaries, documents).
+- Document lifecycle module (`backend/documents/`).
+
+## Recent Changes
+
+- **2026-08-07 (pm):** RAG slice audit remediation. Configured ChromaDB collection
+  with ``hnsw:space: cosine`` for correct cosine similarity semantics with BGE-M3
+  embeddings. Added UTC ``ingested_at`` metadata to every stored chunk. Added
+  autouse test fixture resetting the ChromaStore singleton between tests. Added
+  security comment for ``trust_remote_code=True``. Documented pdfplumber choice
+  and 800/150 defaults rationale in ``docs/ARCHITECTURE.md``.
+- **2026-08-07:** First minimal RAG slice implemented. Added `backend/persistence/`
+  (ChromaDB access), `backend/rag/` (extract, chunk, embed, store, retrieve),
+  `tests/rag/` (fixtures and 25 tests, 10 slow). Updated `pyproject.toml` with
+  chromadb, sentence-transformers, pdfplumber dependencies. Added model cache and
+  ChromaDB runtime data to `.gitignore`. Resolved open decision D6 (chunking strategy
+  = fixed-size with overlap).
 
 ## Next Milestones
 
 Implementation follows the eight-phase plan in `docs/ARCHITECTURE.md` § Phased
 Implementation Plan (sole source of truth for milestones and deliverables).
 
-The immediate next milestone is Phase 1: project skeleton and persistence.
+The immediate next milestone is completing Phase 1 (SQLite schema) and Phase 2
+(document lifecycle + HTTP endpoints for document operations).
 
 ## Open Architectural Decisions
 
-These are tracked in `docs/ARCHITECTURE.md` § Open Decisions. The eight open decisions
-(D1–D8) cover language model selection, STT provider selection, TTS provider selection,
-backend framework, audio transport format, chunking strategy, LLM failover, and patient
-data loading strategy. Each has a "resolve by" deadline tied to the phase that needs it.
+These are tracked in `docs/ARCHITECTURE.md` § Open Decisions. The six open decisions
+(D1, D2, D3, D5, D7, D8) cover language model selection, STT provider selection,
+TTS provider selection, audio transport format, LLM failover, and patient data loading
+strategy. Three decisions (D4, D6, D9) have been resolved: backend framework (FastAPI),
+chunking strategy (fixed-size with overlap), and PDF extraction library (pdfplumber).
+Each open decision has a "resolve by" deadline tied to the phase that needs it.
 
 ## Known Constraints
 

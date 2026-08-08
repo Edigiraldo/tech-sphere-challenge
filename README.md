@@ -12,10 +12,11 @@ llamada.
 
 ## Estado
 
-Fase 1 en progreso. El paquete `backend/data/` proporciona acceso tipado de solo
-lectura a los datos sintéticos y la aplicación arranca con un endpoint de salud.
-La persistencia, RAG, voz, conversación y las superficies de navegador se incorporan
-por fases.
+Fase 1 (persistencia) y Fase 2 (RAG) parciales: la aplicación arranca, expone un
+endpoint de salud, y el pipeline completo de RAG (extracción → chunking → embedding
+BGE-M3 → almacenamiento ChromaDB → recuperación con citas trazables) está implementado
+y probado. Las fases subsecuentes agregarán voz, conversación y las dos superficies de
+navegador.
 
 ## Requisitos
 
@@ -55,9 +56,25 @@ Documentación interactiva de la API (Swagger UI) en `http://127.0.0.1:8000/docs
 
 ## Pruebas
 
+### Pruebas rápidas (sin modelo ni PDF)
+
 ```bash
 pytest
 ```
+
+Estas pruebas (15) validan chunking, extracción de PDF (con error paths), y el
+endpoint de salud. No descargan el modelo de embeddings ni procesan PDFs reales.
+
+### Pruebas lentas (requieren BGE-M3 y PDFs)
+
+```bash
+pytest -m slow
+```
+
+Estas pruebas (10) validan el pipeline completo de RAG: ingestión de PDFs reales
+(Apendicectomía en inglés y español), embedding con BGE-M3, recuperación por similitud,
+eliminación de chunks y generación de citas trazables. El modelo de embeddings
+(~2 GB) se descarga automáticamente en el primer uso.
 
 ## Contenido versionado
 
@@ -69,7 +86,25 @@ pytest
 ├── tests/             Pruebas automatizadas
 ├── .challenge-docs/   Documentación disponible del reto
 ├── backend/           Aplicación Python (FastAPI)
-│   └── rag/            Ingestión y recuperación de conocimiento clínico
+│   ├── __init__.py
+│   ├── main.py
+│   ├── rag/           RAG pipeline (ingestión, recuperación)
+│   │   ├── config.py
+│   │   ├── chunking.py
+│   │   ├── embeddings.py
+│   │   ├── extract.py
+│   │   ├── ingestion.py
+│   │   ├── retrieval.py
+│   │   └── store.py
+│   └── persistence/   Acceso a SQLite y ChromaDB
+│       └── chroma.py
+├── tests/             Pruebas automatizadas
+│   ├── test_health.py
+│   └── rag/
+│       ├── conftest.py
+│       ├── test_chunking.py
+│       ├── test_extract.py
+│       └── test_ingestion_retrieval.py
 ├── docs/              Documentación del proyecto
 │   ├── ARCHITECTURE.md
 │   ├── PROJECT.md
