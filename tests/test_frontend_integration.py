@@ -131,11 +131,13 @@ def setup_voice_mocks(mock_stt, mock_tts):
     to return an empty dict so tests do not trigger model downloads,
     XLSX reads, or external API connections.
     """
-    from backend.api.calls import _call_turn_index
+    from backend.api.calls import _call_escalations, _call_turn_index, _call_citations
     from backend.api.metrics import metrics_collector
 
     metrics_collector.reset()
     _call_turn_index.clear()
+    _call_escalations.clear()
+    _call_citations.clear()
 
     with patch("backend.api.calls._stt", mock_stt), patch(
         "backend.api.calls._tts", mock_tts
@@ -153,6 +155,8 @@ def setup_voice_mocks(mock_stt, mock_tts):
 
     metrics_collector.reset()
     _call_turn_index.clear()
+    _call_escalations.clear()
+    _call_citations.clear()
 
 
 # ---------------------------------------------------------------------------

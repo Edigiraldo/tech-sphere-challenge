@@ -21,8 +21,10 @@ from __future__ import annotations
 import base64
 import binascii
 import datetime
+import json
 import logging
 import time
+import uuid
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException
@@ -31,6 +33,7 @@ from pydantic import BaseModel, Field
 from backend.api.call_store import call_store
 from backend.api.metrics import metrics_collector
 from backend.conversation.context import PatientContext
+from backend.conversation.messages import MessageRole
 from backend.conversation.orchestrator import (
     ConversationOrchestrator,
     OrchestratorTurn,
@@ -42,7 +45,20 @@ from backend.data.models import Patient as DataPatient
 from backend.decision import classify, EscalationResult, Severity
 from backend.llm.config import LlmConfig
 from backend.metrics.models import TurnMetrics
+from backend.persistence.sqlite import (
+    CallRecord,
+    ConversationTurnRecord,
+    EscalationAlertRecord,
+    SummaryRecord,
+    insert_call as _db_insert_call,
+    insert_escalation_alert,
+    insert_summary,
+    insert_turns,
+    update_call_ended,
+)
 from backend.rag.config import RagConfig
+from backend.summaries.generator import generate_summary
+from backend.summaries.models import SourceReference
 from backend.voice.api import SttDependency, transcribe_audio
 from backend.voice.models import SttError
 from backend.voice.tts.config import TTSConfig
@@ -81,6 +97,12 @@ _tts_config: TTSConfig = TTSConfig()
 
 _call_turn_index: dict[str, int] = {}
 """Per-call turn index counter for metrics instrumentation."""
+
+_call_escalations: dict[str, list[EscalationInfo]] = {}
+"""Per-call accumulated escalation results for summary generation."""
+
+_call_citations: dict[str, list[CitationResponse]] = {}
+"""Per-call accumulated citations (deduplicated by document_id) for summary generation."""
 
 _DEFAULT_MODEL: str = "llama-3.1-70b-versatile"
 """Default model identifier for metrics when LLM is not invoked."""
@@ -273,6 +295,219 @@ def _get_patients() -> dict[str, DataPatient]:
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+
+def _persist_call_record(
+    call_id: str,
+    body: CreateCallRequest,
+    state: State,
+) -> None:
+    """Insert a ``CallRecord`` into SQLite for a newly created call.
+
+    Called from ``create_call`` after the orchestrator is stored so the
+    call row exists even if the first turn never arrives.
+    """
+    now = datetime.datetime.now(datetime.timezone.utc)
+    record = CallRecord(
+        call_id=call_id,
+        paciente_id=body.patient_id,
+        nombre_completo=body.nombre_completo,
+        procedimiento=body.procedimiento,
+        dia_postop=body.dia_postop,
+        eps=body.eps,
+        state=state.value,
+        started_at=now,
+        ended_at=None,
+        total_turns=0,
+        escalated=False,
+    )
+    try:
+        _db_insert_call(record)
+        logger.debug("CallRecord inserted for %s.", call_id)
+    except Exception:
+        logger.exception("Failed to persist CallRecord for %s.", call_id)
+
+
+def _persist_call_turns(
+    call_id: str,
+    turn_index: int,
+    patient_text: str,
+    agent_text: str,
+    severity: str | None,
+    domain: str | None,
+) -> None:
+    """Persist patient and agent ``ConversationTurnRecord`` entries.
+
+    The patient turn is recorded with ``severity`` / ``domain`` (when
+    an escalation classification was performed).  The agent turn records
+    only the response text.
+    """
+    now = datetime.datetime.now(datetime.timezone.utc)
+    try:
+        insert_turns([
+            ConversationTurnRecord(
+                turn_id=f"{call_id}-pt-{turn_index}",
+                call_id=call_id,
+                turn_index=turn_index * 2,
+                role="PATIENT",
+                text=patient_text,
+                timestamp=now,
+                severity=severity,
+                domain=domain,
+            ),
+            ConversationTurnRecord(
+                turn_id=f"{call_id}-at-{turn_index}",
+                call_id=call_id,
+                turn_index=turn_index * 2 + 1,
+                role="AGENT",
+                text=agent_text,
+                timestamp=now,
+            ),
+        ])
+        logger.debug(
+            "Turn %d persisted for call %s.", turn_index, call_id
+        )
+    except Exception:
+        logger.exception(
+            "Failed to persist turns for call %s turn %d.", call_id, turn_index
+        )
+
+
+def _persist_escalation_alert(
+    call_id: str,
+    escalation: EscalationInfo,
+) -> None:
+    """Persist an ``EscalationAlertRecord`` when severity is YELLOW or RED.
+
+    GREEN classifications are informational only and are not persisted as
+    standalone alerts.
+    """
+    if escalation.severity == "GREEN":
+        return
+    now = datetime.datetime.now(datetime.timezone.utc)
+    try:
+        insert_escalation_alert(
+            EscalationAlertRecord(
+                alert_id=uuid.uuid4().hex,
+                call_id=call_id,
+                created_at=now,
+                severity=escalation.severity,
+                reason=escalation.reason,
+                domain=escalation.domain,
+            )
+        )
+        logger.info(
+            "Escalation alert (%s) persisted for call %s in domain %s.",
+            escalation.severity,
+            call_id,
+            escalation.domain,
+        )
+    except Exception:
+        logger.exception(
+            "Failed to persist escalation alert for call %s.", call_id
+        )
+
+
+def _persist_call_summary(
+    orchestrator: ConversationOrchestrator,
+    escalation_results: list[EscalationInfo],
+    citations: list[CitationResponse],
+) -> None:
+    """Generate and persist a ``SummaryRecord`` when the call ends.
+
+    Uses the existing ``generate_summary()`` to produce a
+    ``SummaryResult``, then maps it to a ``SummaryRecord`` for SQLite
+    persistence.
+
+    Persistence failures are logged but never raised — the call has
+    already ended and the HTTP response must not be affected.
+    """
+    call_id = orchestrator.call_context.patient_context.call_id
+    pc = orchestrator.call_context.patient_context
+
+    # Build turn records from orchestrator history
+    turn_records: list[ConversationTurnRecord] = []
+    for msg in orchestrator.history:
+        role = "AGENT" if msg.role is MessageRole.AGENT else "PATIENT"
+        turn_records.append(
+            ConversationTurnRecord(
+                turn_id=uuid.uuid4().hex,
+                call_id=call_id,
+                turn_index=msg.turn_index,
+                role=role,
+                text=msg.text,
+                timestamp=msg.timestamp,
+            )
+        )
+
+    # Convert EscalationInfo → EscalationResult for the summary generator
+    esc_results: list[EscalationResult] = []
+    for info in escalation_results:
+        esc_results.append(
+            EscalationResult(
+                severity=Severity(info.severity),
+                should_escalate=info.should_escalate,
+                reason=info.reason,
+                next_action=info.next_action,
+                domain=info.domain,
+                source="rule",
+            )
+        )
+
+    # Build source references from citations
+    sources: list[SourceReference] = []
+    seen: set[str] = set()
+    for c in citations:
+        key = c.document_id
+        if key and key not in seen:
+            seen.add(key)
+            sources.append(
+                SourceReference(
+                    document_id=c.document_id,
+                    source_filename=c.source_filename,
+                    page_number=c.page_number,
+                )
+            )
+
+    try:
+        summary = generate_summary(
+            call_id=call_id,
+            patient_context=pc,
+            turns=turn_records,
+            escalation_results=esc_results,
+            sources=sources,
+        )
+    except Exception:
+        logger.exception(
+            "Failed to generate summary for call %s.", call_id
+        )
+        return
+
+    try:
+        insert_summary(
+            SummaryRecord(
+                summary_id=summary.summary_id,
+                call_id=summary.call_id,
+                created_at=summary.created_at,
+                patient_summary=summary.patient_summary.content,
+                procedure_summary=summary.procedure.content,
+                symptoms_summary="\n".join(
+                    s.content for s in summary.symptoms
+                ),
+                decision_summary=summary.decision.content,
+                sources_json=json.dumps(
+                    [
+                        [s.document_id, s.source_filename, s.page_number]
+                        for s in summary.sources
+                    ],
+                    ensure_ascii=False,
+                ),
+                next_steps=summary.next_steps.content,
+            )
+        )
+        logger.info("Summary %s persisted for call %s.", summary.summary_id, call_id)
+    except Exception:
+        logger.exception("Failed to persist summary for call %s.", call_id)
 
 
 def _build_data_patient(body: CreateCallRequest) -> DataPatient:
@@ -490,6 +725,11 @@ async def create_call(body: CreateCallRequest) -> CreateCallResponse:
     # Store the orchestrator for subsequent turn requests
     await call_store.put(patient_context.call_id, orchestrator)
 
+    # Persist the call record to SQLite (even before the first turn)
+    _persist_call_record(
+        patient_context.call_id, body, turn.state
+    )
+
     # Register with metrics collector
     metrics_collector.start_call(patient_context.call_id, body.patient_id)
     _call_turn_index[patient_context.call_id] = 0
@@ -595,11 +835,89 @@ async def process_turn(
     # retains its sequential index instead of falling back to 0.
     turn_index = _call_turn_index.get(call_id, 0)
 
-    # 7. If call has ended, clean up the orchestrator
+    # --- Persist conversation turns to SQLite ---------------------------
+    _persist_call_turns(
+        call_id=call_id,
+        turn_index=turn_index,
+        patient_text=patient_text,
+        agent_text=turn.agent_message,
+        severity=escalation.severity if escalation else None,
+        domain=escalation.domain if escalation else None,
+    )
+
+    # --- Persist escalation alert (YELLOW/RED only) ---------------------
+    if escalation is not None:
+        _persist_escalation_alert(call_id, escalation)
+
+    # Track escalation results for summary generation (module-level dict)
+    if escalation is not None:
+        _call_escalations.setdefault(call_id, []).append(escalation)
+
+    # Build citations for later summary use
+    turn_citations = [
+        CitationResponse(
+            chunk_id=c.get("chunk_id", ""),
+            document_id=c.get("document_id", ""),
+            source_filename=c.get("source_filename", ""),
+            page_number=c.get("page_number", 1),
+        )
+        for c in turn.citations
+    ]
+
+    # Accumulate citations per call (deduplicated by document_id)
+    # so the end-of-call summary includes sources from all turns,
+    # not only the last one.
+    if turn_citations:
+        per_call = _call_citations.setdefault(call_id, [])
+        existing_ids = {c.document_id for c in per_call}
+        for tc in turn_citations:
+            if tc.document_id and tc.document_id not in existing_ids:
+                per_call.append(tc)
+                existing_ids.add(tc.document_id)
+
+    # 7. If call has ended, clean up the orchestrator and persist
+    #    summary + final call state.
     if turn.call_ended:
+        # Generate and persist structured summary before removing
+        # the orchestrator (the orchestrator's history drives the
+        # summary content).
+        all_escalations_for_call = _call_escalations.get(call_id, [])
+        all_citations_for_call = _call_citations.get(call_id, [])
+        _persist_call_summary(
+            orchestrator,
+            escalation_results=all_escalations_for_call,
+            citations=all_citations_for_call,
+        )
+
+        # Update the call record: mark ended, set final state and
+        # total turn count (each HTTP turn = 2 conversation turns).
+        _total = (
+            (_call_turn_index.get(call_id, 0) + 1) * 2
+        )
+        _any_escalated = any(
+            e.should_escalate for e in all_escalations_for_call
+        )
+        try:
+            update_call_ended(
+                call_id=call_id,
+                state=turn.state.value,
+                ended_at=datetime.datetime.now(datetime.timezone.utc),
+                total_turns=_total,
+                escalated=_any_escalated,
+            )
+            logger.info(
+                "Call %s ended — SQLite update persisted.", call_id
+            )
+        except Exception:
+            logger.exception(
+                "Failed to update call-ended for call %s.", call_id
+            )
+
         await call_store.remove(call_id)
         metrics_collector.end_call(call_id)
         _call_turn_index.pop(call_id, None)
+        _call_escalations.pop(call_id, None)
+        _call_citations.pop(call_id, None)
         logger.info("Call %s ended — orchestrator removed from store.", call_id)
 
     # Record turn metrics with component timings
