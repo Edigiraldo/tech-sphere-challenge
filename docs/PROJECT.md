@@ -7,15 +7,21 @@ follow-up using synthetic Colombian patient data.
 
 The product must support:
 
-- Browser-based voice conversations in Spanish.
+- Spanish voice conversations via HTTP REST endpoints (``POST /calls``,
+  ``POST /calls/{call_id}/turn``) with base64-encoded WAV audio and browser-native
+  microphone capture (MediaRecorder). WebSocket/streaming transport remains future
+  work.
 - Clinical retrieval-augmented generation (RAG) with traceable source citations.
-- Live document upload, listing, processing status, and deletion (including purging
-  indexed chunks).
+- Live document upload, listing, processing-status tracking, and deletion (including
+  purging indexed chunks) via a REST API (``POST/GET/DELETE /documents``) and a
+  graphical administration console at ``/admin`` with upload, status polling, refresh,
+  and deletion.
 - Conservative escalation decisions with a safety-first classification policy.
 - Structured call summaries with patient, procedure, symptoms, decision, sources, and
   next steps.
 - Observable metrics: latency, token consumption, model invocations, RAG queries, and
-  estimated cost per call.
+  estimated cost per call. The metrics collector module feeds a read-only typed
+  metrics API endpoint (``GET /metrics``) and a metrics frontend view.
 
 The language model must be one of the four permitted by the challenge
 (`.challenge-docs/stack-tecnico.md`). The rest of the stack — orchestration, voice,
@@ -24,7 +30,11 @@ RAG, embeddings — is open choice.
 ## Architecture
 
 The target is a modular monolith: one Python backend with internal modules and a
-browser frontend with two surfaces (call interface and administration console).
+browser frontend. The frontend provides a call interface with real voice
+integration (MediaRecorder + WAV playback), an administration console at ``/admin``
+for document lifecycle management, and a metrics view. The document lifecycle
+backend (``POST/GET/DELETE /documents``) is a separate module from the
+administration console UI.
 See `docs/ARCHITECTURE.md` for the full module catalog, data flows, persistence
 boundaries, permitted adapters, phased implementation plan, and open decisions.
 
@@ -34,7 +44,7 @@ boundaries, permitted adapters, phased implementation plan, and open decisions.
 backend/               Application backend (Python modular monolith)
   data/                Normalized read-only dataset access (patients, trajectories,
                          conversations, PDF resolver)
-  api/                 REST and WebSocket endpoints
+  api/                 REST endpoints (calls, documents, RAG, metrics); WebSocket not yet implemented
   voice/               STT and TTS adapters
   conversation/        Dialogue orchestration and state machine
   llm/                 Permitted language model adapter
@@ -44,7 +54,7 @@ backend/               Application backend (Python modular monolith)
   summaries/           Structured call summary generation
   metrics/             Latency, token, and cost instrumentation
   persistence/         SQLite and ChromaDB access layer
-frontend/              Browser call and administration interfaces (planned)
+frontend/              Browser UI (vanilla HTML/CSS/JS): call interface with MediaRecorder + API, admin console, metrics
 dataset/               Synthetic challenge data and reference PDFs
 docs/                  Maintained project documentation
 .challenge-docs/       Challenge requirements and evaluation rules
