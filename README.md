@@ -12,14 +12,20 @@ llamada.
 
 ## Estado
 
-Repositorio inicial. La implementación de la aplicación aún está pendiente.
+Fase 1 en progreso. El paquete ``backend/data/`` — acceso tipado de solo lectura a
+los datos sintéticos — está implementado y probado (58 tests). El resto de la
+aplicación está pendiente.
 
 ## Contenido versionado
 
 ```text
 .
+├── backend/           Backend de la aplicación (Python)
+│   └── data/          Acceso tipado de solo lectura a los datos sintéticos
+├── tests/             Pruebas automatizadas
 ├── .challenge-docs/   Documentación disponible del reto
 ├── dataset/           Datos sintéticos y documentos clínicos de referencia
+├── docs/              Documentación del proyecto
 ├── LICENSE            Licencia del repositorio
 └── README.md          Información del proyecto
 ```

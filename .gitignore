@@ -1,3 +1,36 @@
 .challenge-docs/requerimientos.txt
 .challenge-docs/decisiones
 .worktrees/
+
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Test / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Packaging / build artefacts
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# Virtual environments
+.env
+.venv
+venv/
+env/
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
