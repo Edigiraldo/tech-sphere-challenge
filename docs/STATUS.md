@@ -190,6 +190,22 @@ adapter contracts, and phased implementation plan are documented in
   selected for its minimal footprint (~0.6 GB RAM), CPU-only inference, and natural
   Spanish voice quality (``ef_dora``).  ``kokoro>=0.7.0`` added to optional
   ``voice`` extras in ``pyproject.toml``.  51 fast tests pass.
+- **2026-08-08:** Metrics instrumentation implemented (``backend/metrics/``).
+  Typed frozen dataclasses (``TurnMetrics``, ``CallMetrics``, ``MetricsSummary``)
+  with full field-level validation.  ``MetricsCollector`` Protocol defining the
+  public contract (``start_call``, ``record_turn``, ``end_call``,
+  ``get_call_metrics``, ``get_summary``).  Thread-safe ``InMemoryMetricsCollector``
+  implementation with ``threading.Lock``, defensive lifecycle management, and
+  immutable-snapshot queries.  ``CallMetrics.from_turns()`` aggregates token
+  counts with "all-None → None" semantics (absent values are zero when any turn
+  has data).  ``CostConfig`` frozen dataclass with non-negative per-million-token
+  rates and ``estimate_cost()`` function.  Percentile computation via linear
+  interpolation (returns ``None`` for empty data, validates ``p`` ∈ [0, 100],
+  P50/P95 tested).  ``MetricsSummary`` includes per-turn latency and optional
+  component-duration (TTS/STT/LLM) P50/P95 percentiles.  82 focused tests pass
+  covering recording, aggregation, missing optional values, thread safety,
+  defensive edge cases, cost estimation, and percentile correctness.  No new
+  dependencies.  Stdlib-only.
 - **2026-08-08:** STT adapter made truly async.  ``GroqWhisperProvider._call_groq``
   now uses ``groq.AsyncGroq`` (instead of synchronous ``groq.Groq``) and awaits the
   transcription API call.  All 56 mocked unit tests updated; a focused test
