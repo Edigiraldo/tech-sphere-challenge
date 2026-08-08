@@ -41,7 +41,7 @@ voice-call interface).
 │  └─────┬────┘  └──────┬──────┘  └─────┬─────┘  └──────┬──────┘     │
 │        │              │               │               │             │
 │  ┌─────┴──────────────┴───────────────┴───────────────┴──────┐     │
-│  │  llm/                     Gemini 1.5 Flash adapter         │     │
+│  │  llm/                     Llama 3.1 70B (Groq) adapter     │     │
 │  └────────────────────────────────────────────────────────────┘     │
 │        │              │                                             │
 │  ┌─────┴────┐  ┌──────┴──────┐                                      │
@@ -75,7 +75,7 @@ voice-call interface).
 | `api/` | HTTP REST + WebSocket surface. Validates inputs, delegates to domain modules. | Only layer the browser touches. No business logic. |
 | `voice/` | STT and TTS adapters behind a common interface. | Pure I/O adapter. Owns no state, patient data, or clinical knowledge. |
 | `conversation/` | Call state machine: greeting → consent → structured questions → close. Composes prompts from patient profile + RAG chunks, calls `llm/` for reasoning, `decision/` for classification. | Owns turn state and prompt assembly. Never calls `documents/` or touches persistence/embeddings directly. |
-| `llm/` | Adapter for Gemini 1.5 Flash (the only model currently integrated). Accepts prompt → returns structured response. | Knows nothing about voice, documents, RAG, or escalation. Pure text-in/text-out. |
+| `llm/` | Adapter for Llama 3.1 70B Versatile via Groq Cloud (the only model currently integrated). Accepts prompt → returns structured response. | Knows nothing about voice, documents, RAG, or escalation. Pure text-in/text-out. |
 | `rag/` | Ingestion (extract → chunk → embed BGE-M3 → store in ChromaDB) and retrieval (embed query → similarity search → return chunks + metadata). | Owns the embedding model, ChromaDB collection, chunking and retrieval. Does not own document lifecycle or know about patients/conversations. |
 | `documents/` | Document lifecycle: upload, list, status, delete. Orchestrates metadata in SQLite and triggers RAG ingestion/deletion. | Calls `rag/` for ingestion and purge. Does not call `rag/` for retrieval. |
 | `decision/` | Escalation classifier (Green / Yellow / Red). Runs after every LLM response using explicit symptom rules cross-checked against the LLM's classification. | Isolated from RAG, voice, and documents. Produces a verdict; does not modify conversation flow. Conservative: false negatives are catastrophic. |
@@ -154,13 +154,15 @@ collection: clinical_knowledge
 
 ## Permitted Models and Voice Adapters
 
-The language model is **Gemini 1.5 Flash** (resolved decision D1) — the only model
-currently integrated. It was chosen for its 1M-token context window, 15 RPM free tier
-via Google AI Studio, and strong Spanish-language performance. Other models permitted
-by the challenge (Llama 3.1, Llama 3.2, Phi-3.5) are not integrated. The model is
-fixed in ``backend/llm/config.py`` and cannot be changed through environment variables
-or constructor arguments — ``LlmConfig.__post_init__`` rejects any ``model_name``
-other than exactly ``"gemini-1.5-flash"``.
+The language model is **Llama 3.1 70B Versatile** (Groq Cloud) — the only model
+currently integrated. It was chosen for its fast inference via Groq, native
+structured JSON output support, strong Spanish-language performance, and
+inclusion on the challenge's permitted model list
+(``.challenge-docs/stack-tecnico.md``). Other permitted models (Llama 3.2,
+Phi-3.5) are not integrated. The model is fixed in ``backend/llm/config.py``
+and cannot be changed through environment variables or constructor arguments
+— ``LlmConfig.__post_init__`` rejects any ``model_name`` other than exactly
+``"llama-3.1-70b-versatile"``.
 
 Voice adapters (STT and TTS) are free choice. Recommended STT: Groq Whisper Large V3,
 browser Web Speech API, or local Whisper via Ollama. TTS provider: Kokoro-82M (resolved D3). Adapters are selected at startup via
@@ -237,7 +239,7 @@ These decisions affect multiple modules or have meaningful alternatives. Each ha
 
 | # | Decision | Chosen option | Rationale | Resolved |
 |---|----------|--------------|-----------|----------|
-| D1 | Language model | **Gemini 1.5 Flash** | 1M-token context window preserves clinical reasoning coherence without excessive chunking; 15 RPM free tier via Google AI Studio is sufficient for development and live demo; strong Spanish-language performance. Implemented in Phase 3 (``backend/llm/``). | Phase 3 |
+| D1 | Language model | **Llama 3.1 70B Versatile (Groq Cloud)** | Fast inference, native structured JSON output, strong Spanish performance, and inclusion on the challenge's permitted model list. Hosted on Groq Cloud with ``groq`` Python SDK. Implemented in Phase 3 (``backend/llm/``). | Phase 3 |
 | D2 | STT provider | **Groq Whisper Large V3** | Recommended in the challenge's ``stack-tecnico.md`` for ultra-low-latency Spanish transcription. Free tier via Groq Cloud. Implemented in Phase 4 (``backend/voice/``). | Phase 4 |
 | D4 | Backend framework | **FastAPI** (async, WebSocket-native) | Required for WebSocket call interface (Phase 6), async-native, strong OpenAPI support for the administration console (Phase 7). Already implemented in Phase 1. | Phase 1 |
 | D6 | Chunking strategy | **Fixed-size with overlap** (800 chars, 150 overlap) | Simple, predictable, well-tested. The 800-character default balances context completeness against retrieval precision for the challenge's clinical PDFs (typically 1–3 paragraphs per page). The 150-character overlap prevents splitting mid-sentence while keeping the duplication ratio below 19 %. Both values are tunable via env vars (``RAG_CHUNK_SIZE``, ``RAG_CHUNK_OVERLAP``). Implemented in Phase 2. | Phase 2 |

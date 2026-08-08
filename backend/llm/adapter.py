@@ -1,4 +1,4 @@
-"""Gemini 1.5 Flash adapter for RAG-grounded clinical answers.
+"""Llama 3.1 70B (Groq) adapter for RAG-grounded clinical answers.
 
 Produces validated Spanish answers with traceable citations and an explicit
 ``insufficient_knowledge`` flag when the RAG context cannot support a safe
@@ -198,12 +198,15 @@ def _validate_answer(
 # ---------------------------------------------------------------------------
 
 
-def _call_gemini(
+def _call_groq(
     system_prompt: str,
     user_prompt: str,
     config: LlmConfig,
 ) -> dict[str, Any]:
-    """Invoke Gemini 1.5 Flash and return the parsed JSON response.
+    """Invoke Llama 3.1 70B via Groq and return the parsed JSON response.
+
+    Uses synchronous ``groq.Groq`` chat completions with JSON response
+    format to constrain the LLM output to parseable structured JSON.
 
     Raises:
         RuntimeError: If the API key is missing or the LLM call fails.
@@ -211,30 +214,20 @@ def _call_gemini(
     """
     if not config.api_key:
         raise RuntimeError(
-            "GOOGLE_API_KEY no está configurada. "
-            "Defina la variable de entorno GOOGLE_API_KEY con su clave "
-            "de Google AI Studio."
+            "GROQ_API_KEY no está configurada. "
+            "Defina la variable de entorno GROQ_API_KEY con su clave "
+            "de Groq Cloud."
         )
 
     try:
-        import google.generativeai as genai  # noqa: WPS433
+        import groq  # noqa: WPS433
     except ImportError as exc:
         raise RuntimeError(
-            "El paquete google-generativeai no está instalado. "
-            "Ejecute: pip install google-generativeai"
+            "El paquete groq no está instalado. "
+            "Ejecute: pip install groq"
         ) from exc
 
-    genai.configure(api_key=config.api_key)
-
-    model = genai.GenerativeModel(
-        model_name=config.model_name,
-        system_instruction=system_prompt,
-        generation_config={
-            "temperature": config.temperature,
-            "max_output_tokens": config.max_output_tokens,
-            "response_mime_type": "application/json",
-        },
-    )
+    client = groq.Groq(api_key=config.api_key)
 
     logger.info(
         "Calling %s (temp=%.2f, max_tokens=%d) …",
@@ -244,15 +237,25 @@ def _call_gemini(
     )
 
     try:
-        response = model.generate_content(user_prompt)
+        response = client.chat.completions.create(
+            model=config.model_name,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=config.temperature,
+            max_tokens=config.max_output_tokens,
+            response_format={"type": "json_object"},
+        )
     except Exception as exc:
         raise RuntimeError(
             f"Error al llamar a {config.model_name}: {exc}"
         ) from exc
 
-    raw_text = (response.text or "").strip()
+    raw_text = (response.choices[0].message.content or "").strip()
 
-    # Strip markdown code fences if present
+    # Strip markdown code fences if present (defensive —
+    # ``json_object`` response_format normally prevents them).
     if raw_text.startswith("```"):
         raw_text = re.sub(r"^```(?:json)?\s*", "", raw_text)
         raw_text = re.sub(r"\s*```$", "", raw_text)
@@ -330,7 +333,7 @@ def generate_rag_answer(
     system_prompt, user_prompt = _build_prompt(query, context_chunks)
 
     try:
-        parsed = _call_gemini(system_prompt, user_prompt, config)
+        parsed = _call_groq(system_prompt, user_prompt, config)
     except (RuntimeError, ValueError) as exc:
         logger.error("LLM call failed: %s", exc)
         return RagAnswer(

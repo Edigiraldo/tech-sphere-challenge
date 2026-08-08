@@ -1,10 +1,11 @@
 """POST /rag/query — RAG-backed clinical answer endpoint.
 
 Accepts a Spanish clinical question, retrieves relevant chunks from
-ChromaDB, generates a validated answer via the permitted LLM (Gemini
-1.5 Flash), and returns the answer with traceable source citations.
-When the RAG store has no matching documents the endpoint returns
-``insufficient_knowledge: true`` without calling the LLM.
+ChromaDB, generates a validated answer via the permitted LLM (Llama
+3.1 70B Versatile via Groq), and returns the answer with traceable
+source citations.  When the RAG store has no matching documents the
+endpoint returns ``insufficient_knowledge: true`` without calling the
+LLM.
 """
 
 from __future__ import annotations
@@ -155,8 +156,9 @@ async def rag_query(body: RagQueryRequest) -> RagQueryResponse:
     Flow:
     1. Retrieve relevant chunks from the ChromaDB collection.
     2. If no chunks match → ``insufficient_knowledge: true`` (no LLM call).
-    3. Assemble context, call the permitted LLM (Gemini 1.5 Flash) with a
-       Spanish system prompt that restricts answers to the provided sources.
+    3. Assemble context, call the permitted LLM (Llama 3.1 70B via Groq)
+       with a Spanish system prompt that restricts answers to the provided
+       sources.
     4. Validate the LLM output for Spanish language, citation integrity, and
        clinical safety.
     5. Return the validated answer with traceable citations.
