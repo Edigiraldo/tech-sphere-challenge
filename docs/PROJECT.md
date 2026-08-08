@@ -32,6 +32,8 @@ boundaries, permitted adapters, phased implementation plan, and open decisions.
 
 ```text
 backend/               Application backend (Python modular monolith)
+  data/                Normalized read-only dataset access (patients, trajectories,
+                         conversations, PDF resolver)
   api/                 REST and WebSocket endpoints
   voice/               STT and TTS adapters
   conversation/        Dialogue orchestration and state machine
