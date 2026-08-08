@@ -99,6 +99,14 @@ adapter contracts, and phased implementation plan are documented in
 - Full Phase 1 (SQLite persistence tables for calls, summaries, documents).
 - Document lifecycle module (``backend/documents/``).
 
+## Completed (setup)
+
+- **2026-08-07:** Automatic ``.env`` file loading via ``python-dotenv``.
+  ``backend/main.py`` calls ``load_dotenv()`` at module level before any
+  configuration-importing code runs.  ``python-dotenv>=1.0.0`` added to
+  ``pyproject.toml`` dependencies.  ``.env`` is already excluded by
+  ``.gitignore``.  README updated with ``.env`` creation instructions.
+
 ## Recent Changes
 
 - **2026-08-07 (pm):** First RAG-backed clinical answer endpoint implemented.

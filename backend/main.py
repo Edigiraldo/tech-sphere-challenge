@@ -2,11 +2,25 @@
 
 Minimal FastAPI application for the Phase 1 project skeleton. Subsequent phases
 will register additional routers, middleware, and lifecycle hooks.
+
+The application automatically loads environment variables from a ``.env`` file
+(via ``python-dotenv``) before any configuration is read.  See the project
+README for ``.env`` setup instructions.
 """
 
-import logging
-import sys
 from pathlib import Path
+
+from dotenv import load_dotenv
+
+# ---------------------------------------------------------------------------
+# Load .env *before* any other import that may read os.environ / os.getenv.
+# load_dotenv() is a no-op when the file does not exist, so missing .env is
+# safe in production (env vars are expected to be set by the platform).
+# ---------------------------------------------------------------------------
+_dotenv_loaded: bool = load_dotenv()
+
+import logging  # noqa: E402
+import sys     # noqa: E402
 
 import uvicorn
 from fastapi import FastAPI
@@ -15,6 +29,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from backend.api.rag import rag_router
 
 logger = logging.getLogger(__name__)
+
+if _dotenv_loaded:
+    logger.info(".env file loaded — environment variables set from local file.")
+else:
+    logger.info(".env file not found — using existing environment variables.")
 
 # ---------------------------------------------------------------------------
 # Application factory
