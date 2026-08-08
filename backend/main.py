@@ -1,13 +1,16 @@
 """Application entry point.
 
-Minimal FastAPI application for the Phase 1 project skeleton. Subsequent phases
-will register additional routers, middleware, and lifecycle hooks.
+FastAPI application with CORS, health endpoint, API routers, frontend asset
+serving, and provider wiring through the startup lifespan.
 
 The application automatically loads environment variables from a ``.env`` file
 (via ``python-dotenv``) before any configuration is read.  See the project
 README for ``.env`` setup instructions.
 """
 
+from __future__ import annotations
+
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -40,6 +43,28 @@ if _dotenv_loaded:
 else:
     logger.info(".env file not found — using existing environment variables.")
 
+
+# ---------------------------------------------------------------------------
+# Startup lifespan — wire voice providers before serving requests
+# ---------------------------------------------------------------------------
+
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI):  # type: ignore[arg-type]
+    """Wire STT and TTS providers on application startup.
+
+    Construction errors are caught and logged — a broken provider leaves its
+    injection slot at ``None`` so that non-voice endpoints remain reachable.
+    """
+    from backend.voice.initialization import configure_providers
+
+    logger.info("Application startup — wiring voice providers …")
+    configure_providers()
+    logger.info("Application startup complete.")
+    yield
+    # No teardown work needed for in-process providers.
+
+
 # ---------------------------------------------------------------------------
 # Application factory
 # ---------------------------------------------------------------------------
@@ -50,6 +75,7 @@ def create_app() -> FastAPI:
         title="Tech Sphere Challenge",
         description="Spanish voice agent for postoperative follow-up",
         version="0.1.0",
+        lifespan=_lifespan,
     )
 
     # CORS: allow browser-based call interface and administration console

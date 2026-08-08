@@ -3,10 +3,13 @@
 ## Current Phase
 
 Persistence (ChromaDB + SQLite), RAG ingestion/retrieval (extract → chunk → embed →
-store → retrieve), the LLM adapter (Llama 3.1 70B Versatile via Groq), document lifecycle endpoints
-(POST/GET/DELETE /documents), and the conversation domain foundation (state machine,
-message history, patient/call context) are implemented and tested. Voice adapters
-(STT) and conversation orchestration with RAG-backed dialogue and escalation remain.
+store → retrieve), the LLM adapter (Llama 3.1 70B Versatile via Groq), document lifecycle
+endpoints (POST/GET/DELETE /documents), conversation orchestration with RAG-backed
+dialogue and escalation, STT (Groq Whisper Large V3) and TTS (Kokoro-82M) adapters,
+provider startup wiring, frontend call and administration interfaces, metrics
+collection and reporting, and the deterministic summary generator are implemented
+and tested.  The immediate remaining work is resolving the audio transport format
+decision (D5).
 
 The modular monolith architecture, module boundaries, data flows, persistence design,
 adapter contracts, and phased implementation plan are documented in
@@ -188,7 +191,6 @@ adapter contracts, and phased implementation plan are documented in
 
 ## In Progress
 
-- TTS adapter (Phase 4, depends on D5).
 - Audio transport format — decision D5 pending (Phase 6).
 
 ## Completed (frontend)
@@ -263,6 +265,17 @@ adapter contracts, and phased implementation plan are documented in
   transcription API call.  All 56 mocked unit tests updated; a focused test
   (``test_async_groq_client_instantiated_and_awaited``) proves ``AsyncGroq`` is
   instantiated and awaited.  Error mapping and behaviour preserved.
+- **2026-08-08:** Provider startup wiring implemented.
+  ``backend/voice/initialization.py`` ``configure_providers()`` constructs
+  ``GroqWhisperConfig``/``GroqWhisperProvider`` and
+  ``TTSConfig``/``KokoroAdapter`` and wires them into the API layer via
+  ``set_stt()``/``set_tts()``.  Each provider's construction is wrapped in its
+  own try/except so a failure in one does not prevent the other from wiring,
+  and neither failure crashes application startup.  ``backend/main.py`` calls
+  ``configure_providers()`` through the FastAPI lifespan before serving
+  requests.  13 focused tests pass covering successful wiring, missing
+  ``GROQ_API_KEY``, construction errors, injection overrides, and all
+  four provider-readiness log combinations.
 - **2026-08-08:** Metrics reporting endpoints and frontend dashboard implemented.
   ``backend/api/metrics.py`` provides read-only ``GET /metrics/summary``,
   ``GET /metrics/calls``, and ``GET /metrics/calls/{call_id}`` with typed
