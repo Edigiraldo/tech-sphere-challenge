@@ -25,6 +25,8 @@ import sys     # noqa: E402
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from backend.api.rag import rag_router
 from backend.api.documents import documents_router
@@ -68,6 +70,27 @@ def create_app() -> FastAPI:
     # -----------------------------------------------------------------------
     app.include_router(rag_router)
     app.include_router(documents_router)
+
+    # -----------------------------------------------------------------------
+    # Frontend static assets (served from the sibling frontend/ directory)
+    # -----------------------------------------------------------------------
+    _frontend_dir = Path(__file__).resolve().parent.parent / "frontend"
+
+    if _frontend_dir.is_dir():
+
+        @app.get("/")
+        async def _serve_index() -> FileResponse:
+            return FileResponse(_frontend_dir / "index.html")
+
+        @app.get("/call")
+        async def _serve_call() -> FileResponse:
+            return FileResponse(_frontend_dir / "call.html")
+
+        app.mount(
+            "/static",
+            StaticFiles(directory=str(_frontend_dir)),
+            name="static",
+        )
 
     return app
 

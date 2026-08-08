@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Llamada en Curso — Tech Sphere Challenge</title>
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+
+<header class="app-header">
+    <h1>Tech Sphere Challenge</h1>
+    <div class="header-right">
+        <span id="call-state-badge" class="state-badge state-idle">IDLE</span>
+        <span id="patient-name-display" class="patient-label"></span>
+    </div>
+</header>
+
+<main class="main-content call-layout">
+    <section class="card transcript-section">
+        <h2>Transcripción</h2>
+        <div id="transcript-area" class="transcript-area">
+            <p class="placeholder-text">La transcripción aparecerá aquí durante la llamada.</p>
+        </div>
+    </section>
+
+    <section class="card conversation-section">
+        <h2>Historial de Conversación</h2>
+        <div id="conversation-history" class="conversation-history">
+            <p class="placeholder-text">El historial de la conversación aparecerá aquí.</p>
+        </div>
+    </section>
+
+    <section class="card audio-section">
+        <h2>Respuesta de Audio</h2>
+        <div class="audio-placeholder">
+            <div class="audio-icon">&#x1F50A;</div>
+            <p>Reproductor de audio — la respuesta del agente se reproducirá aquí.</p>
+            <audio id="audio-player" controls class="audio-player" style="display:none;">
+                <source src="" type="audio/wav">
+            </audio>
+            <p id="audio-status" class="audio-status-text">Sin audio disponible</p>
+        </div>
+    </section>
+
+    <section class="card controls-section">
+        <h2>Controles</h2>
+        <div class="controls-bar">
+            <button id="record-toggle-btn" class="btn btn-record" title="Iniciar / Detener grabación" aria-label="Iniciar o detener grabación de voz">
+                <span id="record-icon">&#x23FA;</span>
+                <span id="record-label">Iniciar Grabación</span>
+            </button>
+            <button id="end-call-btn" class="btn btn-danger">
+                Finalizar Llamada
+            </button>
+        </div>
+        <p id="call-timer" class="call-timer">00:00</p>
+    </section>
+</main>
+
+<footer class="app-footer">
+    <p>Datos sintéticos — Sin fines clínicos reales</p>
+</footer>
+
+<script src="/static/data.js"></script>
+<script src="/static/call.js"></script>
+</body>
+</html>

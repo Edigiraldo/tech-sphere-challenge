@@ -137,6 +137,17 @@ adapter contracts, and phased implementation plan are documented in
   escalation into the conversation flow) remains pending.
 
 - **2026-08-08:** STT adapter foundation implemented (``backend/voice/``).
+
+- **2026-08-08:** Frontend shell implemented.  ``frontend/`` directory with vanilla
+  HTML/CSS/JS (no frameworks, no backend API connections, no microphone/audio APIs).
+  ``index.html`` provides synthetic patient selection (5 hardcoded patients) and a
+  start-call button that navigates to ``/call``.  ``call.html`` renders a call
+  interface with visible call-state badge, record/stop placeholder toggle,
+  conversation history with role-labelled messages, transcript area, audio-response
+  player placeholder, and call timer.  ``backend/main.py`` serves frontend assets
+  via ``FileResponse`` routes (GET ``/``, GET ``/call``) and a ``StaticFiles`` mount
+  at ``/static``.  8 focused tests verify HTML, CSS, JS serving and confirm the
+  ``/health`` endpoint is not disrupted.  All existing tests continue to pass.
   Typed ``SttProvider`` Protocol, normalised ``TranscriptionResult`` dataclass,
   ``SttError`` / ``SttConfigError`` / ``SttProviderError`` / ``SttAudioError``
   exception hierarchy, frozen Spanish-first ``GroqWhisperConfig`` (model fixed to
@@ -166,6 +177,10 @@ adapter contracts, and phased implementation plan are documented in
 
 ## Recent Changes
 
+- **2026-08-08:** Frontend shell implemented.  ``frontend/`` directory with vanilla
+  HTML/CSS/JS (index.html, call.html, styles.css, app.js, call.js).  ``backend/main.py``
+  serves static assets via ``FileResponse`` routes and ``StaticFiles`` mount.
+  8 focused tests pass.  No backend API connections, no microphone/audio APIs.
 - **2026-08-08:** TTS foundation implemented.  ``backend/voice/tts/`` with typed
   ``TTSProvider`` Protocol, ``TTSConfig`` (frozen dataclass, Spanish defaults),
   ``TTSResult`` (normalised WAV bytes), ``TTSSynthesisError``, and ``KokoroAdapter``
@@ -174,7 +189,7 @@ adapter contracts, and phased implementation plan are documented in
   RIFF containers suitable for browser playback.  Decision D3 resolved: **Kokoro-82M**
   selected for its minimal footprint (~0.6 GB RAM), CPU-only inference, and natural
   Spanish voice quality (``ef_dora``).  ``kokoro>=0.7.0`` added to optional
-  ``voice`` extras in ``pyproject.toml``.  47 fast tests pass.
+  ``voice`` extras in ``pyproject.toml``.  51 fast tests pass.
 - **2026-08-08:** STT adapter made truly async.  ``GroqWhisperProvider._call_groq``
   now uses ``groq.AsyncGroq`` (instead of synchronous ``groq.Groq``) and awaits the
   transcription API call.  All 56 mocked unit tests updated; a focused test

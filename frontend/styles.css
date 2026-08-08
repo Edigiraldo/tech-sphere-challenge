@@ -1,0 +1,473 @@
+/* ==========================================================================
+   Tech Sphere Challenge — Frontend Styles
+   Clean, medical-adherence UI for the postoperative voice agent shell.
+   ========================================================================== */
+
+/* --- Reset & Base -------------------------------------------------------- */
+*, *::before, *::after {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+html {
+    font-size: 16px;
+}
+
+body {
+    font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+    background-color: #f4f7fa;
+    color: #1e293b;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    line-height: 1.6;
+}
+
+/* --- Header -------------------------------------------------------------- */
+.app-header {
+    background-color: #1e3a5f;
+    color: #ffffff;
+    padding: 0.75rem 2rem;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15);
+}
+
+.app-header h1 {
+    font-size: 1.25rem;
+    font-weight: 600;
+}
+
+.app-subtitle {
+    font-size: 0.85rem;
+    opacity: 0.85;
+}
+
+.header-right {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+}
+
+/* --- Footer -------------------------------------------------------------- */
+.app-footer {
+    background-color: #e2e8f0;
+    color: #475569;
+    text-align: center;
+    padding: 0.75rem;
+    font-size: 0.8rem;
+    margin-top: auto;
+}
+
+/* --- Main Content -------------------------------------------------------- */
+.main-content {
+    max-width: 960px;
+    margin: 2rem auto;
+    padding: 0 1.5rem;
+    width: 100%;
+}
+
+/* --- Cards --------------------------------------------------------------- */
+.card {
+    background-color: #ffffff;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    padding: 1.5rem;
+    margin-bottom: 1.5rem;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
+}
+
+.card h2 {
+    font-size: 1.1rem;
+    font-weight: 600;
+    color: #1e3a5f;
+    margin-bottom: 0.75rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 2px solid #e2e8f0;
+}
+
+.card-description {
+    color: #64748b;
+    margin-bottom: 1.25rem;
+    font-size: 0.95rem;
+}
+
+/* --- Forms --------------------------------------------------------------- */
+.form-group {
+    margin-bottom: 1.25rem;
+}
+
+.form-group label {
+    display: block;
+    font-weight: 600;
+    color: #334155;
+    margin-bottom: 0.35rem;
+    font-size: 0.9rem;
+}
+
+.select-control {
+    width: 100%;
+    max-width: 400px;
+    padding: 0.5rem 0.75rem;
+    border: 1px solid #cbd5e1;
+    border-radius: 6px;
+    font-size: 0.95rem;
+    color: #1e293b;
+    background-color: #ffffff;
+    transition: border-color 0.2s;
+    cursor: pointer;
+}
+
+.select-control:focus {
+    outline: none;
+    border-color: #2563eb;
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.15);
+}
+
+/* --- Buttons ------------------------------------------------------------- */
+.btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.6rem 1.4rem;
+    border: none;
+    border-radius: 6px;
+    font-size: 0.95rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background-color 0.2s, opacity 0.2s;
+}
+
+.btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.btn-primary {
+    background-color: #2563eb;
+    color: #ffffff;
+}
+
+.btn-primary:hover:not(:disabled) {
+    background-color: #1d4ed8;
+}
+
+.btn-record {
+    background-color: #ea580c;
+    color: #ffffff;
+    font-size: 1rem;
+    padding: 0.7rem 1.8rem;
+}
+
+.btn-record:hover:not(:disabled) {
+    background-color: #c2410c;
+}
+
+.btn-record.recording {
+    background-color: #dc2626;
+    animation: pulse-record 1.5s infinite;
+}
+
+@keyframes pulse-record {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.5); }
+    50% { box-shadow: 0 0 0 8px rgba(220, 38, 38, 0); }
+}
+
+.btn-danger {
+    background-color: #64748b;
+    color: #ffffff;
+}
+
+.btn-danger:hover:not(:disabled) {
+    background-color: #475569;
+}
+
+/* --- Action Bar ---------------------------------------------------------- */
+.action-bar {
+    margin-top: 1.25rem;
+}
+
+/* --- Patient Details ----------------------------------------------------- */
+.patient-details {
+    background-color: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-radius: 6px;
+    padding: 1rem;
+    margin-bottom: 1.25rem;
+}
+
+.patient-details h3 {
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: #334155;
+    margin-bottom: 0.5rem;
+}
+
+.patient-details dl {
+    display: grid;
+    grid-template-columns: max-content auto;
+    gap: 0.3rem 1rem;
+}
+
+.patient-details dt {
+    font-weight: 600;
+    color: #475569;
+    font-size: 0.85rem;
+}
+
+.patient-details dd {
+    font-size: 0.85rem;
+    color: #1e293b;
+}
+
+/* --- State Badge --------------------------------------------------------- */
+.state-badge {
+    display: inline-block;
+    padding: 0.25rem 0.75rem;
+    border-radius: 12px;
+    font-size: 0.8rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.state-idle {
+    background-color: #e2e8f0;
+    color: #475569;
+}
+
+.state-greeting {
+    background-color: #dbeafe;
+    color: #1e40af;
+}
+
+.state-consent {
+    background-color: #fef3c7;
+    color: #92400e;
+}
+
+.state-questions {
+    background-color: #d1fae5;
+    color: #065f46;
+}
+
+.state-closing {
+    background-color: #e0e7ff;
+    color: #3730a3;
+}
+
+.state-ended {
+    background-color: #e2e8f0;
+    color: #334155;
+}
+
+.state-escalation {
+    background-color: #fee2e2;
+    color: #991b1b;
+}
+
+/* --- Patient Label in Header --------------------------------------------- */
+.patient-label {
+    font-size: 0.85rem;
+    font-weight: 500;
+    opacity: 0.9;
+}
+
+/* --- Call Layout --------------------------------------------------------- */
+.call-layout {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1.5rem;
+}
+
+.transcript-section {
+    grid-column: 1 / 2;
+}
+
+.conversation-section {
+    grid-column: 2 / 3;
+}
+
+.audio-section {
+    grid-column: 1 / 2;
+}
+
+.controls-section {
+    grid-column: 2 / 3;
+}
+
+@media (max-width: 720px) {
+    .call-layout {
+        grid-template-columns: 1fr;
+    }
+
+    .transcript-section,
+    .conversation-section,
+    .audio-section,
+    .controls-section {
+        grid-column: auto;
+    }
+}
+
+/* --- Transcript & Conversation Areas ------------------------------------- */
+.transcript-area,
+.conversation-history {
+    min-height: 200px;
+    max-height: 350px;
+    overflow-y: auto;
+    background-color: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-radius: 6px;
+    padding: 0.75rem;
+    font-size: 0.9rem;
+}
+
+.placeholder-text {
+    color: #94a3b8;
+    font-style: italic;
+    text-align: center;
+    padding: 2rem 0;
+}
+
+/* --- Conversation Messages ----------------------------------------------- */
+.message {
+    margin-bottom: 0.75rem;
+    padding: 0.5rem 0.75rem;
+    border-radius: 6px;
+    max-width: 90%;
+}
+
+.message-agent {
+    background-color: #dbeafe;
+    color: #1e40af;
+    margin-right: auto;
+    border-left: 3px solid #2563eb;
+}
+
+.message-patient {
+    background-color: #f1f5f9;
+    color: #334155;
+    margin-left: auto;
+    border-right: 3px solid #64748b;
+    text-align: right;
+}
+
+.message-system {
+    background-color: #fef3c7;
+    color: #92400e;
+    margin: 0.5rem auto;
+    text-align: center;
+    border: 1px dashed #f59e0b;
+    font-style: italic;
+    font-size: 0.85rem;
+}
+
+.message .role-label {
+    font-size: 0.7rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    display: block;
+    margin-bottom: 0.2rem;
+}
+
+.message .message-text {
+    line-height: 1.5;
+}
+
+/* --- Audio Placeholder --------------------------------------------------- */
+.audio-placeholder {
+    text-align: center;
+    padding: 1.5rem;
+    background-color: #f8fafc;
+    border: 2px dashed #cbd5e1;
+    border-radius: 8px;
+    min-height: 100px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+}
+
+.audio-icon {
+    font-size: 2rem;
+}
+
+.audio-placeholder p {
+    color: #64748b;
+    font-size: 0.9rem;
+}
+
+.audio-player {
+    width: 100%;
+    margin-top: 0.5rem;
+}
+
+.audio-status-text {
+    color: #94a3b8 !important;
+    font-size: 0.8rem !important;
+    font-style: italic;
+}
+
+/* --- Controls Bar -------------------------------------------------------- */
+.controls-bar {
+    display: flex;
+    gap: 1rem;
+    align-items: center;
+    flex-wrap: wrap;
+}
+
+.call-timer {
+    margin-top: 0.75rem;
+    font-size: 0.9rem;
+    color: #64748b;
+    font-variant-numeric: tabular-nums;
+}
+
+/* --- Error Message ------------------------------------------------------- */
+.error-message {
+    background-color: #fee2e2;
+    border: 1px solid #fecaca;
+    color: #991b1b;
+    padding: 0.6rem 1rem;
+    border-radius: 6px;
+    font-size: 0.9rem;
+    margin-top: 1rem;
+}
+
+/* --- Utility ------------------------------------------------------------- */
+.hidden {
+    display: none !important;
+}
+
+/* --- Responsive adjustments ---------------------------------------------- */
+@media (max-width: 480px) {
+    .app-header {
+        padding: 0.5rem 1rem;
+        flex-direction: column;
+        text-align: center;
+    }
+
+    .main-content {
+        margin: 1rem auto;
+        padding: 0 0.75rem;
+    }
+
+    .card {
+        padding: 1rem;
+    }
+
+    .controls-bar {
+        flex-direction: column;
+    }
+
+    .controls-bar .btn {
+        width: 100%;
+        justify-content: center;
+    }
+}
