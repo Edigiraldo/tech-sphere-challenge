@@ -5,5 +5,6 @@ in ``backend.main.create_app()``.
 """
 
 from backend.api.rag import rag_router
+from backend.api.documents import documents_router
 
-__all__ = ["rag_router"]
+__all__ = ["rag_router", "documents_router"]

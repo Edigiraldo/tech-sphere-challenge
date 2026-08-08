@@ -106,7 +106,7 @@ Browser (mic) → voice/STT → conversation/ orchestrator:
 Upload:   Browser → api/ → documents/upload → persistence/SQLite (metadata)
                                               → rag/ingest → ChromaDB (chunks + embeddings)
 Delete:   Browser → api/ → documents/delete → rag/delete_chunks (ChromaDB purge by document_id)
-                                             → persistence/SQLite (remove metadata row)
+                                              → persistence/SQLite (soft-delete: status='deleted')
 ```
 
 ### RAG retrieval during conversation
@@ -125,9 +125,14 @@ patients             — synthetic profiles loaded at startup (read-only)
 calls                — call_id, patient_id, procedure, postop_day, status, timestamps
 turns                — turn_id, call_id, speaker, text, citations_json, timestamp
 summaries            — call_id, patient_id, procedure, symptoms, decision, sources, next_steps
-documents            — document_id, filename, status, uploaded_at, size
+documents            — document_id, filename, status, uploaded_at, size_bytes, error_message
 escalation_alerts    — call_id, turn_id, symptoms, timestamp
 ```
+
+Document deletion uses **soft deletion**: deleting a document changes its ``status``
+to ``deleted`` and purges ChromaDB chunks, but the SQLite row is retained for
+auditability. The ``error_message`` column stores a human-readable description
+when ``status`` is ``failed``.
 
 ### ChromaDB schema
 
@@ -142,7 +147,7 @@ collection: clinical_knowledge
 
 ### Key rules
 
-- Deleting a document must remove all ChromaDB chunks with matching `document_id` AND the SQLite metadata row. No orphaned chunks.
+- Deleting a document must remove all ChromaDB chunks with matching `document_id` and soft-delete the SQLite row (``status = 'deleted'``). The metadata row is retained for auditability. No orphaned ChromaDB chunks.
 - Call data and summaries are never deleted through the admin console.
 - The vector store is rebuilt only on explicit re-index, never on restart.
 - Synthetic patient data is loaded from `dataset/` XLSX at startup and is read-only.

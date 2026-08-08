@@ -27,6 +27,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.api.rag import rag_router
+from backend.api.documents import documents_router
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +67,7 @@ def create_app() -> FastAPI:
     # API routers
     # -----------------------------------------------------------------------
     app.include_router(rag_router)
+    app.include_router(documents_router)
 
     return app
 

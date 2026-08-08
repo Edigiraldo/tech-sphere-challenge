@@ -2,10 +2,11 @@
 
 ## Current Phase
 
-Phase 1 (persistence) and Phase 2 (RAG ingestion/retrieval) core are implemented as
-the first minimal RAG slice. The ChromaDB access layer and full RAG pipeline (extract →
-chunk → embed → store → retrieve) are available and tested. No HTTP endpoints, document
-lifecycle, voice, or LLM modules have been added yet.
+Persistence (ChromaDB + SQLite), RAG ingestion/retrieval (extract → chunk → embed →
+store → retrieve), the LLM adapter (Gemini 1.5 Flash), document lifecycle endpoints
+(POST/GET/DELETE /documents), and the conversation domain foundation (state machine,
+message history, patient/call context) are implemented and tested. Voice adapters
+(STT/TTS) and conversation orchestration with RAG-backed dialogue and escalation remain.
 
 The modular monolith architecture, module boundaries, data flows, persistence design,
 adapter contracts, and phased implementation plan are documented in
@@ -55,8 +56,7 @@ adapter contracts, and phased implementation plan are documented in
 - `tests/test_health.py` validates the `/health` endpoint.
 - **Persistence layer (partial):** `backend/persistence/chroma.py` — ChromaDB
   `ChromaStore` wrapper with collection init, chunk insertion, document-chunk deletion,
-  and module-level singleton. SQLite tables remain unimplemented (deferred to later
-  Phase 1 work).
+  and module-level singleton.
 - **RAG pipeline:** `backend/rag/` — `config.py` (dataclass with env-var overrides),
   `extract.py` (pdfplumber-based PDF text extraction), `chunking.py` (fixed-size
   overlapping chunks with full metadata), `embeddings.py` (BGE-M3 via
@@ -81,9 +81,6 @@ adapter contracts, and phased implementation plan are documented in
   dataset tests and 24 RAG tests (14 fast, 10 slow) continue to pass.
 - ``pyproject.toml`` updated with ``google-generativeai>=0.8.0`` dependency.
 - ``backend/main.py`` registers the ``rag_router``.
-
-## Completed (continued)
-
 - **2026-08-07:** Conversation domain foundation implemented (`backend/conversation/`).
   Finite state machine (``State`` / ``Event`` enums) with 7 valid transitions and
   ``InvalidTransitionError`` for unsupported pairs.  ``Message`` (frozen slots
@@ -93,6 +90,27 @@ adapter contracts, and phased implementation plan are documented in
   ``procedimiento`` guards.  ``CallContext`` aggregates patient, ``State``, ``History``,
   and UTC ``created_at``.  Stdlib-only, text-only — no voice/frontend/LLM/RAG
   dependencies.  98 tests pass.
+- **2026-08-07:** Document lifecycle foundation implemented:
+  - ``backend/documents/`` — ``models.py`` (``Document`` dataclass, ``DocumentStatus``
+    enum with ``pending``, ``processing``, ``ready``, ``failed``, ``deleted``),
+    ``service.py`` (``DocumentService`` — upload, list, delete).
+  - ``backend/persistence/sqlite.py`` — SQLite ``documents`` table with CRUD
+    operations, WAL journal mode, and ``init_sqlite`` / ``_reset_sqlite`` for test
+    lifecycle management.
+  - ``backend/api/documents.py`` — ``POST /documents`` (upload PDF, ingest into RAG,
+    return status), ``GET /documents`` (list with optional status filter),
+    ``DELETE /documents/{document_id}`` (purge ChromaDB chunks, mark deleted).
+  - Critical invariant: the same ``document_id`` is attached to every ChromaDB chunk
+    during ingestion and used for targeted deletion via
+    ``ChromaStore.delete_document_chunks()``.
+  - ``python-multipart`` added to project dependencies for file upload support.
+  - 9 fast API-level tests pass (upload validation, processing failure, listing,
+    deletion of non-existent).
+  - 6 slow end-to-end tests (upload real PDF → ready, list after upload, filter by
+    status, retrieval availability, complete indexed-chunk deletion, post-deletion
+    retrieval returns nothing) gated behind ``pytest.mark.slow``.
+  - All 250 existing tests continue to pass with no regressions.
+  - ``docs/STATUS.md`` updated; document lifecycle moved from In Progress to Completed.
 
 - **2026-08-07:** Conversation orchestrator implemented
   (``backend/conversation/orchestrator.py``).  ``ConversationOrchestrator`` connects
@@ -106,8 +124,9 @@ adapter contracts, and phased implementation plan are documented in
 
 ## In Progress
 
-- Full Phase 1 (SQLite persistence tables for calls, summaries, documents).
-- Document lifecycle module (``backend/documents/``).
+- Remaining Phase 1 SQLite tables (calls, summaries, escalation_alerts).
+- Voice adapters (STT/TTS — Phase 4, depends on D2/D3/D5).
+- Conversation orchestration with RAG and escalation (Phase 5, depends on D8).
 
 ## Completed (setup)
 
@@ -125,6 +144,22 @@ adapter contracts, and phased implementation plan are documented in
   integrates RAG retrieval and LLM answer generation, and falls back safely when
   RAG/LLM is unavailable.  Escalation is explicitly out of scope for this phase.
   55 tests pass, 153 total in ``tests/conversation/``.
+- **2026-08-07:** Document lifecycle foundation implemented. ``backend/documents/``
+  (``Document`` model, ``DocumentStatus`` enum, ``DocumentService``),
+  ``backend/persistence/sqlite.py`` (SQLite documents table), ``backend/api/documents.py``
+  (``POST``/``GET``/``DELETE /documents``), 15 tests (9 fast, 6 slow). The same
+  ``document_id`` is attached to all ChromaDB chunks and used for targeted deletion
+  via ``ChromaStore.delete_document_chunks()``. All 250 existing tests pass with
+  no regressions. ``python-multipart`` added to dependencies.
+- **2026-08-07:** Conversation domain foundation implemented (`backend/conversation/`).
+  Finite state machine (``State`` / ``Event`` enums) with 7 valid transitions and
+  ``InvalidTransitionError`` for unsupported pairs.  ``Message`` (frozen slots
+  dataclass with 0-based ``turn_index``, ``MessageRole``, validators) and append-only
+  ``History`` (len, iter, index, tuple snapshot).  ``PatientContext`` wraps
+  ``backend.data.models.Patient`` with ``dia_postop >= 0`` and non-empty
+  ``procedimiento`` guards.  ``CallContext`` aggregates patient, ``State``, ``History``,
+  and UTC ``created_at``.  Stdlib-only, text-only — no voice/frontend/LLM/RAG
+  dependencies.  98 tests pass.
 - **2026-08-07 (pm):** First RAG-backed clinical answer endpoint implemented.
   ``backend/llm/`` (Gemini 1.5 Flash adapter with validation), ``backend/api/rag.py``
   (``POST /rag/query``), 54 tests pass. Resolved D1 (model = Gemini 1.5 Flash) and
@@ -147,8 +182,11 @@ adapter contracts, and phased implementation plan are documented in
 Implementation follows the eight-phase plan in `docs/ARCHITECTURE.md` § Phased
 Implementation Plan (sole source of truth for milestones and deliverables).
 
-The immediate next milestone is completing Phase 1 (SQLite schema) and Phase 2
-(document lifecycle + HTTP endpoints for document operations).
+Phase 1 (persistence) and Phase 2 (document lifecycle + RAG) are substantially
+complete. The immediate next step is completing the remaining Phase 1 SQLite tables
+(calls, summaries, escalation_alerts), followed by Phase 4 voice adapters
+(STT/TTS — blocked on D2/D3/D5) and Phase 5 conversation orchestration with
+RAG-backed dialogue and escalation (blocked on D8).
 
 ## Open Architectural Decisions
 
