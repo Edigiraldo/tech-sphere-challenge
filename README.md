@@ -55,22 +55,47 @@ y la API de reporte son módulos independientes.
 
 - Python 3.11 o superior
 - pip (incluido con Python)
+- Git
+- macOS 12+ or Windows 10/11
+- A Groq Cloud API key for Llama 3.3 and Whisper STT
+
+## Instalación desde cero
+
+### Windows PowerShell
+
+```powershell
+git clone <REPOSITORY_URL>
+cd tech-sphere-challenge
+python -m venv .venv
+Set-ExecutionPolicy -Scope Process Bypass
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+pip install -e ".[dev,voice]"
+```
+
+### macOS
+
+```bash
+git clone <REPOSITORY_URL>
+cd tech-sphere-challenge
+python3.11 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+pip install -e ".[dev,voice]"
+```
+
+Create `.env` in the repository root on either operating system:
+
+```ini
+GROQ_API_KEY=your-groq-api-key
+```
+
+The application loads `.env` automatically at startup. Never commit this file.
 
 ## Instalación y ejecución
 
 ```bash
-# 1. Crear entorno virtual
-python -m venv .venv
-
-# 2. Activar entorno (Windows PowerShell)
-.venv\Scripts\Activate.ps1
-# -- o en Linux/macOS --
-# source .venv/bin/activate
-
-# 3. Instalar el proyecto en modo editable
-pip install -e ".[dev]"
-
-# 4. Ejecutar la aplicación
+# Ejecutar la aplicación después de la instalación
 python -m backend.main
 # -- o con el script registrado --
 # tech-sphere
@@ -158,10 +183,10 @@ proyecto.
 pytest
 ```
 
-Estas pruebas (999) validan dataset, salud del servidor, chunking y extracción de
+Estas pruebas (948) validan dataset, salud del servidor, chunking y extracción de
 PDF (con error paths), el adaptador LLM (Llama 3.3 70B Versatile vía Groq con
-fallback extractivo, prompts, validación,
-validación, respuestas estructuradas, detección de inyección de prompts y
+fallback extractivo, validación,
+respuestas estructuradas, detección de inyección de prompts y
 validación de fundamentación), el endpoint RAG `/rag/query` con controles de
 suficiencia, la capa de persistencia, los módulos de voz (STT/TTS), el motor de
 conversación, el clasificador de escalamiento, los endpoints de turnos de voz,

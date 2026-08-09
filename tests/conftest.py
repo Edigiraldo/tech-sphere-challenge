@@ -12,4 +12,4 @@ import pytest
 def use_mocked_groq_configuration(monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep provider-specific unit tests deterministic and network-free."""
     monkeypatch.setenv("LLM_PROVIDER", "groq")
-    monkeypatch.setenv("LLM_MODEL", "llama-3.3-70b-versatile")
+    monkeypatch.setenv("LLM_MODEL", "llama-3.1-70b-versatile")
