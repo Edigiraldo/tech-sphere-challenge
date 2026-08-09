@@ -168,6 +168,10 @@ adapter contracts, and phased implementation plan are documented in
   ``GET /metrics/calls``, and ``GET /metrics/calls/{call_id}`` endpoints and metrics
   frontend view; metrics collector module is distinct from the reporting API.
 
+- Dependency audit: ``openpyxl>=3.0.0``, ``numpy>=1.24.0``, and ``pydantic>=2.0.0``
+  declared as explicit base dependencies in ``pyproject.toml``; ``numpy`` removed from
+  ``voice`` extra; ``kokoro>=0.7.0`` copied to ``dev`` extra.
+
 Test totals: 830 fast tests (pytest), 16 slow tests (`pytest -m slow`), 846 tests total.
 
 ## In Progress
