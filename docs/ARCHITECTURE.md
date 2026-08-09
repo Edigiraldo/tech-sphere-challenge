@@ -45,8 +45,7 @@ remains future work.
 │  └─────┬────┘  └──────┬──────┘  └─────┬─────┘  └──────┬──────┘     │
 │        │              │               │               │             │
 │  ┌─────┴──────────────┴───────────────┴───────────────┴──────┐     │
-│  │  llm/           Llama 3.2 3B (Ollama, default) adapter    │     │
-│  │                 or Llama 3.1 70B (Groq, optional)         │     │
+│  │  llm/           Llama 3.3 70B (Groq) adapter               │     │
 │  └────────────────────────────────────────────────────────────┘     │
 │        │              │                                             │
 │  ┌─────┴────┐  ┌──────┴──────┐                                      │
@@ -79,7 +78,7 @@ remains future work.
 | `api/` | HTTP REST surface. Validates inputs, delegates to domain modules. Includes calls, documents, RAG, and metrics routers. WebSocket endpoints are not yet implemented. | Only layer the browser touches. No business logic. |
 | `voice/` | STT and TTS adapters behind a common interface. | Pure I/O adapter. Owns no state, patient data, or clinical knowledge. |
 | `conversation/` | Call state machine: greeting → consent → structured questions → close. Composes prompts from patient profile + RAG chunks, calls `llm/` for reasoning, `decision/` for classification. | Owns turn state and prompt assembly. Never calls `documents/` or touches persistence/embeddings directly. |
-| `llm/` | Adapter for **Llama 3.2 3B** via local Ollama (default) with configurable timeout, provider-specific prompts, robust JSON parsing, and safe extractive RAG fallback. Optional **Llama 3.1 70B Versatile** via Groq Cloud with preserved original prompt behaviour. Accepts prompt → returns structured response. | Knows nothing about voice, documents, RAG, or escalation. Pure text-in/text-out. |
+| `llm/` | Adapter for **Llama 3.3 70B Versatile** via Groq Cloud with validated structured JSON, grounding, prompt-injection checks, and safe fallbacks. | Knows nothing about voice, documents, RAG, or escalation. Pure text-in/text-out. |
 | `rag/` | Ingestion (extract → chunk → embed BGE-M3 → store in ChromaDB) and retrieval (embed query → similarity search → return chunks + metadata). | Owns the embedding model, ChromaDB collection, chunking and retrieval. Does not own document lifecycle or know about patients/conversations. |
 | `documents/` | Document lifecycle: upload, list, status, delete. Orchestrates metadata in SQLite and triggers RAG ingestion/deletion. | Calls `rag/` for ingestion and purge. Does not call `rag/` for retrieval. |
 | `decision/` | Escalation classifier (Green / Yellow / Red). Runs after every LLM response using explicit symptom rules cross-checked against the LLM's classification. | Isolated from RAG, voice, and documents. Produces a verdict; does not modify conversation flow. Conservative: false negatives are catastrophic. |
@@ -194,18 +193,11 @@ collection: clinical_knowledge
 
 ## Permitted Models and Voice Adapters
 
-The default language model is **Llama 3.2 3B** (local Ollama) — a permitted
-challenge model (``.challenge-docs/stack-tecnico.md``) that runs locally
-without external API calls, with configurable timeout (``OLLAMA_TIMEOUT``,
-5–120 s, default 30 s), provider-specific shorter prompts, robust JSON
-parsing, and safe extractive RAG fallback to the highest-similarity chunk
-when the LLM fails or returns insufficient knowledge. The optional provider
-is **Llama 3.1 70B Versatile** (Groq Cloud) — chosen for its fast inference
-via Groq, native structured JSON output support, and strong Spanish-language
-performance. The model is selected at startup via ``LLM_PROVIDER`` and
-``LLM_MODEL`` environment variables; the ``LlmConfig`` ``__post_init__``
-validates the combination against a fixed allowlist of permitted models 
-per provider.
+The language model is **Llama 3.3 70B Versatile** via Groq Cloud, the current
+successor authorized by the challenge organizers. It provides fast inference,
+structured JSON output, and strong Spanish-language performance. The model is
+selected through ``LLM_MODEL`` and validated against the permitted Groq model
+allowlist.
 
 Voice adapters (STT and TTS) are free choice. Selected STT: **Groq Whisper Large V3**
 (resolved D2) — ultra-low-latency Spanish transcription via Groq Cloud, implemented
@@ -304,7 +296,7 @@ only when ``debug=True``.  They never reach the patient-facing output.
   red-flag rules independent of the LLM.
 - Post-hoc grounding validation verifies that medication-dose claims in the
   answer are supported by the cited excerpts.
-- When the Ollama provider fails (network error, timeout, unparseable output)
+- When the Groq provider fails (network error, timeout, or unparseable output)
   or returns insufficient knowledge despite sufficiently similar retrieved
   chunks, a safe **extractive RAG fallback** uses only the highest-similarity
   chunk with preserved citation metadata and marks ``insufficient_knowledge``
@@ -341,11 +333,11 @@ These decisions affect multiple modules or have meaningful alternatives. Each ha
 
 | # | Decision | Chosen option | Rationale | Resolved |
 |---|----------|--------------|-----------|----------|
-| D1 | Language model | **Llama 3.2 3B (Ollama local, default)** and **Llama 3.1 70B Versatile (Groq Cloud, optional)** | Llama 3.2 3B is a permitted challenge model that runs locally without API costs; Llama 3.1 70B offers higher-quality responses when a Groq API key is available. Both implemented in Phase 3 (``backend/llm/``) with the same validated structured-output contract, provider-specific prompts, and safe fallbacks. | Phase 3 |
+| D1 | Language model | **Llama 3.3 70B Versatile (Groq Cloud)** | Current successor authorized by the challenge organizers after the originally suggested Groq model was retired. Provides fast inference and structured Spanish responses. | Phase 3 |
 | D2 | STT provider | **Groq Whisper Large V3** | Recommended in the challenge's ``stack-tecnico.md`` for ultra-low-latency Spanish transcription. Free tier via Groq Cloud. Implemented in Phase 4 (``backend/voice/``). | Phase 4 |
 | D4 | Backend framework | **FastAPI** (async, WebSocket-native) | Required for WebSocket call interface (Phase 6), async-native, strong OpenAPI support for the administration console (Phase 7). Already implemented in Phase 1. | Phase 1 |
 | D6 | Chunking strategy | **Fixed-size with overlap** (800 chars, 150 overlap) | Simple, predictable, well-tested. The 800-character default balances context completeness against retrieval precision for the challenge's clinical PDFs (typically 1–3 paragraphs per page). The 150-character overlap prevents splitting mid-sentence while keeping the duplication ratio below 19 %. Both values are tunable via env vars (``RAG_CHUNK_SIZE``, ``RAG_CHUNK_OVERLAP``). Implemented in Phase 2. | Phase 2 |
-| D7 | LLM provider failover | **Dual provider** (local Ollama default, Groq optional) | The primary provider is local Ollama (no failover chain needed — the extractive RAG fallback handles Ollama failures). Groq remains available as an explicit alternative for higher-quality responses. Both use the same validated output contract. | Phase 3 |
+| D7 | LLM provider failover | **Single Groq provider** | A single current provider keeps the runtime and Docker setup simple; the safe extractive RAG fallback handles provider failures. | Phase 3 |
 | D8 | Patient data loading | **Load all 40 profiles at startup** | The dataset is small (40 patients, ~160 trajectory days, ~4 000 conversation turns), fitting comfortably in memory. Startup loading from ``dataset/`` XLSX via ``backend/data/loader.py`` is simpler than lazy-loading, avoids race conditions during call creation, and ensures immediate availability of patient demographics, trajectories, and reference conversations for the conversation orchestrator. Implemented during Phases 1–5 (``backend/data/`` read-only dataclass access layer). | Phase 5 |
 | D3 | TTS provider | **Kokoro-82M** | Minimal model size (82 M parameters, ~0.6 GB RAM) that runs on CPU without GPU; native Spanish voice (``ef_dora``), natural prosody for clinical tone; outputs 24 kHz float32 audio that the adapter normalises to 16-bit PCM WAV for browser playback.  The ``KokoroAdapter`` implements the ``TTSProvider`` Protocol with lazy dependency loading — the optional ``kokoro`` package is only imported on the first ``synthesize()`` call.  Piper was considered but Kokoro's Spanish voice quality is significantly better for the challenge's clinical conversation UX.  Implemented in Phase 4 (``backend/voice/tts/kokoro.py``). | Phase 4 |
 | D9 | PDF text extraction library | **pdfplumber** | Reliable character-level extraction, explicit page numbers, and consistent Unicode handling for Spanish clinical text. pdfplumber is actively maintained, has no external system dependencies, and produces structured page-by-page output — all critical for traceable source citations. pyMuPDF was considered but its AGPL license is incompatible with the challenge's proprietary license. | Phase 2 |

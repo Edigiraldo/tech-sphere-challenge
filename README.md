@@ -159,15 +159,14 @@ pytest
 ```
 
 Estas pruebas (999) validan dataset, salud del servidor, chunking y extracción de
-PDF (con error paths), el adaptador LLM (por defecto Llama 3.2 3B local vía
-Ollama con fallback extractivo, prompts específicos por proveedor, timeout
-configurable, o Llama 3.1 70B Versatile vía Groq como alternativa; prompts,
+PDF (con error paths), el adaptador LLM (Llama 3.3 70B Versatile vía Groq con
+fallback extractivo, prompts, validación,
 validación, respuestas estructuradas, detección de inyección de prompts y
 validación de fundamentación), el endpoint RAG `/rag/query` con controles de
 suficiencia, la capa de persistencia, los módulos de voz (STT/TTS), el motor de
 conversación, el clasificador de escalamiento, los endpoints de turnos de voz,
 el módulo de resúmenes, el colector de métricas y el frontal del navegador.
-Todas las llamadas a las APIs de Groq y Ollama están mockeadas. No descargan el modelo
+Las llamadas a la API de Groq están mockeadas. No descargan el modelo
 de embeddings ni procesan PDFs reales.
 
 ### Pruebas lentas (requieren BGE-M3 y PDFs)
@@ -195,7 +194,7 @@ primer uso.
 │   │   ├── documents.py   POST/GET/DELETE /documents
 │   │   ├── calls.py       POST /calls, POST /calls/{id}/turn (voz)
 │   │   └── call_store.py  Almacenamiento en memoria de llamadas
-│   ├── llm/               Adaptador de modelo de lenguaje (Ollama local por defecto, Groq opcional)
+│   ├── llm/               Adaptador de modelo de lenguaje Groq Llama 3.3
 │   │   ├── __init__.py
 │   │   ├── config.py      Configuración (Llama 3.2 3B local por defecto, timeout configurable)
 │   │   └── adapter.py     Generación validada con citas trazables y fallback extractivo
@@ -238,7 +237,6 @@ primer uso.
 │   ├── test_frontend.py   Pruebas de servido de archivos estáticos (8)
 │   ├── test_health.py     Prueba del endpoint /health (1)
 │   ├── test_llm.py        Pruebas del adaptador LLM — Groq (63)
-│   ├── test_ollama_llm.py  Pruebas del adaptador LLM — Ollama local (51)
 │   ├── test_rag_api.py    Pruebas del endpoint /rag/query (14)
 │   ├── test_documents.py  Pruebas del ciclo de vida de documentos (42)
 │   ├── test_calls_api.py  Pruebas de endpoints de turnos de voz (41)

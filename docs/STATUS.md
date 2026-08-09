@@ -10,10 +10,9 @@ Implementation Plan) are complete. The application implements:
   documents).
 - RAG pipeline (extract → chunk → embed BGE-M3 → store → retrieve with traceable
   citations).
-- LLM adapter (default **Ollama Llama 3.2 3B** with configurable timeout,
-  provider-specific prompts, robust JSON parsing, and extractive RAG fallback;
-  optional **Groq Llama 3.1** with validated structured output and Spanish
-  prompts).
+- LLM adapter (**Groq Llama 3.3 70B Versatile**, successor authorized by the
+  organizers) with validated structured output, Spanish prompts, grounding checks,
+  and safe extractive fallback.
 - Document lifecycle REST API (``POST/GET/DELETE /documents`` with soft-delete +
   ChromaDB chunk purge). A graphical administration console at ``/admin`` provides
   upload, listing with status polling, refresh, and deletion. The document lifecycle
@@ -85,16 +84,12 @@ adapter contracts, and phased implementation plan are documented in
   overlap, 800/150 chars), embed (BGE-M3 via sentence-transformers), store
   (ChromaDB cosine), ingestion, retrieval (``RetrievalResult`` with citations).
   14 fast + 10 slow tests pass. D6 (chunking strategy) resolved.
-- LLM adapter: ``backend/llm/`` — default **Ollama Llama 3.2 3B**
-  (configurable timeout ``OLLAMA_TIMEOUT``, provider-specific shorter prompts,
-  robust JSON parsing, safe extractive RAG fallback using highest-similarity
-  chunk); optional **Groq Llama 3.1** with preserved Groq prompt behaviour.
-  Structured JSON output, Spanish prompts, multi-layer
+- LLM adapter: ``backend/llm/`` — **Groq Llama 3.3 70B Versatile** with
+  structured JSON output, Spanish prompts, multi-layer
   safety validation including input-level prompt-injection detection
   (pattern-based jailbreak scanning, length check, Spanish safe fallback) and
   post-hoc grounding validation (citation-integrity and medication-dose
-  grounding checks). 114 tests pass (63 Groq + 51 Ollama/fallback/timeout).
-  D1 (language model: Ollama Llama 3.2 3B default, Groq Llama 3.1 optional) and D7 (single provider) resolved.
+  grounding checks. D1 (language model: Groq Llama 3.3 successor) and D7 (single provider) resolved.
 - RAG endpoint: ``backend/api/rag.py`` — ``POST /rag/query`` with retrieval
    sufficiency gates (minimum chunk count, average similarity threshold) and
    fallback to ``insufficient_knowledge``. 14 tests pass.
@@ -184,7 +179,7 @@ adapter contracts, and phased implementation plan are documented in
   before any configuration imports.
 - ``.gitignore`` updated with standard Python cache/build ignores, model cache, and
   ChromaDB runtime data.
-- Decisions resolved: D1 (language model: Ollama Llama 3.2 3B default, Groq Llama 3.1 optional), D2 (STT:
+- Decisions resolved: D1 (language model: Groq Llama 3.3 successor), D2 (STT:
   Groq Whisper Large V3), D3 (TTS: Kokoro-82M, ef_dora), D4 (framework: FastAPI),
   D6 (chunking: fixed-size 800/150), D7 (LLM failover: single provider), D8
   (patient data loading: load all 40 at startup), D9 (PDF extraction: pdfplumber).
@@ -208,13 +203,10 @@ adapter contracts, and phased implementation plan are documented in
   citations), deletion isolation (deleting one document preserves
   other documents' chunks), registry-filtered retrieval (deleted and
   unregistered document IDs excluded automatically), safe extractive RAG
-  fallback for Ollama provider (uses highest-similarity chunk with preserved
+  fallback for provider failures (uses highest-similarity chunk with preserved
   citation metadata when LLM fails or returns insufficient knowledge despite
-  sufficiently similar retrieved chunks), configurable ``OLLAMA_TIMEOUT``
-  (5–120 s, default 30 s), robust Ollama JSON parsing (handles markdown
-  fences, trailing commas, truncated output), provider-specific prompt
-  assembly (shorter prompts for local models, Groq prompts preserved).
-  114 LLM tests (63 Groq + 51 Ollama/fallback/timeout), 14 RAG API tests,
+  sufficiently similar retrieved chunks). Groq structured-output validation and
+  grounding checks remain enforced. 63 LLM tests and 14 RAG API tests,
   and all existing conversation and document tests pass with the new safety
   layers.
 
@@ -253,7 +245,7 @@ open:
   Streaming/WebSocket transport remains a future option for real-time browser
   integration.
 
-Eight decisions have been resolved: D1 (LLM: Ollama Llama 3.2 3B default, Groq Llama 3.1 optional), D2 (STT: Groq
+Eight decisions have been resolved: D1 (LLM: Groq Llama 3.3 successor), D2 (STT: Groq
 Whisper Large V3), D3 (TTS: Kokoro-82M), D4 (framework: FastAPI), D6 (chunking:
 800/150), D7 (LLM failover: single provider), D8 (patient data loading: load all
 40 at startup), D9 (PDF extraction: pdfplumber).
