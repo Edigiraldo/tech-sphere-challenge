@@ -1,11 +1,15 @@
 """Tests for the document lifecycle endpoints and service.
 
 Covers:
-- POST /documents (upload success, invalid file, processing failure)
-- GET  /documents (listing, filtering)
+- POST /documents (upload success, content-hash duplicate detection,
+  invalid file, processing failure)
+- GET  /documents (listing, filtering, content-hash in response)
 - DELETE /documents/{id} (success, not-found)
+- POST /documents/reconcile (registry↔ChromaDB consistency)
 - Retrieval availability after ingestion
 - Complete indexed-chunk deletion (no orphaned ChromaDB chunks)
+- Registry-filtered retrieval (excludes deleted/unregistered document IDs)
+- Content-hash duplicate detection and idempotent corpus ingestion
 """
 
 from __future__ import annotations
@@ -796,16 +800,23 @@ class TestDocumentLifecycleE2E:
 
     @pytest.mark.asyncio
     async def test_duplicate_pdf_upload_isolated_deletion(
-        self, temp_upload_dir, temp_db_path, test_pdf, rag_config
+        self, temp_upload_dir, temp_db_path, test_pdf, test_pdf_dir, rag_config
     ):
-        """Upload the same PDF twice (two separate documents). Deleting
-        one must not affect the other's chunks or retrievability.
+        """Upload two different PDFs and verify that deleting one does not
+        affect the other's chunks or retrievability.
 
-        This verifies that the document lifecycle distinguishes uploaded
-        copies from each other: each upload gets a unique document_id,
-        and deletion by document_id only removes its own chunks.
+        Content-hash duplicate detection makes identical-content uploads
+        idempotent (same document_id), so isolation is tested with two
+        PDFs that have different content: deleting one must preserve the
+        other's chunks.
         """
         import backend.api.documents as api_docs
+
+        # Second PDF — English Appendicitis post-op instructions
+        second_pdf = (
+            test_pdf_dir
+            / "POST OPERATIVE INSTRUCTIONS FOR APPENDECTOMY .pdf"
+        )
 
         api_docs._service = None
         with patch.dict(
@@ -821,33 +832,33 @@ class TestDocumentLifecycleE2E:
             async with AsyncClient(
                 transport=transport, base_url="http://test"
             ) as client:
-                # Upload first copy
+                # Upload first PDF (Spanish home care plan)
                 with open(test_pdf, "rb") as f:
-                    content = f.read()
-                resp1 = await client.post(
-                    "/documents",
-                    files={
-                        "file": (test_pdf.name, content, "application/pdf")
-                    },
-                )
+                    resp1 = await client.post(
+                        "/documents",
+                        files={
+                            "file": (test_pdf.name, f.read(), "application/pdf")
+                        },
+                    )
                 assert resp1.status_code == 201
                 doc1_id = resp1.json()["document_id"]
                 assert resp1.json()["status"] == "ready"
 
-                # Upload second copy (same PDF, different upload)
-                resp2 = await client.post(
-                    "/documents",
-                    files={
-                        "file": (test_pdf.name, content, "application/pdf")
-                    },
-                )
+                # Upload second PDF (English post-op instructions)
+                with open(second_pdf, "rb") as f:
+                    resp2 = await client.post(
+                        "/documents",
+                        files={
+                            "file": (second_pdf.name, f.read(), "application/pdf")
+                        },
+                    )
                 assert resp2.status_code == 201
                 doc2_id = resp2.json()["document_id"]
                 assert resp2.json()["status"] == "ready"
 
-                # Both documents should have different IDs
+                # Different PDFs must have different IDs
                 assert doc1_id != doc2_id, (
-                    "Two uploads of the same PDF must get distinct document IDs"
+                    "Different PDFs must get distinct document IDs"
                 )
 
                 # Verify both are listed
@@ -860,14 +871,14 @@ class TestDocumentLifecycleE2E:
                 assert doc1_id in ready_ids
                 assert doc2_id in ready_ids
 
-                # Total chunk count should be 2x one document's chunks
+                # Total chunk count should have chunks from both PDFs
                 store = init_store(rag_config)
                 total_before = store.count()
                 assert total_before >= 2, (
-                    "Expected at least 2 chunks (one from each document copy)"
+                    "Expected at least 2 chunks (one from each document)"
                 )
 
-                # Delete first copy
+                # Delete first document
                 delete_resp = await client.delete(f"/documents/{doc1_id}")
                 assert delete_resp.status_code == 200
 
@@ -887,7 +898,7 @@ class TestDocumentLifecycleE2E:
 
                 # Verify chunks from doc2 are still retrievable
                 result = retrieve(
-                    "cuidado de la herida",
+                    "appendectomy wound care",
                     rag_config,
                     store,
                     top_k=5,
@@ -897,5 +908,849 @@ class TestDocumentLifecycleE2E:
                     "Deleted document chunks must not appear in retrieval"
                 )
                 assert doc2_id in doc_ids, (
-                    "Second copy's chunks must still be retrievable"
+                    "Second document's chunks must still be retrievable"
                 )
+
+
+# ======================================================================
+# Content-hash duplicate detection tests
+# ======================================================================
+
+
+class TestContentHashDuplicateDetection:
+    """Tests for SHA-256 content-hash duplicate upload detection."""
+
+    def test_document_model_accepts_content_hash(self):
+        """The Document dataclass must accept a content_hash field."""
+        from backend.documents.models import Document, DocumentStatus
+        from datetime import datetime, timezone
+
+        doc = Document(
+            document_id="abc123",
+            filename="test.pdf",
+            status=DocumentStatus.READY,
+            uploaded_at=datetime.now(timezone.utc),
+            size_bytes=100,
+            content_hash="abc123def456",
+        )
+        assert doc.content_hash == "abc123def456"
+
+    def test_document_model_content_hash_defaults_to_none(self):
+        """content_hash should default to None for backward compatibility."""
+        from backend.documents.models import Document, DocumentStatus
+        from datetime import datetime, timezone
+
+        doc = Document(
+            document_id="abc123",
+            filename="test.pdf",
+            status=DocumentStatus.READY,
+            uploaded_at=datetime.now(timezone.utc),
+            size_bytes=100,
+        )
+        assert doc.content_hash is None
+
+    def test_insert_and_retrieve_content_hash(self, temp_db_path):
+        """Inserting a document with content_hash and retrieving it
+        must preserve the hash value."""
+        from backend.documents.models import Document, DocumentStatus
+        from backend.persistence.sqlite import (
+            get_document_by_id,
+            init_sqlite,
+            insert_document,
+        )
+        from datetime import datetime, timezone
+
+        init_sqlite(temp_db_path)
+
+        doc = Document(
+            document_id="hash-test-1",
+            filename="test.pdf",
+            status=DocumentStatus.READY,
+            uploaded_at=datetime.now(timezone.utc),
+            size_bytes=42,
+            content_hash="abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+        )
+        insert_document(doc)
+
+        retrieved = get_document_by_id("hash-test-1")
+        assert retrieved is not None
+        assert retrieved.content_hash == (
+            "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+        )
+
+    def test_get_by_content_hash_finds_active(self, temp_db_path):
+        """get_document_by_content_hash must find an active document
+        matching the hash."""
+        from backend.documents.models import Document, DocumentStatus
+        from backend.persistence.sqlite import (
+            get_document_by_content_hash,
+            init_sqlite,
+            insert_document,
+        )
+        from datetime import datetime, timezone
+
+        init_sqlite(temp_db_path)
+
+        doc = Document(
+            document_id="ch-1",
+            filename="a.pdf",
+            status=DocumentStatus.READY,
+            uploaded_at=datetime.now(timezone.utc),
+            size_bytes=10,
+            content_hash="hash-abc",
+        )
+        insert_document(doc)
+
+        found = get_document_by_content_hash("hash-abc")
+        assert found is not None
+        assert found.document_id == "ch-1"
+
+    def test_get_by_content_hash_ignores_deleted(self, temp_db_path):
+        """get_document_by_content_hash must NOT return a deleted document."""
+        from backend.documents.models import Document, DocumentStatus
+        from backend.persistence.sqlite import (
+            get_document_by_content_hash,
+            init_sqlite,
+            insert_document,
+            update_document_status,
+        )
+        from datetime import datetime, timezone
+
+        init_sqlite(temp_db_path)
+
+        doc = Document(
+            document_id="ch-2",
+            filename="b.pdf",
+            status=DocumentStatus.READY,
+            uploaded_at=datetime.now(timezone.utc),
+            size_bytes=10,
+            content_hash="hash-deleted",
+        )
+        insert_document(doc)
+        update_document_status("ch-2", DocumentStatus.DELETED)
+
+        found = get_document_by_content_hash("hash-deleted")
+        assert found is None, (
+            "get_document_by_content_hash should not return deleted documents"
+        )
+
+    def test_get_by_content_hash_nonexistent(self, temp_db_path):
+        """get_document_by_content_hash returns None for unknown hash."""
+        from backend.persistence.sqlite import (
+            get_document_by_content_hash,
+            init_sqlite,
+        )
+
+        init_sqlite(temp_db_path)
+        found = get_document_by_content_hash("nonexistent-hash")
+        assert found is None
+
+    def test_service_upload_returns_existing_on_duplicate(
+        self, temp_upload_dir, temp_db_path, rag_config
+    ):
+        """Uploading the same content twice must return the first document
+        on the second attempt (idempotent upload)."""
+        from backend.documents.service import DocumentService
+
+        service = DocumentService(
+            upload_dir=temp_upload_dir, db_path=temp_db_path,
+        )
+
+        content = b"%PDF-1.4\nfake pdf content for hashing\n%%EOF"
+
+        doc1 = service.upload(content, "manual.pdf", rag_config)
+        assert doc1.status.value in ("ready", "failed"), (
+            f"Unexpected status: {doc1.status.value}"
+        )
+        assert doc1.content_hash is not None
+
+        doc2 = service.upload(content, "manual.pdf", rag_config)
+        # The second upload must return the existing record
+        assert doc2.document_id == doc1.document_id, (
+            f"Duplicate upload should return existing ({doc1.document_id}), "
+            f"got {doc2.document_id}"
+        )
+        assert doc2.content_hash == doc1.content_hash
+
+    def test_service_upload_new_after_delete(
+        self, temp_upload_dir, temp_db_path, rag_config
+    ):
+        """After deleting a document, re-uploading the same content must
+        create a new record (the deleted record is ignored by content-hash
+        lookup)."""
+        from backend.documents.service import DocumentService
+
+        service = DocumentService(
+            upload_dir=temp_upload_dir, db_path=temp_db_path,
+        )
+
+        content = b"%PDF-1.4\nunique content for reupload test\n%%EOF"
+
+        doc1 = service.upload(content, "reup.pdf", rag_config)
+        assert doc1.content_hash is not None
+
+        # Delete it
+        deleted = service.delete(doc1.document_id, rag_config)
+        assert deleted is not None
+        assert deleted.status.value == "deleted"
+
+        # Re-upload same content
+        doc2 = service.upload(content, "reup.pdf", rag_config)
+        # Must be a NEW document_id since the old one is deleted
+        assert doc2.document_id != doc1.document_id, (
+            "Re-upload after delete must create a new document_id"
+        )
+        assert doc2.content_hash == doc1.content_hash
+        assert doc2.status.value in ("ready", "failed")
+
+    @pytest.mark.asyncio
+    async def test_api_upload_returns_content_hash_in_response(
+        self, temp_upload_dir, temp_db_path
+    ):
+        """The upload API response must include the content_hash field."""
+        import backend.api.documents as api_docs
+
+        api_docs._service = None
+        with patch.dict(
+            os.environ,
+            {
+                "DOCUMENTS_UPLOAD_DIR": str(temp_upload_dir),
+                "DOCUMENTS_DB_PATH": str(temp_db_path),
+            },
+        ):
+            transport = ASGITransport(app=app)
+            async with AsyncClient(
+                transport=transport, base_url="http://test"
+            ) as client:
+                response = await client.post(
+                    "/documents",
+                    files={
+                        "file": (
+                            "test.pdf",
+                            b"%PDF-1.4\n%%EOF",
+                            "application/pdf",
+                        )
+                    },
+                )
+
+        assert response.status_code == 201
+        data = response.json()
+        assert "content_hash" in data, (
+            f"UploadResponse must include content_hash, got keys: "
+            f"{list(data.keys())}"
+        )
+        assert data["content_hash"] is not None
+
+    @pytest.mark.asyncio
+    async def test_list_documents_includes_content_hash(
+        self, temp_upload_dir, temp_db_path
+    ):
+        """Listing documents must include content_hash in each response item."""
+        import backend.api.documents as api_docs
+
+        api_docs._service = None
+        with patch.dict(
+            os.environ,
+            {
+                "DOCUMENTS_UPLOAD_DIR": str(temp_upload_dir),
+                "DOCUMENTS_DB_PATH": str(temp_db_path),
+            },
+        ):
+            transport = ASGITransport(app=app)
+            async with AsyncClient(
+                transport=transport, base_url="http://test"
+            ) as client:
+                # Upload
+                await client.post(
+                    "/documents",
+                    files={
+                        "file": (
+                            "list_test.pdf",
+                            b"%PDF-1.4\n%%EOF",
+                            "application/pdf",
+                        )
+                    },
+                )
+
+                # List
+                response = await client.get("/documents")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] >= 1
+        for doc in data["documents"]:
+            assert "content_hash" in doc, (
+                f"DocumentResponse must include content_hash, got keys: "
+                f"{list(doc.keys())}"
+            )
+
+
+# ======================================================================
+# Reconciliation tests
+# ======================================================================
+
+
+class TestReconciliation:
+    """Tests for ChromaDB↔SQLite registry reconciliation."""
+
+    def test_reconcile_empty_both_is_clean(self, temp_db_path, rag_config):
+        """When both SQLite and ChromaDB are empty, reconciliation is clean."""
+        from backend.documents.reconciliation import reconcile
+        from backend.rag.store import init_store
+
+        store = init_store(rag_config)
+
+        result = reconcile(store, temp_db_path)
+        assert result.is_clean
+        assert result.orphaned_count == 0
+        assert result.missing_count == 0
+
+    def test_reconcile_detects_orphaned_chroma_id(self, temp_db_path, rag_config):
+        """When a document_id exists in ChromaDB with no SQLite row,
+        reconciliation must detect it as orphaned."""
+        from backend.documents.reconciliation import reconcile
+        from backend.persistence.chroma import ChromaStore
+        from backend.rag.store import init_store
+
+        store = init_store(rag_config)
+
+        # Manually add chunks with a document_id not in SQLite
+        collection = store.get_or_create_collection()
+        collection.add(
+            ids=["orphan-chunk-1"],
+            documents=["some text for orphaned document"],
+            metadatas=[{"document_id": "orphan-doc-id"}],
+        )
+
+        result = reconcile(store, temp_db_path)
+        assert not result.is_clean
+        assert "orphan-doc-id" in result.orphaned_chroma_ids
+        assert result.orphaned_count == 1
+
+    def test_reconcile_detects_deleted_with_lingering_chunks(
+        self, temp_upload_dir, temp_db_path, rag_config
+    ):
+        """When a SQLite document is DELETED but ChromaDB chunks remain,
+        reconciliation must flag it as orphaned."""
+        from datetime import datetime, timezone
+
+        from backend.documents.models import Document, DocumentStatus
+        from backend.documents.reconciliation import reconcile
+        from backend.persistence.sqlite import (
+            init_sqlite,
+            insert_document,
+            update_document_status,
+        )
+        from backend.rag.store import init_store
+
+        init_sqlite(temp_db_path)
+
+        doc_id = "deleted-lingering-doc"
+        doc = Document(
+            document_id=doc_id,
+            filename="lingering.pdf",
+            status=DocumentStatus.READY,
+            uploaded_at=datetime.now(timezone.utc),
+            size_bytes=100,
+            content_hash="hash-lingering",
+        )
+        insert_document(doc)
+
+        # Manually add chunks to ChromaDB
+        store = init_store(rag_config)
+        collection = store.get_or_create_collection()
+        collection.add(
+            ids=["linger-chunk-1", "linger-chunk-2"],
+            documents=["text about post-op care", "more care instructions"],
+            metadatas=[
+                {
+                    "document_id": doc_id,
+                    "source_filename": "lingering.pdf",
+                    "chunk_index": 0,
+                    "page_number": 1,
+                    "ingested_at": "2025-01-01T00:00:00+00:00",
+                },
+                {
+                    "document_id": doc_id,
+                    "source_filename": "lingering.pdf",
+                    "chunk_index": 1,
+                    "page_number": 2,
+                    "ingested_at": "2025-01-01T00:00:00+00:00",
+                },
+            ],
+        )
+        assert store.count() == 2
+
+        # Soft-delete in SQLite but DON'T purge ChromaDB chunks
+        update_document_status(doc_id, DocumentStatus.DELETED)
+
+        # Reconcile — should find orphaned
+        result = reconcile(store, temp_db_path)
+        assert not result.is_clean
+        assert doc_id in result.orphaned_chroma_ids, (
+            f"Expected {doc_id} in orphaned set, got "
+            f"{result.orphaned_chroma_ids}"
+        )
+
+    def test_reconcile_detects_missing_chroma_entries(
+        self, temp_db_path, rag_config
+    ):
+        """A document in SQLite with READY status but no ChromaDB chunks
+        must be detected as missing."""
+        from datetime import datetime, timezone
+
+        from backend.documents.models import Document, DocumentStatus
+        from backend.documents.reconciliation import reconcile
+        from backend.persistence.sqlite import init_sqlite, insert_document
+        from backend.rag.store import init_store
+
+        init_sqlite(temp_db_path)
+
+        doc = Document(
+            document_id="missing-chroma-doc",
+            filename="missing.pdf",
+            status=DocumentStatus.READY,
+            uploaded_at=datetime.now(timezone.utc),
+            size_bytes=100,
+            content_hash="hash-missing",
+        )
+        insert_document(doc)
+
+        store = init_store(rag_config)
+        result = reconcile(store, temp_db_path)
+        assert not result.is_clean
+        assert "missing-chroma-doc" in result.missing_chroma_ids
+
+    def test_clean_orphaned_chunks_removes_them(self, temp_db_path, rag_config):
+        """clean_orphaned_chunks must delete orphaned entries from ChromaDB."""
+        from backend.documents.reconciliation import (
+            clean_orphaned_chunks,
+            reconcile,
+        )
+        from backend.rag.store import init_store
+
+        store = init_store(rag_config)
+
+        # Add orphaned chunks
+        collection = store.get_or_create_collection()
+        collection.add(
+            ids=["orphan-to-clean-1", "orphan-to-clean-2"],
+            documents=["text a", "text b"],
+            metadatas=[
+                {"document_id": "orphan-clean-id"},
+                {"document_id": "orphan-clean-id"},
+            ],
+        )
+        assert store.count() == 2
+
+        cleaned = clean_orphaned_chunks(store, temp_db_path)
+        assert "orphan-clean-id" in cleaned
+        assert store.count() == 0
+
+    @pytest.mark.asyncio
+    async def test_reconcile_api_endpoint_returns_structure(
+        self, temp_upload_dir, temp_db_path, rag_config
+    ):
+        """POST /documents/reconcile must return a valid ReconcileResponse."""
+        import backend.api.documents as api_docs
+
+        api_docs._service = None
+        chroma_dir = str(rag_config.chroma_persist_dir)
+        with patch.dict(
+            os.environ,
+            {
+                "DOCUMENTS_UPLOAD_DIR": str(temp_upload_dir),
+                "DOCUMENTS_DB_PATH": str(temp_db_path),
+                "RAG_CHROMA_DIR": chroma_dir,
+                "RAG_COLLECTION_NAME": rag_config.collection_name,
+            },
+        ):
+            transport = ASGITransport(app=app)
+            async with AsyncClient(
+                transport=transport, base_url="http://test"
+            ) as client:
+                response = await client.post("/documents/reconcile")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "total_sqlite_docs" in data
+        assert "total_chroma_ids" in data
+        assert "orphaned_chroma_ids" in data
+        assert "missing_chroma_ids" in data
+        assert "is_clean" in data
+        assert isinstance(data["orphaned_chroma_ids"], list)
+        assert isinstance(data["missing_chroma_ids"], list)
+
+    @pytest.mark.asyncio
+    async def test_reconcile_api_with_clean_flag(
+        self, temp_upload_dir, temp_db_path, rag_config
+    ):
+        """POST /documents/reconcile?clean=true must clean orphans."""
+        import backend.api.documents as api_docs
+
+        api_docs._service = None
+        chroma_dir = str(rag_config.chroma_persist_dir)
+        with patch.dict(
+            os.environ,
+            {
+                "DOCUMENTS_UPLOAD_DIR": str(temp_upload_dir),
+                "DOCUMENTS_DB_PATH": str(temp_db_path),
+                "RAG_CHROMA_DIR": chroma_dir,
+                "RAG_COLLECTION_NAME": rag_config.collection_name,
+            },
+        ):
+            transport = ASGITransport(app=app)
+            async with AsyncClient(
+                transport=transport, base_url="http://test"
+            ) as client:
+                # First add orphaned chunks manually
+                from backend.rag.store import init_store
+                store = init_store(rag_config)
+                collection = store.get_or_create_collection()
+                collection.add(
+                    ids=["api-orphan-1"],
+                    documents=["orphaned text"],
+                    metadatas=[{"document_id": "api-orphan-doc"}],
+                )
+
+                response = await client.post(
+                    "/documents/reconcile", params={"clean": True}
+                )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "api-orphan-doc" in data["orphaned_chroma_ids"]
+        assert data["cleaned_ids"] is not None
+        assert "api-orphan-doc" in data["cleaned_ids"]
+
+
+# ======================================================================
+# Retrieval filtering by registry tests
+# ======================================================================
+
+
+class TestRetrievalRegistryFiltering:
+    """Tests that retrieval excludes deleted/unregistered document IDs."""
+
+    def test_retrieve_filters_by_valid_document_ids(
+        self, temp_db_path, rag_config
+    ):
+        """When valid_document_ids is provided, chunks outside the set
+        must be excluded from results."""
+        from backend.rag.retrieval import retrieve
+        from backend.rag.store import init_store
+
+        store = init_store(rag_config)
+
+        # Add chunks with two different document IDs
+        collection = store.get_or_create_collection()
+        collection.add(
+            ids=["valid-chunk-1", "orphaned-chunk-1"],
+            documents=[
+                "cuidado de la herida postoperatoria",
+                "texto de documento huérfano",
+            ],
+            metadatas=[
+                {
+                    "document_id": "valid-doc",
+                    "source_filename": "valid.pdf",
+                    "chunk_index": 0,
+                    "page_number": 1,
+                    "ingested_at": "2025-01-01T00:00:00+00:00",
+                },
+                {
+                    "document_id": "orphan-doc",
+                    "source_filename": "orphan.pdf",
+                    "chunk_index": 0,
+                    "page_number": 1,
+                    "ingested_at": "2025-01-01T00:00:00+00:00",
+                },
+            ],
+        )
+
+        # Retrieve with only "valid-doc" in the allowed set
+        result = retrieve(
+            "cuidado de la herida",
+            rag_config,
+            store,
+            top_k=5,
+            valid_document_ids={"valid-doc"},
+        )
+
+        doc_ids = {c.document_id for c in result.chunks}
+        assert "valid-doc" in doc_ids, (
+            "Valid document must appear in filtered results"
+        )
+        assert "orphan-doc" not in doc_ids, (
+            "Orphaned/unregistered document must NOT appear"
+        )
+
+    def test_retrieve_without_valid_ids_is_backward_compatible(
+        self, temp_db_path, rag_config
+    ):
+        """When valid_document_ids is None, all chunks are returned
+        (backward-compatible behavior)."""
+        from backend.rag.retrieval import retrieve
+        from backend.rag.store import init_store
+
+        store = init_store(rag_config)
+
+        collection = store.get_or_create_collection()
+        collection.add(
+            ids=["bc-chunk-1", "bc-chunk-2"],
+            documents=["text a", "text b"],
+            metadatas=[
+                {
+                    "document_id": "doc-a",
+                    "source_filename": "a.pdf",
+                    "chunk_index": 0,
+                    "page_number": 1,
+                    "ingested_at": "2025-01-01T00:00:00+00:00",
+                },
+                {
+                    "document_id": "doc-b",
+                    "source_filename": "b.pdf",
+                    "chunk_index": 0,
+                    "page_number": 1,
+                    "ingested_at": "2025-01-01T00:00:00+00:00",
+                },
+            ],
+        )
+
+        result = retrieve("text", rag_config, store, top_k=5)
+        # Without filter, both should be present
+        doc_ids = {c.document_id for c in result.chunks}
+        assert len(doc_ids) == 2
+
+    def test_get_active_document_ids_excludes_deleted(
+        self, temp_db_path
+    ):
+        """get_active_document_ids must not include deleted document IDs."""
+        from backend.documents.models import Document, DocumentStatus
+        from backend.persistence.sqlite import (
+            get_active_document_ids,
+            init_sqlite,
+            insert_document,
+            update_document_status,
+        )
+        from datetime import datetime, timezone
+
+        init_sqlite(temp_db_path)
+
+        doc1 = Document(
+            document_id="active-1",
+            filename="a.pdf",
+            status=DocumentStatus.READY,
+            uploaded_at=datetime.now(timezone.utc),
+            size_bytes=10,
+        )
+        doc2 = Document(
+            document_id="deleted-1",
+            filename="b.pdf",
+            status=DocumentStatus.READY,
+            uploaded_at=datetime.now(timezone.utc),
+            size_bytes=10,
+        )
+        insert_document(doc1)
+        insert_document(doc2)
+        update_document_status("deleted-1", DocumentStatus.DELETED)
+
+        active_ids = get_active_document_ids()
+        assert "active-1" in active_ids
+        assert "deleted-1" not in active_ids
+
+    def test_get_active_document_ids_includes_processing(
+        self, temp_db_path
+    ):
+        """get_active_document_ids must include processing documents
+        (they are not deleted, just not yet ready)."""
+        from backend.documents.models import Document, DocumentStatus
+        from backend.persistence.sqlite import (
+            get_active_document_ids,
+            init_sqlite,
+            insert_document,
+        )
+        from datetime import datetime, timezone
+
+        init_sqlite(temp_db_path)
+
+        doc = Document(
+            document_id="processing-1",
+            filename="p.pdf",
+            status=DocumentStatus.PROCESSING,
+            uploaded_at=datetime.now(timezone.utc),
+            size_bytes=10,
+        )
+        insert_document(doc)
+
+        active_ids = get_active_document_ids()
+        assert "processing-1" in active_ids
+
+    def test_retrieve_filters_out_deleted_document_chunks(
+        self, temp_upload_dir, temp_db_path, rag_config
+    ):
+        """After uploading a document through the service and then deleting
+        it, retrieval with valid_document_ids must exclude its chunks."""
+        from backend.documents.service import DocumentService
+        from backend.rag.retrieval import retrieve
+        from backend.rag.store import init_store
+
+        service = DocumentService(
+            upload_dir=temp_upload_dir, db_path=temp_db_path,
+        )
+
+        content = b"%PDF-1.4\nsome pdf content for registry filter test\n%%EOF"
+
+        # Upload
+        doc = service.upload(content, "filter_test.pdf", rag_config)
+        assert doc.content_hash is not None
+        doc_id = doc.document_id
+
+        # Retrieve — should find chunks
+        store = init_store(rag_config)
+        from backend.persistence.sqlite import get_active_document_ids
+
+        valid_ids = get_active_document_ids()
+        assert doc_id in valid_ids
+
+        result1 = retrieve(
+            "pdf content filter",
+            rag_config,
+            store,
+            top_k=5,
+            valid_document_ids=valid_ids,
+        )
+
+        # May or may not have results (depends on embedding match with synthetic
+        # text), but if it does, doc_id should be in sources
+        if result1.has_results:
+            doc_ids_1 = {c.document_id for c in result1.chunks}
+            assert doc_id in doc_ids_1, (
+                "Active document must appear in retrieval"
+            )
+
+        # Delete
+        service.delete(doc_id, rag_config)
+
+        # Retrieve again — must not include deleted doc
+        valid_ids_after = get_active_document_ids()
+        assert doc_id not in valid_ids_after
+
+        result2 = retrieve(
+            "pdf content filter",
+            rag_config,
+            store,
+            top_k=5,
+            valid_document_ids=valid_ids_after,
+        )
+        doc_ids_2 = {c.document_id for c in result2.chunks}
+        assert doc_id not in doc_ids_2, (
+            f"Deleted document {doc_id} must not appear in retrieval"
+        )
+
+
+# ======================================================================
+# Idempotent corpus ingestion tests
+# ======================================================================
+
+
+class TestCorpusIngestionIdempotency:
+    """Tests for explicit, idempotent corpus ingestion."""
+
+    @pytest.mark.slow
+    def test_ingest_same_pdf_twice_produces_one_registry_record(
+        self, temp_upload_dir, temp_db_path, test_pdf, rag_config
+    ):
+        """Uploading the same PDF content twice through the service must
+        produce exactly one registry record (the second call returns the
+        existing one)."""
+        from backend.documents.service import DocumentService
+
+        service = DocumentService(
+            upload_dir=temp_upload_dir, db_path=temp_db_path,
+        )
+
+        content = test_pdf.read_bytes()
+
+        doc1 = service.upload(content, test_pdf.name, rag_config)
+        doc2 = service.upload(content, test_pdf.name, rag_config)
+
+        # Second upload must return the existing record
+        assert doc2.document_id == doc1.document_id
+        assert doc2.content_hash == doc1.content_hash
+        assert doc2.status.value in ("ready", "failed")
+
+        # Only one record in the list
+        all_docs = service.list_all()
+        active_docs = [
+            d for d in all_docs if d.document_id == doc1.document_id
+        ]
+        assert len(active_docs) == 1, (
+            f"Expected 1 record, got {len(active_docs)}: {active_docs}"
+        )
+
+    @pytest.mark.slow
+    def test_ingest_same_pdf_after_delete_creates_new_record(
+        self, temp_upload_dir, temp_db_path, test_pdf, rag_config
+    ):
+        """After deleting a corpus document, re-ingesting the same PDF
+        must create a new record with a different document_id."""
+        from backend.documents.service import DocumentService
+
+        service = DocumentService(
+            upload_dir=temp_upload_dir, db_path=temp_db_path,
+        )
+
+        content = test_pdf.read_bytes()
+
+        doc1 = service.upload(content, test_pdf.name, rag_config)
+        doc1_id = doc1.document_id
+        assert doc1.status.value in ("ready", "failed")
+
+        # Delete
+        service.delete(doc1_id, rag_config)
+
+        # Re-ingest
+        doc2 = service.upload(content, test_pdf.name, rag_config)
+        doc2_id = doc2.document_id
+
+        assert doc2_id != doc1_id, (
+            "Re-ingestion after delete must produce a new document_id"
+        )
+        assert doc2.content_hash == doc1.content_hash
+        assert doc2.status.value in ("ready", "failed")
+
+        # Verify old is deleted, new is active
+        all_docs = service.list_all()
+        doc1_status = next(
+            d.status.value for d in all_docs if d.document_id == doc1_id
+        )
+        doc2_status = next(
+            d.status.value for d in all_docs if d.document_id == doc2_id
+        )
+        assert doc1_status == "deleted"
+        assert doc2_status in ("ready", "failed")
+
+    @pytest.mark.slow
+    def test_corpus_script_is_importable(self):
+        """The corpus ingestion script must be importable."""
+        import importlib.util
+        import sys
+
+        spec = importlib.util.spec_from_file_location(
+            "ingest_corpus",
+            Path(__file__).parent.parent / "scripts" / "ingest_corpus.py",
+        )
+        assert spec is not None, "Could not find ingest_corpus.py"
+        mod = importlib.util.module_from_spec(spec)
+        # Just verify it loads without SyntaxError/ImportError
+        spec.loader.exec_module(mod)
+
+    def test_ingest_corpus_script_main_path_resolves(self):
+        """The script must be directly runnable (syntax check)."""
+        import py_compile
+        script_path = (
+            Path(__file__).parent.parent / "scripts" / "ingest_corpus.py"
+        )
+        # This raises SyntaxError on bad syntax
+        py_compile.compile(str(script_path), doraise=True)

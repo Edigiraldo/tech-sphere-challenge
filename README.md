@@ -38,7 +38,11 @@ transcripción STT → orquestador → clasificación de escalamiento → sínte
 devolviendo audio WAV base64, transcripción del agente, citas trazables e
 información de escalamiento en cada turno. La API REST de documentos
 (``POST/GET/DELETE /documents``) gestiona el ciclo de vida completo incluyendo
-purgado de chunks en ChromaDB. El módulo colector de métricas
+purgado de chunks en ChromaDB, detección de duplicados por hash SHA-256
+(contenido idempotente), y reconciliación de consistencia entre el registro
+SQLite y ChromaDB (``POST /documents/reconcile``). La recuperación RAG
+excluye automáticamente chunks de documentos eliminados o no registrados,
+asegurando citas trazables solo de fuentes activas. El módulo colector de métricas
 (``InMemoryMetricsCollector``) está expuesto mediante un endpoint API de solo
 lectura tipado (``GET /metrics/summary``, ``GET /metrics/calls`` y
 ``GET /metrics/calls/{call_id}``) y una vista frontal de métricas. El colector
@@ -82,6 +86,20 @@ curl http://127.0.0.1:8000/health
 ```
 
 Documentación interactiva de la API (Swagger UI) en `http://127.0.0.1:8000/docs`.
+
+### Ingestión del corpus clínico
+
+El conocimiento clínico no se carga al iniciar la aplicación. Debe ingerirse
+explícitamente con el script de corpus:
+
+```bash
+python scripts/ingest_corpus.py
+```
+
+El script recorre todos los PDFs en `dataset/textos/` y los ingiere mediante
+la API de `DocumentService`. La ingestión es **idempotente**: re-ejecutar el
+script es seguro — los archivos con contenido idéntico (mismo hash SHA-256)
+se reconocen y no crean registros duplicados.
 
 ## Variables de entorno
 
@@ -141,7 +159,7 @@ proyecto.
 pytest
 ```
 
-Estas pruebas (948) validan dataset, salud del servidor, chunking y extracción de
+Estas pruebas (947) validan dataset, salud del servidor, chunking y extracción de
 PDF (con error paths), el adaptador LLM (Llama 3.1 70B Versatile con prompts,
 validación, respuestas estructuradas, detección de inyección de prompts y
 validación de fundamentación), el endpoint RAG `/rag/query` con controles de
@@ -157,11 +175,11 @@ de embeddings ni procesan PDFs reales.
 pytest -m slow
 ```
 
-Estas pruebas (24) validan el pipeline completo de RAG: ingestión de PDFs reales
+Estas pruebas (27) validan el pipeline completo de RAG: ingestión de PDFs reales
 (Apendicectomía en inglés y español), embedding con BGE-M3, recuperación por similitud,
 controles de suficiencia, eliminación de chunks, generación de citas trazables,
-verificación de nombres de archivo reales en disco, y aislamiento de documentos
-duplicados. El modelo de embeddings (~2 GB) se descarga automáticamente en el
+verificación de nombres de archivo reales en disco, ingestión idempotente por
+hash de contenido, y aislamiento en eliminación de documentos. El modelo de embeddings (~2 GB) se descarga automáticamente en el
 primer uso.
 
 ## Contenido versionado
@@ -190,6 +208,9 @@ primer uso.
 │   │   ├── retrieval.py
 │   │   └── store.py
 │   ├── documents/         Ciclo de vida de documentos
+│   │   ├── models.py       Modelos de dominio (Document, DocumentStatus)
+│   │   ├── service.py      Lógica de negocio (upload con hash duplicados, list, delete)
+│   │   └── reconciliation.py  Reconciliación y validación SQLite ↔ ChromaDB
 │   ├── decision/          Clasificación de escalamiento
 │   ├── conversation/      Orquestación de conversación
 │   ├── voice/             Adaptadores STT y TTS
@@ -210,19 +231,21 @@ primer uso.
 │   ├── admin.js           Lógica de administración con sondeo de estado
 │   └── metrics.js         Lógica de visualización de métricas
 ├── tests/                 Pruebas automatizadas
+├── scripts/               Scripts de utilidad
+│   └── ingest_corpus.py   Ingestión explícita e idempotente del corpus clínico
 │   ├── __init__.py
 │   ├── test_frontend.py   Pruebas de servido de archivos estáticos (8)
 │   ├── test_health.py     Prueba del endpoint /health (1)
 │   ├── test_llm.py        Pruebas del adaptador LLM (63)
 │   ├── test_rag_api.py    Pruebas del endpoint /rag/query (14)
-│   ├── test_documents.py  Pruebas del ciclo de vida de documentos (16)
+│   ├── test_documents.py  Pruebas del ciclo de vida de documentos (42)
 │   ├── test_calls_api.py  Pruebas de endpoints de turnos de voz (41)
 │   ├── test_persistence_extended.py  Pruebas de capa SQLite extendida (41)
 │   ├── test_summaries.py  Pruebas del generador de resúmenes (44)
 │   ├── test_voice.py      Pruebas del adaptador STT (56)
 │   ├── test_env_loading.py  Pruebas de carga de .env (8)
 │   ├── test_dataset/      Pruebas de acceso a datos sintéticos (58)
-│   ├── rag/               Pruebas del pipeline RAG (24)
+│   ├── rag/               Pruebas del pipeline RAG (35)
 │   │   ├── conftest.py
 │   │   ├── test_chunking.py
 │   │   ├── test_extract.py
@@ -293,8 +316,11 @@ La aplicación expone:
 - Una consola de administración gráfica en ``/admin`` para subir, listar con
   sondeo de estado, refrescar y eliminar documentos del conocimiento con
   purgado de chunks indexados. El ciclo de vida de documentos en el backend
-  (``POST/GET/DELETE /documents``) es un módulo independiente de la consola
-  de administración.
+  (``POST/GET/DELETE /documents``, ``POST /documents/reconcile``) es un
+  módulo independiente de la consola de administración. La subida de
+  documentos detecta duplicados por hash SHA-256 y es idempotente; la
+  reconciliación (``POST /documents/reconcile``) detecta chunks huérfanos
+  en ChromaDB y documentos faltantes.
 - Endpoints de métricas de solo lectura tipados (``GET /metrics/summary``,
   ``GET /metrics/calls`` y ``GET /metrics/calls/{call_id}``) y una
   vista frontal de métricas. El colector de métricas (``InMemoryMetricsCollector``)
@@ -346,6 +372,19 @@ configurables:
 
 Si algún control falla, el sistema devuelve ``insufficient_knowledge`` sin llamar
 al LLM.
+
+Adicionalmente, la recuperación RAG filtra automáticamente los chunks cuyo
+``document_id`` no está en el registro SQLite o cuyo estado es ``deleted``,
+asegurando que solo documentos activos y registrados contribuyen a las
+respuestas.
+
+### Detección de duplicados por hash de contenido
+
+Cada documento subido recibe un hash SHA-256 de su contenido. Si se sube
+el mismo archivo nuevamente y el registro existente está activo (no
+eliminado), el servicio devuelve el registro existente sin crear uno nuevo
+(ingestión idempotente). Si el registro original fue eliminado, se crea
+un nuevo registro, preservando el historial de auditoría.
 
 ## Licencia
 

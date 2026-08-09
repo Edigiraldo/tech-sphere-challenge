@@ -291,6 +291,7 @@ def init_sqlite(db_path: str | Path) -> None:
                 status       TEXT    NOT NULL DEFAULT 'pending',
                 uploaded_at  TEXT    NOT NULL,
                 size_bytes   INTEGER NOT NULL DEFAULT 0,
+                content_hash TEXT,
                 error_message TEXT
             )
             """
@@ -399,6 +400,7 @@ def _row_to_document(row: sqlite3.Row) -> Document:
         status=DocumentStatus(row["status"]),
         uploaded_at=datetime.fromisoformat(row["uploaded_at"]),
         size_bytes=row["size_bytes"],
+        content_hash=row["content_hash"] if "content_hash" in row.keys() else None,
         error_message=row["error_message"],
     )
 
@@ -418,14 +420,16 @@ def insert_document(doc: Document) -> None:
     try:
         conn.execute(
             """INSERT INTO documents
-               (document_id, filename, status, uploaded_at, size_bytes, error_message)
-               VALUES (?, ?, ?, ?, ?, ?)""",
+               (document_id, filename, status, uploaded_at, size_bytes,
+                content_hash, error_message)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
             (
                 doc.document_id,
                 doc.filename,
                 doc.status.value,
                 doc.uploaded_at.isoformat(),
                 doc.size_bytes,
+                doc.content_hash,
                 doc.error_message,
             ),
         )
@@ -485,6 +489,40 @@ def get_document_by_id(document_id: str) -> Document | None:
             "SELECT * FROM documents WHERE document_id = ?", (document_id,)
         ).fetchone()
         return _row_to_document(row) if row is not None else None
+    finally:
+        conn.close()
+
+
+def get_document_by_content_hash(content_hash: str) -> Document | None:
+    """Return the first non-deleted document matching *content_hash*.
+
+    Only considers documents whose status is not ``DELETED``.  Returns
+    ``None`` when no active match exists, allowing a new upload to proceed.
+    """
+    conn = _get_conn()
+    try:
+        row = conn.execute(
+            "SELECT * FROM documents WHERE content_hash = ? AND status != ?",
+            (content_hash, DocumentStatus.DELETED.value),
+        ).fetchone()
+        return _row_to_document(row) if row is not None else None
+    finally:
+        conn.close()
+
+
+def get_active_document_ids() -> set[str]:
+    """Return the set of ``document_id`` values for non-deleted documents.
+
+    This is used by the retrieval pipeline to exclude chunks belonging to
+    deleted or unregistered documents from search results.
+    """
+    conn = _get_conn()
+    try:
+        rows = conn.execute(
+            "SELECT document_id FROM documents WHERE status != ?",
+            (DocumentStatus.DELETED.value,),
+        ).fetchall()
+        return {r["document_id"] for r in rows}
     finally:
         conn.close()
 

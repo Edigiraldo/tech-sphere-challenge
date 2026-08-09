@@ -1,9 +1,15 @@
-"""RAG retrieval: embed query → similarity search → annotated chunks."""
+"""RAG retrieval: embed query → similarity search → annotated chunks.
+
+Retrieval filters out chunks whose ``document_id`` is not in the SQLite
+document registry or whose registry status is ``DELETED``, ensuring only
+active, registered documents contribute to search results.
+"""
 
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from typing import Optional
 
 from backend.persistence.chroma import ChromaStore
 from backend.rag.config import RagConfig
@@ -69,6 +75,7 @@ def retrieve(
     config: RagConfig,
     store: ChromaStore | None = None,
     top_k: int | None = None,
+    valid_document_ids: set[str] | None = None,
 ) -> RetrievalResult:
     """Retrieve the top-k most relevant chunks for *query*.
 
@@ -77,6 +84,10 @@ def retrieve(
         config: RAG configuration.
         store: Optional pre-initialised ``ChromaStore``.
         top_k: Override the default number of chunks to retrieve.
+        valid_document_ids: Optional set of ``document_id`` values to
+            restrict results to.  Chunks whose ``document_id`` is not in
+            this set are discarded.  When ``None``, all chunks are
+            considered (backward-compatible, no registry filtering).
 
     Returns:
         A ``RetrievalResult`` containing the matching chunks (if any).
@@ -103,6 +114,14 @@ def retrieve(
         )
         for r in results
     ]
+
+    # Filter by registry if a set of valid document IDs is provided.
+    # This excludes chunks from deleted records and from document IDs
+    # that were never registered in SQLite (orphaned ChromaDB entries).
+    if valid_document_ids is not None:
+        chunks = [
+            c for c in chunks if c.document_id in valid_document_ids
+        ]
 
     # Determine sufficiency: must meet minimum chunk count AND average
     # similarity thresholds before the LLM is invoked.

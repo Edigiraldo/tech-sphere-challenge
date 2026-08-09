@@ -52,5 +52,10 @@ class Document:
     size_bytes: int
     """Size of the uploaded file in bytes."""
 
+    content_hash: str | None = None
+    """SHA-256 hex digest of the file content (for duplicate detection and
+    idempotent ingestion).  ``None`` for legacy records created before the
+    content-hash policy was introduced."""
+
     error_message: str | None = None
     """Human-readable error detail, set only when ``status == FAILED``."""
