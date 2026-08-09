@@ -104,6 +104,17 @@ _call_escalations: dict[str, list[EscalationInfo]] = {}
 _call_citations: dict[str, list[CitationResponse]] = {}
 """Per-call accumulated citations (deduplicated by document_id) for summary generation."""
 
+_call_consecutive_yellows: dict[str, int] = {}
+"""Per-call consecutive YELLOW count at the API boundary.
+
+Used by ``_classify_response`` to enforce the two-consecutive-YELLOW
+escalation rule when the orchestrator does not provide an escalation
+verdict (fallback path).  Reset on GREEN, RED, consent refusal, and
+call completion.  The orchestrator's ``_consecutive_yellows`` counter
+controls state transitions; this counter is authoritative for the HTTP
+response escalation verdict in the fallback path.
+"""
+
 _DEFAULT_MODEL: str = "llama-3.1-70b-versatile"
 """Default model identifier for metrics when LLM is not invoked."""
 
@@ -621,22 +632,47 @@ def _synthesize(text: str) -> bytes:
 
 
 def _classify_response(
+    call_id: str,
     patient_text: str,
     question_index: int | None,
     dia_postop: int,
     procedimiento: str,
+    state: str | None = None,
 ) -> EscalationInfo | None:
     """Run escalation classification on a patient response.
 
     Classification is only performed during the QUESTIONS phase when the
     patient has just answered a follow-up question (i.e. *question_index*
-    is not ``None`` and greater than zero, meaning the previous turn's
-    question was just answered).
+    is not ``None`` and greater than zero).
+
+    *question_index* semantics depend on the orchestrator state:
+    - During **QUESTIONS**: *question_index* is the index of the next
+      question just asked, so the answered domain is ``question_index - 1``.
+    - During **CLOSING** (after escalation): *question_index* is the index
+      of the question just answered, so the answered domain is
+      ``question_index`` itself.
+
+    When *state* is ``None`` (or not ``"CLOSING"``) the function assumes
+    QUESTIONS-phase semantics for backward compatibility.
+
+    **API-boundary consecutive-YELLOW accumulation:** This function tracks
+    per-call consecutive YELLOW classifications via the module-level
+    ``_call_consecutive_yellows`` dict.  When two YELLOW results occur
+    without an intervening GREEN or RED, ``should_escalate`` is set to
+    ``True`` for the second YELLOW.  This accumulation is only used in
+    the fallback path (when ``turn.escalation`` is ``None``).  The
+    counter is reset on GREEN, RED, and call completion.
     """
     if question_index is None or question_index == 0:
         return None
 
-    domain_idx = question_index - 1
+    if state == State.CLOSING.value:
+        # question_index is the answered question (escalation path)
+        domain_idx = question_index
+    else:
+        # question_index is the next question just asked
+        domain_idx = question_index - 1
+
     if domain_idx < 0 or domain_idx >= len(_QUESTION_DOMAINS):
         return None
 
@@ -648,6 +684,25 @@ def _classify_response(
         dia_postop=dia_postop,
         procedimiento=procedimiento,
     )
+
+    # --- API-boundary consecutive-YELLOW accumulation --------------------
+    if result.severity is Severity.GREEN or result.severity is Severity.RED:
+        _call_consecutive_yellows[call_id] = 0
+    elif result.severity is Severity.YELLOW:
+        current = _call_consecutive_yellows.get(call_id, 0) + 1
+        _call_consecutive_yellows[call_id] = current
+        if current >= 2:
+            # Second consecutive YELLOW → override should_escalate.
+            # EscalationResult is frozen — construct a new instance.
+            result = EscalationResult(
+                severity=result.severity,
+                should_escalate=True,
+                reason=result.reason,
+                next_action=result.next_action,
+                domain=result.domain,
+                source=result.source,
+            )
+
     return EscalationInfo.from_result(result)
 
 
@@ -816,14 +871,34 @@ async def process_turn(
             detail=str(exc),
         ) from exc
 
-    # 5. Classify escalation (only during QUESTIONS phase)
+    # 5. Classify escalation — prefer orchestrator's classification when
+    #    available (it classifies before RAG/LLM during QUESTIONS), falling
+    #    back to the endpoint-level classifier with API-boundary
+    #    consecutive-YELLOW accumulation for backward compatibility.
     pc = orchestrator.call_context.patient_context
-    escalation = _classify_response(
-        patient_text=patient_text,
-        question_index=turn.question_index,
-        dia_postop=pc.dia_postop,
-        procedimiento=pc.procedimiento,
-    )
+    if turn.escalation is not None:
+        escalation = EscalationInfo.from_result(turn.escalation)
+    else:
+        escalation = _classify_response(
+            call_id=call_id,
+            patient_text=patient_text,
+            question_index=turn.question_index,
+            dia_postop=pc.dia_postop,
+            procedimiento=pc.procedimiento,
+            state=turn.state.value,
+        )
+
+    # --- Reset consecutive-YELLOW counter on consent refusal -----------
+    # When the patient refuses consent the orchestrator transitions to
+    # CLOSING without performing any classification.  The state is
+    # CLOSING and *escalation* is ``None`` (the ``_classify_response``
+    # fallback returns ``None`` because ``question_index`` is ``None``
+    # during consent).  This combination is unique to consent refusal
+    # among all CLOSING transitions (all-question-done, RED, and
+    # two-YELLOW paths all carry a non-``None`` *escalation*).
+    if turn.state is State.CLOSING and escalation is None:
+        _call_consecutive_yellows[call_id] = 0
+    # ------------------------------------------------------------------
 
     # 6. Synthesise agent response
     tts_start_ms = time.time() * 1000.0
@@ -918,6 +993,7 @@ async def process_turn(
         _call_turn_index.pop(call_id, None)
         _call_escalations.pop(call_id, None)
         _call_citations.pop(call_id, None)
+        _call_consecutive_yellows.pop(call_id, None)
         logger.info("Call %s ended — orchestrator removed from store.", call_id)
 
     # Record turn metrics with component timings

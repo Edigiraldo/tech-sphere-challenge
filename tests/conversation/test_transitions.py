@@ -18,6 +18,7 @@ class TestValidTransitions:
             (State.CONSENT, Event.CONSENT_REFUSED, State.CLOSING),
             (State.QUESTIONS, Event.QUESTIONS_COMPLETE, State.CLOSING),
             (State.QUESTIONS, Event.ESCALATION_TRIGGER, State.CLOSING),
+            (State.QUESTIONS, Event.EMERGENCY_TERMINATE, State.ENDED),
             (State.CLOSING, Event.CLOSING_COMPLETE, State.ENDED),
         ],
     )
@@ -37,6 +38,7 @@ _VALID_TRANSITIONS: set[tuple[State, Event]] = {
     (State.CONSENT, Event.CONSENT_REFUSED),
     (State.QUESTIONS, Event.QUESTIONS_COMPLETE),
     (State.QUESTIONS, Event.ESCALATION_TRIGGER),
+    (State.QUESTIONS, Event.EMERGENCY_TERMINATE),
     (State.CLOSING, Event.CLOSING_COMPLETE),
 }
 

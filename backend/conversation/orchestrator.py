@@ -7,11 +7,21 @@ a single coordinated dialogue flow for postoperative follow-up.
 
 The orchestrator is text-only and deterministic: it uses a fixed sequence of
 structured questions (in Spanish), drives state transitions safely, records
-every turn in the history, retrieves clinical knowledge through RAG, and
-generates validated answers via the LLM adapter with traceable citations.
+every turn in the history, and classifies patient answers **before** any
+RAG/LLM call.  RED answers short-circuit immediately to ENDED with an urgent
+safety message, ``call_ended=True``, and no further processing.  GREEN and
+first-YELLOW answers receive deterministic acknowledgments without RAG/LLM.
+Two consecutive YELLOW classifications trigger escalation with
+``should_escalate=True``.
+
+Clinical questions during CLOSING are answered with RAG+LLM (with citations)
+and the call remains in CLOSING; non-questions end the call.
 
 Fallback behaviour:
 * Consent refused → polite closing, call ends.
+* RED classification → short-circuit to ENDED with urgent safety message
+  and ``call_ended=True``.  No RAG/LLM call; no further questions.
+* Two consecutive YELLOW → escalation to CLOSING.
 * No RAG chunks retrieved → the agent states it lacks information and
   advises consulting the treating physician.
 * LLM unreachable → a safe fallback message is returned with
@@ -29,6 +39,8 @@ from backend.conversation.context import CallContext, PatientContext
 from backend.conversation.messages import History, Message, MessageRole
 from backend.conversation.state import Event, State
 from backend.conversation.transitions import InvalidTransitionError, next_state
+from backend.decision import classify as _decision_classify
+from backend.decision import EscalationResult, Severity
 from backend.llm.adapter import RagAnswer, generate_rag_answer
 from backend.llm.config import LlmConfig
 from backend.rag.config import RagConfig
@@ -66,6 +78,16 @@ FOLLOW_UP_QUESTIONS: list[str] = [
 
 _NUM_QUESTIONS: int = len(FOLLOW_UP_QUESTIONS)
 
+# Follow-up question index → symptom domain mapping (must stay aligned
+# with ``FOLLOW_UP_QUESTIONS`` order).  Mirrors ``backend.api.calls._QUESTION_DOMAINS``.
+_QUESTION_DOMAINS: tuple[str, ...] = (
+    "dolor",
+    "fiebre",
+    "herida",
+    "apetito",
+    "sueño",
+    "movilidad",
+)
 
 # ---------------------------------------------------------------------------
 # Public result type
@@ -103,6 +125,10 @@ class OrchestratorTurn:
         Optional number of output tokens consumed by the LLM.
     rag_queries : int
         Number of RAG retrieval queries executed during this turn (>= 0).
+    escalation : EscalationResult or None
+        Escalation classification for this turn (set during QUESTIONS when
+        the patient's answer was classified before RAG/LLM).  ``None``
+        when no classification was performed.
     """
 
     agent_message: str
@@ -112,6 +138,7 @@ class OrchestratorTurn:
     requires_response: bool = True
     question_index: Optional[int] = None
     total_questions: int = _NUM_QUESTIONS
+    escalation: Optional[EscalationResult] = None
     llm_duration_ms: float | None = None
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
@@ -138,7 +165,8 @@ class ConversationOrchestrator:
        (agent requests consent)
     3. **CONSENT** → → **QUESTIONS** (consent given) or **CLOSING** (refused)
     4. **QUESTIONS** → sequence of structured questions, one per turn.
-       After the last question → **CLOSING**
+       After the last question → **CLOSING**.  **RED** classification
+       → immediate **ENDED**.  Second consecutive **YELLOW** → **CLOSING**.
     5. **CLOSING** → ``process_patient_message()`` → **ENDED**
 
     The orchestrator delegates to:
@@ -178,6 +206,7 @@ class ConversationOrchestrator:
 
         # Internal per-call tracking
         self._question_index: int = 0
+        self._consecutive_yellows: int = 0
 
     # -- public read-only properties -----------------------------------------
 
@@ -217,7 +246,7 @@ class ConversationOrchestrator:
         greeting = (
             f"¡Buenos días, {pc.patient.nombre_completo}! "
             f"Le hablo del equipo de seguimiento postoperatorio de "
-            f"{pc.patient.eps}. ¿Cómo se siente el día de hoy?"
+            f"{pc.patient.eps}. ¿Me escucha bien?"
         )
 
         self._record_agent(greeting)
@@ -297,8 +326,25 @@ class ConversationOrchestrator:
         return self._make_turn(consent_msg, requires_response=True)
 
     def _handle_consent_response(self, patient_text: str) -> OrchestratorTurn:
-        """Handle consent response → QUESTIONS or CLOSING."""
+        """Handle consent response → QUESTIONS or CLOSING.
+
+        Consent refusal has priority over positive substrings.  Phrases
+        such as ``"No acepto continuar"``, ``"No autorizo"``, or
+        ``"No deseo continuar"`` are treated as refusal regardless of
+        the presence of positive keywords like ``"acepto"``.
+        """
         lower = patient_text.lower()
+
+        # --- Absolute refusal markers (priority over everything) ---
+        _absolute_refusal = (
+            "no acepto", "no autorizo", "no deseo", "no quiero",
+            "no estoy de acuerdo",
+        )
+        for phrase in _absolute_refusal:
+            if phrase in lower:
+                return self._refuse_consent()
+
+        # --- Standard refusal detection ---
         consent_refused = any(
             word in lower
             for word in ("no", "rechazo", "rechazar", "termine", "colgar")
@@ -308,61 +354,305 @@ class ConversationOrchestrator:
         )
 
         if consent_refused:
-            self._transition(Event.CONSENT_REFUSED)
-            closing_msg = (
-                "Entiendo, respeto su decisión. Si en el futuro desea "
-                "recibir seguimiento, no dude en comunicarse con "
-                f"{self._call_context.patient_context.patient.eps}. "
-                "Que tenga un buen día."
-            )
-            self._record_agent(closing_msg)
-            return self._make_turn(
-                closing_msg,
-                requires_response=True,
-            )
+            return self._refuse_consent()
         else:
             self._transition(Event.CONSENT_GIVEN)
             self._question_index = 0
             return self._ask_next_question()
 
+    def _refuse_consent(self) -> OrchestratorTurn:
+        """Handle consent refusal → CLOSING with a respectful message."""
+        self._transition(Event.CONSENT_REFUSED)
+        closing_msg = (
+            "Entiendo, respeto su decisión. Si en el futuro desea "
+            "recibir seguimiento, no dude en comunicarse con "
+            f"{self._call_context.patient_context.patient.eps}. "
+            "Que tenga un buen día."
+        )
+        self._record_agent(closing_msg)
+        return self._make_turn(
+            closing_msg,
+            requires_response=True,
+        )
+
     def _handle_question_response(self, patient_text: str) -> OrchestratorTurn:
         """Process patient answer to a follow-up question.
 
-        Steps:
-        1. Retrieve RAG context and generate an LLM answer.
-        2. Ask the next question (or close if done).
+        Steps (safety-first):
+        1. Classify the patient's answer against the symptom domain.
+        2. **RED** → short-circuit: no RAG/LLM, urgent safety message,
+           transition directly to ENDED, ``call_ended=True``.
+        3. **YELLOW (first)** → deterministic acknowledgment, no RAG/LLM,
+           ask next question.
+        4. **YELLOW (second consecutive)** → escalate to CLOSING.
+        5. **GREEN** → deterministic acknowledgment, no RAG/LLM,
+           ask next question.
         """
-        # --- RAG + LLM response for this answer ---
-        response_msg, citations, meta = self._generate_clinical_response(
-            patient_text=patient_text,
-            question_index=self._question_index,
-        )
-
-        # The question index *just answered* is used for escalation
-        # classification; the orchestrator advances it afterwards to
-        # point to the *next* question the agent will ask.
         answered_idx = self._question_index
-        self._question_index += 1
+        domain = _QUESTION_DOMAINS[answered_idx]
+        pc = self._call_context.patient_context
 
+        # --- Safety-first: classify before any RAG/LLM ---
+        try:
+            classification = _decision_classify(
+                patient_text=patient_text,
+                domain=domain,
+                dia_postop=pc.dia_postop,
+                procedimiento=pc.procedimiento,
+            )
+        except Exception:
+            # Classifier failed — treat conservatively as YELLOW
+            classification = EscalationResult(
+                severity=Severity.YELLOW,
+                should_escalate=False,
+                reason="No se pudo clasificar la respuesta del paciente.",
+                next_action="Continuar monitoreo con precaución.",
+                domain=domain,
+                source="incomplete",
+            )
+
+        severity = classification.severity
+
+        # --- RED: short-circuit immediately → ENDED ---
+        if severity is Severity.RED:
+            self._consecutive_yellows = 0
+            self._transition(Event.EMERGENCY_TERMINATE)
+            urgent_msg = self._build_red_message(classification)
+            self._record_agent(urgent_msg)
+            self._question_index += 1
+            return self._make_turn(
+                urgent_msg,
+                requires_response=False,
+                call_ended=True,
+                question_index=answered_idx,
+                escalation=classification,
+            )
+
+        # --- YELLOW: accumulate or escalate ---
+        if severity is Severity.YELLOW:
+            self._consecutive_yellows += 1
+
+            if self._consecutive_yellows >= 2:
+                # Two consecutive YELLOW → escalate with should_escalate=True
+                escalated_classification = EscalationResult(
+                    severity=classification.severity,
+                    should_escalate=True,
+                    reason=classification.reason,
+                    next_action=classification.next_action,
+                    domain=classification.domain,
+                    source=classification.source,
+                )
+                self._transition(Event.ESCALATION_TRIGGER)
+                escalate_msg = self._build_consecutive_yellow_message(classification)
+                self._record_agent(escalate_msg)
+                self._question_index += 1
+                return self._make_turn(
+                    escalate_msg,
+                    requires_response=True,
+                    question_index=answered_idx,
+                    escalation=escalated_classification,
+                )
+            else:
+                # First YELLOW: deterministic ack
+                ack = self._build_yellow_ack(domain, classification)
+                self._question_index += 1
+                if self._question_index >= _NUM_QUESTIONS:
+                    return self._close_questions(
+                        ack,
+                        question_index=self._question_index,
+                        escalation=classification,
+                    )
+                else:
+                    return self._ask_next_question(
+                        after_message=ack,
+                        question_index=self._question_index,
+                        escalation=classification,
+                    )
+
+        # --- GREEN: deterministic ack ---
+        self._consecutive_yellows = 0
+        ack = self._build_green_ack(domain)
+        self._question_index += 1
         if self._question_index >= _NUM_QUESTIONS:
-            # All questions answered → CLOSING.  Pass answered_idx+1 so
-            # the escalation layer can infer the mobility domain (index 5).
             return self._close_questions(
-                response_msg,
-                citations=citations,
-                question_index=answered_idx + 1,
-                llm_meta=meta,
+                ack,
+                question_index=self._question_index,
+                escalation=classification,
             )
         else:
             return self._ask_next_question(
-                after_message=response_msg,
-                citations=citations,
-                llm_meta=meta,
+                after_message=ack,
+                question_index=self._question_index,
+                escalation=classification,
             )
 
     def _handle_closing_response(self, patient_text: str) -> OrchestratorTurn:
-        """Last patient acknowledgment → end the call."""
-        return self._end_call()
+        """Process patient message during CLOSING.
+
+        If the patient asks a clinical question, use RAG+LLM to answer,
+        include citations, and remain in CLOSING.
+        Otherwise, end the call.
+        """
+        if self._is_clinical_question(patient_text):
+            return self._handle_closing_question(patient_text)
+        else:
+            return self._end_call()
+
+    def _is_clinical_question(self, text: str) -> bool:
+        """Detect whether the patient is asking a clinical question.
+
+        Uses simple heuristics: question marks, Spanish question words,
+        and inquiry patterns that suggest the patient wants information.
+        """
+        lowered = text.lower().strip()
+
+        # Direct question markers
+        if "?" in lowered or "¿" in lowered:
+            return True
+
+        # Spanish question words / inquiry patterns (avoid ambiguous
+        # matches like "como" meaning "I eat", "que" as relative pronoun).
+        question_markers = (
+            "cómo ", "qué ", "cuándo ", "cuando ",
+            "dónde ", "donde ", "por qué", "por que",
+            "pregunta", "duda", "quisiera saber",
+            "necesito saber", "me puede decir",
+            "me podría decir", "me podría explicar",
+            "me puede explicar", "explíqueme",
+            "expliqueme", "cuénteme", "cuenteme",
+        )
+        for marker in question_markers:
+            if marker in lowered:
+                return True
+
+        return False
+
+    def _handle_closing_question(self, patient_text: str) -> OrchestratorTurn:
+        """Answer a clinical question during CLOSING with RAG+LLM.
+
+        Remains in CLOSING so the patient can ask follow-up questions.
+        The patient message has already been recorded by
+        ``process_patient_message``.
+        """
+        response_msg, citations, meta = self._generate_closing_rag_response(
+            patient_text=patient_text,
+        )
+
+        self._record_agent(response_msg)
+        return self._make_turn(
+            response_msg,
+            citations=citations,
+            requires_response=True,
+            question_index=None,
+            llm_meta=meta,
+        )
+
+    def _generate_closing_rag_response(
+        self,
+        patient_text: str,
+    ) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
+        """Retrieve and generate a RAG+LLM answer for a CLOSING clinical question.
+
+        Returns a ``(response_text, citations, metadata)`` tuple.
+        """
+        meta: dict[str, Any] = {
+            "rag_queries": 0,
+            "llm_duration_ms": None,
+            "prompt_tokens": None,
+            "completion_tokens": None,
+        }
+
+        pc = self._call_context.patient_context
+        query = (
+            f"Procedimiento: {pc.procedimiento}. "
+            f"Día postoperatorio: {pc.dia_postop}. "
+            f"Pregunta del paciente: {patient_text}"
+        )
+
+        # --- Retrieve ---
+        retrieval_result = self._retrieve(patient_text, query)
+        if retrieval_result is not None:
+            meta["rag_queries"] = 1
+
+        if not retrieval_result or not retrieval_result.has_results:
+            return (
+                "Gracias por su pregunta. No cuento con información "
+                "suficiente para responderla en este momento. Le "
+                "recomiendo consultar con su médico tratante.",
+                [],
+                meta,
+            )
+
+        # --- Generate ---
+        if self._llm_config is None:
+            return (
+                "Gracias por su pregunta. Le recuerdo que cualquier "
+                "inquietud debe ser consultada con su médico tratante.",
+                [],
+                meta,
+            )
+
+        context_chunks: list[dict[str, Any]] = [
+            {
+                "chunk_id": c.chunk_id,
+                "document_id": c.document_id,
+                "source_filename": c.source_filename,
+                "page_number": c.page_number,
+                "text": c.text,
+            }
+            for c in retrieval_result.chunks
+        ]
+
+        try:
+            answer: RagAnswer = generate_rag_answer(
+                query=query,
+                context_chunks=context_chunks,
+                config=self._llm_config,
+                debug=False,
+            )
+        except Exception:
+            logger.exception("LLM call failed during closing question")
+            return (
+                "Gracias por su pregunta. No puedo procesar su consulta "
+                "en este momento. Por favor, consulte a su médico "
+                "tratante si tiene dudas.",
+                [],
+                meta,
+            )
+
+        meta["llm_duration_ms"] = answer.llm_duration_ms
+        meta["prompt_tokens"] = answer.prompt_tokens
+        meta["completion_tokens"] = answer.completion_tokens
+
+        if answer.insufficient_knowledge:
+            return (
+                "Gracias por su pregunta. Basado en la información "
+                "disponible, no tengo detalles adicionales. Le sugiero "
+                "consultar a su médico si tiene inquietudes.",
+                [],
+                meta,
+            )
+
+        response = f"{answer.answer}"
+
+        if answer.citations:
+            cited = ", ".join(
+                f"{c.source_filename} (p. {c.page_number})"
+                for c in answer.citations
+            )
+            response += f"\n\n(Fuentes consultadas: {cited})"
+
+        citations_list: list[dict[str, Any]] = [
+            {
+                "chunk_id": c.chunk_id,
+                "document_id": c.document_id,
+                "source_filename": c.source_filename,
+                "page_number": c.page_number,
+            }
+            for c in answer.citations
+        ]
+
+        return response, citations_list, meta
 
     # -- helper: ask next question -------------------------------------------
 
@@ -371,6 +661,8 @@ class ConversationOrchestrator:
         after_message: Optional[str] = None,
         citations: Optional[list[dict[str, Any]]] = None,
         llm_meta: Optional[dict[str, Any]] = None,
+        question_index: Optional[int] = None,
+        escalation: Optional[EscalationResult] = None,
     ) -> OrchestratorTurn:
         """Ask the current follow-up question.
 
@@ -380,11 +672,19 @@ class ConversationOrchestrator:
         If *llm_meta* is provided, its LLM metrics (``llm_duration_ms``,
         ``prompt_tokens``, ``completion_tokens``, ``rag_queries``) are
         propagated into the turn.
+        If *escalation* is provided, it is propagated into the turn.
         """
-        if self._question_index >= _NUM_QUESTIONS:
-            return self._close_questions(after_message, citations=citations, llm_meta=llm_meta)
+        qidx = question_index if question_index is not None else self._question_index
+        if qidx >= _NUM_QUESTIONS:
+            return self._close_questions(
+                after_message,
+                citations=citations,
+                question_index=qidx,
+                llm_meta=llm_meta,
+                escalation=escalation,
+            )
 
-        question = FOLLOW_UP_QUESTIONS[self._question_index]
+        question = FOLLOW_UP_QUESTIONS[qidx]
 
         if after_message:
             # Prepend the clinical response, then ask the next question
@@ -396,9 +696,10 @@ class ConversationOrchestrator:
         return self._make_turn(
             full,
             citations=citations or [],
-            question_index=self._question_index,
+            question_index=qidx,
             requires_response=True,
             llm_meta=llm_meta,
+            escalation=escalation,
         )
 
     # -- helper: close questions phase ---------------------------------------
@@ -409,6 +710,7 @@ class ConversationOrchestrator:
         citations: Optional[list[dict[str, Any]]] = None,
         question_index: Optional[int] = None,
         llm_meta: Optional[dict[str, Any]] = None,
+        escalation: Optional[EscalationResult] = None,
     ) -> OrchestratorTurn:
         """Transition QUESTIONS → CLOSING and produce closing message.
 
@@ -422,6 +724,8 @@ class ConversationOrchestrator:
             Optional LLM metrics from the last question's clinical
             response.  Propagates ``rag_queries``, ``llm_duration_ms``,
             ``prompt_tokens``, and ``completion_tokens`` into the turn.
+        escalation : EscalationResult or None
+            Optional escalation classification for the turn.
         """
         self._transition(Event.QUESTIONS_COMPLETE)
 
@@ -447,6 +751,85 @@ class ConversationOrchestrator:
             question_index=question_index,
             requires_response=True,
             llm_meta=llm_meta,
+            escalation=escalation,
+        )
+
+    # -- safety-first message builders ---------------------------------------
+
+    def _build_green_ack(self, domain: str) -> str:
+        """Build a deterministic Spanish acknowledgment for GREEN answers."""
+        ack_templates: dict[str, str] = {
+            "dolor": (
+                "Gracias por compartir esa información. Me alegra saber "
+                "que su nivel de dolor está controlado."
+            ),
+            "fiebre": (
+                "Gracias. Es una buena señal que no presente fiebre ni "
+                "escalofríos."
+            ),
+            "herida": (
+                "Gracias. Qué bueno que su herida quirúrgica esté "
+                "cicatrizando sin complicaciones."
+            ),
+            "apetito": (
+                "Gracias por informarme. Me alegra saber que su apetito "
+                "y tolerancia a los alimentos están bien."
+            ),
+            "sueño": (
+                "Gracias. Es positivo que esté descansando y su sueño "
+                "sea reparador."
+            ),
+            "movilidad": (
+                "Gracias. Es excelente que pueda movilizarse sin "
+                "dificultad y se sienta con fuerzas."
+            ),
+        }
+        return ack_templates.get(
+            domain,
+            "Gracias por compartir esta información. Continúe así.",
+        )
+
+    def _build_yellow_ack(
+        self, domain: str, classification: EscalationResult
+    ) -> str:
+        """Build a deterministic acknowledgment for a first-YELLOW answer."""
+        base = (
+            "Gracias por compartir esta información. Tendré en cuenta lo "
+            "que me comenta y le sugiero que esté atento a cualquier "
+            "cambio."
+        )
+        return base
+
+    def _build_red_message(self, classification: EscalationResult) -> str:
+        """Build a clear Spanish urgent safety message for RED escalations.
+
+        The call ends immediately after this message, so there is no
+        expectation of a patient response.
+        """
+        pc = self._call_context.patient_context
+        return (
+            f"{pc.patient.nombre_completo}, he identificado información "
+            f"que requiere atención médica urgente. "
+            f"{classification.reason} "
+            f"Por favor, comuníquese de inmediato con su médico tratante "
+            f"en {pc.patient.eps} o acuda al servicio de urgencias más "
+            f"cercano. No espere a que los síntomas empeoren. "
+            f"Esta llamada finaliza aquí. Cuídese."
+        )
+
+    def _build_consecutive_yellow_message(
+        self, classification: EscalationResult
+    ) -> str:
+        """Build an escalation message for two consecutive YELLOW results."""
+        pc = self._call_context.patient_context
+        return (
+            f"{pc.patient.nombre_completo}, he notado que varios de sus "
+            f"síntomas requieren atención. "
+            f"{classification.reason} "
+            f"Le recomiendo comunicarse con su médico tratante en "
+            f"{pc.patient.eps} lo antes posible para una evaluación "
+            f"más detallada. No espere a que los síntomas empeoren. "
+            f"¿Tiene alguna pregunta antes de finalizar?"
         )
 
     # -- helper: end call ----------------------------------------------------
@@ -676,6 +1059,7 @@ class ConversationOrchestrator:
         question_index: Optional[int] = None,
         call_ended: bool = False,
         llm_meta: Optional[dict[str, Any]] = None,
+        escalation: Optional[EscalationResult] = None,
     ) -> OrchestratorTurn:
         """Build an ``OrchestratorTurn`` from the current call state.
 
@@ -686,6 +1070,8 @@ class ConversationOrchestrator:
             ``llm_duration_ms``, ``prompt_tokens``, and
             ``completion_tokens``.  When ``None`` (non-question turns),
             the metrics fields default to zero / ``None``.
+        escalation : EscalationResult or None
+            Optional escalation classification for this turn.
         """
         extra: dict[str, Any] = {}
         if llm_meta is not None:
@@ -702,5 +1088,6 @@ class ConversationOrchestrator:
             requires_response=requires_response,
             question_index=question_index,
             total_questions=_NUM_QUESTIONS,
+            escalation=escalation,
             **extra,
         )
