@@ -37,6 +37,7 @@ class TestEventEnum:
             "CONSENT_REFUSED",
             "QUESTIONS_COMPLETE",
             "ESCALATION_TRIGGER",
+            "EMERGENCY_TERMINATE",
             "CLOSING_COMPLETE",
         }
         assert {e.name for e in Event} == expected
@@ -63,9 +64,9 @@ class TestValidEventsByState:
             {Event.CONSENT_GIVEN, Event.CONSENT_REFUSED}
         )
 
-    def test_questions_two_events(self):
+    def test_questions_three_events(self):
         assert VALID_EVENTS_BY_STATE[State.QUESTIONS] == frozenset(
-            {Event.QUESTIONS_COMPLETE, Event.ESCALATION_TRIGGER}
+            {Event.QUESTIONS_COMPLETE, Event.ESCALATION_TRIGGER, Event.EMERGENCY_TERMINATE}
         )
 
     def test_closing_only_closing_complete(self):

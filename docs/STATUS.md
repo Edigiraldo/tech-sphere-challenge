@@ -26,7 +26,13 @@ Implementation Plan) are complete. The application implements:
    cases where RAG or LLM providers are unavailable.
 - Conversation orchestrator (finite state machine: IDLE → GREETING → CONSENT →
   QUESTIONS → CLOSING → ENDED; 6 structured Spanish follow-up questions;
-  RAG+LLM integration; safe fallbacks).
+   **safety-first flow**: classifies patient answers before any RAG/LLM call —
+   RED short-circuits directly to ENDED with an urgent safety message,
+   ``call_ended=True``, and no further processing; GREEN and first YELLOW
+   use deterministic acknowledgments without RAG/LLM; two consecutive YELLOW
+   results trigger escalation with ``should_escalate=True``; clinical questions
+  during CLOSING are answered with RAG+LLM (with citations) while non-questions
+  end the call; safe fallbacks).
 - Escalation engine (GREEN/YELLOW/RED classifier with Spanish red-flag lexicons,
   numeric thresholds, negation handling; wired into voice turn endpoints via
   ``EscalationInfo`` in ``TurnResponse``).
@@ -91,8 +97,8 @@ adapter contracts, and phased implementation plan are documented in
 - Conversation orchestrator: ``backend/conversation/orchestrator.py`` — text-only
   deterministic flow through IDLE → GREETING → CONSENT → QUESTIONS (6 structured
   Spanish follow-up questions: pain, fever, wound, appetite, sleep, mobility) →
-  CLOSING → ENDED. Integrates RAG retrieval + LLM with safe fallbacks. 153 total
-  conversation tests pass.
+CLOSING → ENDED. Integrates RAG retrieval + LLM with safe fallbacks. 69 orchestrator
+   tests pass (167 total conversation tests including domain foundation).
 - Escalation decision engine: ``backend/decision/`` — ``classify()`` returns typed
   ``EscalationResult`` (GREEN/YELLOW/RED) with deterministic Spanish red-flag
   lexicons, numeric thresholds, negation handling, ambiguity detection. 125 tests
@@ -141,10 +147,20 @@ adapter contracts, and phased implementation plan are documented in
    calls are tracked with ``ended_at=None``. SQLite is initialised at application
    startup in ``backend/main.py``. Calls, turns, summaries, and alerts are
    restart-safe: they survive process restarts because the data is in SQLite, not
-   only in memory. 57 tests pass (8 persistence-focused).
-- Escalation classification wired in voice turn endpoints: domain inferred from
-  question index during QUESTIONS phase; ``EscalationInfo`` returned in
-  ``TurnResponse``.
+    only in memory. 63 tests pass (9 persistence-focused).
+- Escalation classification wired in voice turn endpoints: prefer orchestrator's
+  classification when available (``turn.escalation``), falling back to the
+  endpoint-level classifier with API-boundary consecutive-YELLOW accumulation
+  (``_classify_response`` tracks per-call consecutive YELLOWs via
+  ``_call_consecutive_yellows`` and sets ``should_escalate=True`` on the
+  second consecutive YELLOW).  The orchestrator's ``_consecutive_yellows``
+  counter controls state transitions; the API-boundary counter is authoritative
+  for the HTTP response escalation verdict in the fallback path.  Counter
+  resets on GREEN, RED, consent refusal, and call completion.  ``EscalationInfo``
+  returned in ``TurnResponse``.  Regression-tested at the API boundary for two
+  consecutive YELLOW escalations producing ``should_escalate=True``, including
+  persisted ``EscalationAlertRecord`` with ``severity=YELLOW`` and call-level
+  ``escalated=True`` flag.
 - ``backend/main.py`` registers all routers (``calls_router``, ``rag_router``,
   ``documents_router``, ``metrics_router``) and serves frontend assets including
   ``/``, ``/call``, ``/admin``, and metrics views.
@@ -172,7 +188,7 @@ adapter contracts, and phased implementation plan are documented in
   declared as explicit base dependencies in ``pyproject.toml``; ``numpy`` removed from
   ``voice`` extra; ``kokoro>=0.7.0`` copied to ``dev`` extra.
 
-Test totals: 830 fast tests (pytest), 16 slow tests (`pytest -m slow`), 846 tests total.
+Test totals: 895 fast tests (pytest), 16 slow tests (`pytest -m slow`), 911 tests total.
 
 ## In Progress
 

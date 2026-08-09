@@ -78,6 +78,12 @@ FRONTEND_PATIENTS = [
 ]
 
 _MOCK_AUDIO_BYTES = b"\x00\x01\x02" * 100
+# A response that works for both consent ("sí", "claro") and GREEN
+# classification for all six symptom domains.
+_GREEN_PATIENT_RESPONSE = (
+    "Sí, claro, todo bien, sin dolor, sin fiebre, herida limpia, "
+    "como bien, duermo bien, camino sin problema"
+)
 _MOCK_AUDIO_B64 = base64.b64encode(_MOCK_AUDIO_BYTES).decode("ascii")
 _MOCK_WAV_BYTES = b"RIFF....WAVE...."
 _MOCK_WAV_B64 = base64.b64encode(_MOCK_WAV_BYTES).decode("ascii")
@@ -94,7 +100,7 @@ def mock_stt():
 
     async def _transcribe(audio_data: bytes) -> TranscriptionResult:
         return TranscriptionResult(
-            text="Sí, acepto continuar con la llamada.",
+            text=_GREEN_PATIENT_RESPONSE,
             language="es",
             duration_seconds=1.5,
             model="whisper-large-v3",
@@ -853,7 +859,7 @@ class TestPatientTranscriptionContract:
         This is the primary path — when STT succeeds the frontend renders
         the patient's exact transcribed words in the conversation history.
         """
-        original_stt_output = "Sí, acepto continuar con la llamada."
+        original_stt_output = _GREEN_PATIENT_RESPONSE
 
         transport = ASGITransport(app=app)
         async with AsyncClient(
@@ -926,7 +932,7 @@ class TestPatientTranscriptionContract:
             pt2 = resp2.json()["patient_transcription"]
 
         # Both turns used the same mock STT output, so values match
-        assert pt1 == pt2 == "Sí, acepto continuar con la llamada."
+        assert pt1 == pt2 == _GREEN_PATIENT_RESPONSE
         assert isinstance(pt1, str) and len(pt1) > 0
         assert isinstance(pt2, str) and len(pt2) > 0
 

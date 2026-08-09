@@ -95,17 +95,28 @@ The current transport is **HTTP REST** with base64-encoded WAV audio
 and sends base64-encoded WAV chunks; responses are decoded and played back as
 WAV audio. WebSocket/streaming transport remains future work.
 
+The orchestrator implements a **safety-first flow**: each patient answer is
+classified by the ``decision/`` module before any RAG/LLM call. GREEN and
+first-YELLOW classifications receive deterministic Spanish acknowledgments
+without RAG/LLM. RED answers short-circuit immediately to ENDED with an urgent
+safety message and ``call_ended=True`` (no further turns possible).
+Two consecutive YELLOW results
+trigger escalation. Clinical questions during CLOSING are answered via
+RAG+LLM with citations; non-questions end the call.
+
 ```
 Browser (base64 WAV via HTTP POST) → voice/STT → conversation/ orchestrator:
   1. Load patient profile + turn history
-  2. Call rag/retrieve for relevant clinical chunks
-  3. Call llm/generate with prompt [system + patient + history + chunks + output schema]
-  4. Validate structured output (JSON, citations, no hallucinations)
-  5. Call decision/classify → Green/Yellow/Red
-  → If Red: end call, create alert, produce summary
-  → If Yellow (x2): escalate
-  → If Green/Yellow (first): prepare next turn
-→ voice/TTS → Browser (base64 WAV in HTTP response)
+  2. **Classify** patient answer against symptom domain (decision/classify)
+  3a. If RED → short-circuit: no RAG/LLM, urgent safety message,
+       transition directly to ENDED, ``call_ended=True``
+  3b. If GREEN / first YELLOW → deterministic acknowledgment, ask next
+      question (no RAG/LLM)
+  3c. If second consecutive YELLOW → escalate to CLOSING
+  4. (CLOSING only) If clinical question → call rag/retrieve + llm/generate
+     with citations, stay in CLOSING
+  5. If CLOSING non-question → end call
+  → voice/TTS → Browser (base64 WAV in HTTP response)
 ```
 
 ### Document lifecycle
@@ -204,10 +215,20 @@ safe fallback.
 
 ### Escalation policy (safety-first)
 
-- **Red always escalates.** No reassurance overrides it. Agent communicates next steps
-  and ends the call.
-- **Yellow escalates on accumulation.** Two consecutive yellow turns trigger escalation.
-- **Unknown is yellow.** Unclassifiable or validation-failed turns default to yellow.
+- **Classification happens before RAG/LLM.** During the QUESTIONS phase, the
+  ``decision/classify`` call gates all downstream processing.
+- **Red always escalates immediately.** The orchestrator short-circuits: no RAG/LLM
+  call, a clear Spanish urgent safety message is returned, the state
+  transitions directly to ENDED with ``call_ended=True``, and the frontend
+  disables further recording.  No further turns are possible.
+- **Yellow escalates on accumulation.** Two consecutive YELLOW turns trigger
+  escalation (transition to CLOSING) with ``should_escalate=True``.
+  First YELLOW receives a deterministic acknowledgment without RAG/LLM.
+- **Green receives deterministic acknowledgment.** GREEN answers get a
+  domain-specific positive message and the next structured question, without
+  RAG/LLM.
+- **Unknown is yellow.** Unclassifiable or validation-failed turns default to
+  yellow.
 - **Ambiguity triggers inquiry.** One clarifying question before classifying.
 
 ### Prompt injection defense

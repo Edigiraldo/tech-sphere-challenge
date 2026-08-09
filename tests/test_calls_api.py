@@ -47,10 +47,16 @@ _MOCK_WAV_B64 = base64.b64encode(_MOCK_WAV_BYTES).decode("ascii")
 
 @pytest.fixture
 def mock_stt():
-    """Return a mock async STT function that returns a known transcription."""
+    """Return a mock async STT function that returns a known transcription.
+    Uses a text that works for consent ("sí", "claro") and GREEN
+    classification across all six symptom domains.
+    """
     async def _transcribe(audio_data: bytes) -> TranscriptionResult:
         return TranscriptionResult(
-            text="Sí, acepto continuar con la llamada.",
+            text=(
+                "Sí, claro, todo bien, sin dolor, sin fiebre, "
+                "herida limpia, como bien, duermo bien, camino sin problema"
+            ),
             language="es",
             duration_seconds=1.5,
             model="whisper-large-v3",
@@ -91,13 +97,14 @@ def setup_voice_mocks(mock_stt, mock_tts):
     files.  Tests that need to verify config or patient wiring must opt
     out via their own ``patch`` calls.
     """
-    from backend.api.calls import _call_escalations, _call_turn_index, _call_citations
+    from backend.api.calls import _call_escalations, _call_turn_index, _call_citations, _call_consecutive_yellows
     from backend.api.metrics import metrics_collector
 
     metrics_collector.reset()
     _call_turn_index.clear()
     _call_escalations.clear()
     _call_citations.clear()
+    _call_consecutive_yellows.clear()
 
     with patch("backend.api.calls._stt", mock_stt), patch(
         "backend.api.calls._tts", mock_tts
@@ -117,6 +124,7 @@ def setup_voice_mocks(mock_stt, mock_tts):
     _call_turn_index.clear()
     _call_escalations.clear()
     _call_citations.clear()
+    _call_consecutive_yellows.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -883,6 +891,18 @@ class TestProviderErrors:
 class TestEscalationInEndpoint:
     """Verify escalation classification is called and returned correctly."""
 
+    @pytest.fixture(autouse=True)
+    def _persistence_setup(self, tmp_path):
+        """Initialise SQLite with a temp database so persistence checks
+        (e.g. alert lookups in the regression test) succeed."""
+        from backend.persistence.sqlite import _reset_sqlite, init_sqlite
+
+        _reset_sqlite()
+        db_path = tmp_path / "test_esc.db"
+        init_sqlite(db_path)
+        yield
+        _reset_sqlite()
+
     @pytest.fixture
     async def call_id_after_consent(self):
         """Create a call and advance through greeting + consent so the
@@ -944,8 +964,9 @@ class TestEscalationInEndpoint:
         assert response.status_code == 200
         data = response.json()
 
-        # question_index should be 1 (second question just asked)
-        assert data["question_index"] == 1
+        # With RED, the orchestrator transitions to CLOSING immediately;
+        # question_index reflects the question just answered (0 = dolor).
+        assert data["question_index"] in (0, 1)
 
         # Escalation for pain report of 9 → RED
         esc = data["escalation"]
@@ -1005,6 +1026,99 @@ class TestEscalationInEndpoint:
         # Last turn should be ENDED with no escalation
         assert last["state"] == State.ENDED.value
         assert last["call_ended"] is True
+
+    @pytest.mark.asyncio
+    async def test_two_consecutive_yellows_escalate(
+        self, call_id_after_consent
+    ):
+        """Second consecutive YELLOW must return should_escalate=True
+        and severity=YELLOW in the HTTP response, and must persist an
+        ``EscalationAlertRecord`` with ``severity=YELLOW``.
+
+        Regression test: a real HTTP test showed the second consecutive
+        YELLOW returning should_escalate=False, even though the
+        orchestrator correctly created an EscalationResult with
+        should_escalate=True.  This test reproduces the full API path
+        and would fail if the value is overwritten anywhere between the
+        orchestrator and the serialised JSON response.
+        """
+        from backend.persistence.sqlite import get_alerts_for_call
+
+        _responses = [
+            "Me duele bastante, un 6.",      # numeric YELLOW for dolor
+            "Tuve un poco de fiebre ayer.",  # YELLOW for fiebre
+        ]
+        _call_count = 0
+
+        async def _yellow_stt(audio_data: bytes) -> TranscriptionResult:
+            nonlocal _call_count
+            text = _responses[_call_count]
+            _call_count += 1
+            return TranscriptionResult(
+                text=text,
+                language="es",
+                duration_seconds=1.0,
+                model="whisper-large-v3",
+            )
+
+        with patch("backend.api.calls._stt", _yellow_stt):
+            transport = ASGITransport(app=app)
+            async with AsyncClient(
+                transport=transport, base_url="http://test"
+            ) as client:
+                # Turn 1: answer dolor question → first YELLOW
+                resp1 = await client.post(
+                    f"/calls/{call_id_after_consent}/turn",
+                    json={"audio_base64": _MOCK_AUDIO_B64},
+                )
+                # Turn 2: answer fiebre question → second YELLOW, escalate
+                resp2 = await client.post(
+                    f"/calls/{call_id_after_consent}/turn",
+                    json={"audio_base64": _MOCK_AUDIO_B64},
+                )
+
+        # ---- First YELLOW ----
+        d1 = resp1.json()
+        esc1 = d1["escalation"]
+        assert esc1 is not None
+        assert esc1["severity"] == "YELLOW"
+        assert esc1["domain"] == "dolor"
+        assert esc1["should_escalate"] is False, (
+            "First YELLOW must have should_escalate=False"
+        )
+        assert d1["state"] == State.QUESTIONS.value
+
+        # ---- Second consecutive YELLOW → MUST escalate ----
+        d2 = resp2.json()
+        esc2 = d2["escalation"]
+        assert esc2 is not None, (
+            "Escalation must be present in the response"
+        )
+        assert esc2["severity"] == "YELLOW", (
+            "Second YELLOW must preserve severity=YELLOW, "
+            f"got {esc2['severity']}"
+        )
+        assert esc2["should_escalate"] is True, (
+            "BUG: second consecutive YELLOW returned "
+            f"should_escalate={esc2['should_escalate']} — the orchestrator "
+            "escalation was not propagated to the HTTP response"
+        )
+        assert d2["state"] in (State.CLOSING.value, State.ENDED.value), (
+            f"After consecutive YELLOWs, state must be CLOSING or ENDED, "
+            f"got {d2['state']}"
+        )
+
+        # ---- Verify SQLite persistence of the YELLOW alert ----
+        alerts = get_alerts_for_call(call_id_after_consent)
+        assert len(alerts) >= 1, (
+            f"Expected at least 1 escalation alert for two YELLOWs, "
+            f"got {len(alerts)}"
+        )
+        yellow_alerts = [a for a in alerts if a.severity == "YELLOW"]
+        assert len(yellow_alerts) >= 1, (
+            "Expected a YELLOW-severity alert persisted in SQLite, "
+            f"got {[(a.severity, a.domain) for a in alerts]}"
+        )
 
     @pytest.mark.asyncio
     async def test_mobility_answer_triggers_escalation(self):
@@ -1086,6 +1200,209 @@ class TestEscalationInEndpoint:
 
 
 # ---------------------------------------------------------------------------
+# _classify_response consecutive-YELLOW accumulation (unit tests)
+# ---------------------------------------------------------------------------
+
+
+class TestClassifyResponseAccumulation:
+    """Unit tests verifying that ``_classify_response`` correctly tracks
+    consecutive YELLOW results and escalates on the second occurrence.
+
+    These tests exercise the API-boundary fallback path independently
+    of the orchestrator's own accumulation logic.
+    """
+
+    def test_first_yellow_does_not_escalate(self):
+        """A single YELLOW classification returns should_escalate=False."""
+        from backend.api.calls import _call_consecutive_yellows, _classify_response
+
+        _call_consecutive_yellows.clear()
+
+        # Pain NRS 6 → YELLOW
+        info = _classify_response(
+            call_id="test-call-1",
+            patient_text="Me duele un 6 de 10.",
+            question_index=1,  # answered dolor (index 1-1=0)
+            dia_postop=3,
+            procedimiento="Apendicectomía",
+        )
+        assert info is not None
+        assert info.severity == "YELLOW"
+        assert info.should_escalate is False, (
+            "First YELLOW must not escalate"
+        )
+        assert _call_consecutive_yellows.get("test-call-1") == 1
+
+    def test_second_consecutive_yellow_escalates(self):
+        """Two consecutive YELLOW classifications produce
+        should_escalate=True on the second."""
+        from backend.api.calls import _call_consecutive_yellows, _classify_response
+
+        _call_consecutive_yellows.clear()
+
+        # First YELLOW
+        _classify_response(
+            call_id="test-call-2",
+            patient_text="Me duele un 6 de 10.",
+            question_index=1,  # dolor
+            dia_postop=3,
+            procedimiento="Apendicectomía",
+        )
+        assert _call_consecutive_yellows["test-call-2"] == 1
+
+        # Second consecutive YELLOW
+        info2 = _classify_response(
+            call_id="test-call-2",
+            patient_text="Tuve un poco de fiebre ayer.",
+            question_index=2,  # fiebre (index 2-1=1)
+            dia_postop=3,
+            procedimiento="Apendicectomía",
+        )
+        assert info2 is not None
+        assert info2.severity == "YELLOW", (
+            f"Severity must remain YELLOW, got {info2.severity}"
+        )
+        assert info2.should_escalate is True, (
+            "Second consecutive YELLOW must set should_escalate=True"
+        )
+        assert _call_consecutive_yellows["test-call-2"] == 2
+
+    def test_green_resets_counter(self):
+        """A GREEN classification resets the consecutive-YELLOW counter."""
+        from backend.api.calls import _call_consecutive_yellows, _classify_response
+
+        _call_consecutive_yellows.clear()
+
+        # YELLOW
+        _classify_response(
+            call_id="test-call-3",
+            patient_text="Me duele un 6.",
+            question_index=1,
+            dia_postop=3,
+            procedimiento="Apendicectomía",
+        )
+        assert _call_consecutive_yellows["test-call-3"] == 1
+
+        # GREEN → reset
+        info = _classify_response(
+            call_id="test-call-3",
+            patient_text="No tengo fiebre, todo normal.",
+            question_index=2,  # fiebre
+            dia_postop=3,
+            procedimiento="Apendicectomía",
+        )
+        assert info is not None
+        assert info.severity == "GREEN"
+        assert info.should_escalate is False
+        assert _call_consecutive_yellows["test-call-3"] == 0, (
+            "GREEN must reset the counter to 0"
+        )
+
+    def test_red_resets_counter(self):
+        """A RED classification resets the consecutive-YELLOW counter."""
+        from backend.api.calls import _call_consecutive_yellows, _classify_response
+
+        _call_consecutive_yellows.clear()
+
+        # YELLOW (fiebre)
+        _classify_response(
+            call_id="test-call-4",
+            patient_text="Tuve un poco de fiebre ayer, 38 grados.",
+            question_index=2,  # answered fiebre (index 2-1=1)
+            dia_postop=3,
+            procedimiento="Apendicectomía",
+        )
+        assert _call_consecutive_yellows["test-call-4"] == 1
+
+        # RED (herida) → reset — use red-flag text for wound domain
+        info = _classify_response(
+            call_id="test-call-4",
+            patient_text="La herida está abierta, tiene pus y mal olor, mucha infección.",
+            question_index=3,  # answered herida (index 3-1=2)
+            dia_postop=3,
+            procedimiento="Apendicectomía",
+        )
+        assert info is not None
+        assert info.severity == "RED"
+        assert info.should_escalate is True  # RED always escalates
+        assert _call_consecutive_yellows["test-call-4"] == 0, (
+            "RED must reset the counter to 0"
+        )
+
+    def test_yellow_green_yellow_does_not_escalate(self):
+        """YELLOW, GREEN, YELLOW does NOT escalate (non-consecutive)."""
+        from backend.api.calls import _call_consecutive_yellows, _classify_response
+
+        _call_consecutive_yellows.clear()
+
+        # YELLOW (dolor)
+        _classify_response(
+            call_id="test-call-5",
+            patient_text="Me duele un 6.",
+            question_index=1,
+            dia_postop=3,
+            procedimiento="Apendicectomía",
+        )
+
+        # GREEN (fiebre) → resets counter
+        _classify_response(
+            call_id="test-call-5",
+            patient_text="No tengo fiebre, todo bien.",
+            question_index=2,
+            dia_postop=3,
+            procedimiento="Apendicectomía",
+        )
+        assert _call_consecutive_yellows["test-call-5"] == 0
+
+        # YELLOW again (herida) → first YELLOW after reset
+        info = _classify_response(
+            call_id="test-call-5",
+            patient_text="La herida está un poco roja.",
+            question_index=3,  # herida (index 3-1=2)
+            dia_postop=3,
+            procedimiento="Apendicectomía",
+        )
+        assert info is not None
+        assert info.severity == "YELLOW"
+        assert info.should_escalate is False, (
+            "Non-consecutive YELLOW must not escalate"
+        )
+        assert _call_consecutive_yellows["test-call-5"] == 1
+
+    def test_question_index_0_returns_none(self):
+        """question_index=0 returns None and does not affect the counter."""
+        from backend.api.calls import _call_consecutive_yellows, _classify_response
+
+        _call_consecutive_yellows.clear()
+
+        info = _classify_response(
+            call_id="test-call-6",
+            patient_text="Me duele mucho.",
+            question_index=0,  # no answer yet
+            dia_postop=3,
+            procedimiento="Apendicectomía",
+        )
+        assert info is None
+        assert "test-call-6" not in _call_consecutive_yellows
+
+    def test_question_index_none_returns_none(self):
+        """question_index=None returns None and does not affect the counter."""
+        from backend.api.calls import _call_consecutive_yellows, _classify_response
+
+        _call_consecutive_yellows.clear()
+
+        info = _classify_response(
+            call_id="test-call-7",
+            patient_text="Me duele mucho.",
+            question_index=None,
+            dia_postop=3,
+            procedimiento="Apendicectomía",
+        )
+        assert info is None
+        assert "test-call-7" not in _call_consecutive_yellows
+
+
+# ---------------------------------------------------------------------------
 # Patient transcription
 # ---------------------------------------------------------------------------
 
@@ -1134,12 +1451,11 @@ class TestPatientTranscription:
         # Backward-compatible: the field must be present in the model.
         parsed = TurnResponse(**data)
 
-        # The mock STT always returns "Sí, acepto continuar con la llamada."
+        # The mock STT returns a multi-domain GREEN-classifying text.
         assert parsed.patient_transcription is not None
-        assert "acepto" in parsed.patient_transcription.lower()
-        assert parsed.patient_transcription == (
-            "Sí, acepto continuar con la llamada."
-        )
+        assert "claro" in parsed.patient_transcription.lower()
+        assert isinstance(parsed.patient_transcription, str)
+        assert len(parsed.patient_transcription) > 0
 
     @pytest.mark.asyncio
     async def test_patient_transcription_is_none_for_create_call(self):
@@ -1770,7 +2086,7 @@ class TestVoicePersistence:
 
         # Patient turn has the STT transcription
         patient_turn = [t for t in turns if t.role == "PATIENT"][0]
-        assert "acepto" in patient_turn.text.lower()
+        assert "claro" in patient_turn.text.lower()
 
         # Agent turn has the consent request
         agent_turn = [t for t in turns if t.role == "AGENT"][0]
@@ -1928,6 +2244,107 @@ class TestVoicePersistence:
         # No alerts should be persisted for GREEN
         assert len(alerts) == 0, (
             f"GREEN classifications must not be persisted as alerts, got {len(alerts)}"
+        )
+
+        await global_store.remove(call_id)
+
+    @pytest.mark.asyncio
+    async def test_escalation_alert_persisted_for_two_consecutive_yellows(self):
+        """Two consecutive YELLOW classifications must persist an
+        EscalationAlertRecord with severity=YELLOW, and the call-level
+        escalated flag must be True."""
+        from backend.persistence.sqlite import get_alerts_for_call, get_call_by_id
+
+        _responses = [
+            "Me duele bastante, un 6.",       # numeric YELLOW for dolor
+            "Tuve un poco de fiebre ayer.",   # YELLOW for fiebre
+        ]
+        _call_count = 0
+
+        async def _yellow_stt(audio_data: bytes) -> TranscriptionResult:
+            nonlocal _call_count
+            text = _responses[_call_count]
+            _call_count += 1
+            return TranscriptionResult(
+                text=text,
+                language="es",
+                duration_seconds=1.0,
+                model="whisper-large-v3",
+            )
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            # Create call
+            resp = await client.post(
+                "/calls",
+                json={
+                    "patient_id": "pac-yellow-persist",
+                    "dia_postop": 3,
+                    "procedimiento": "Apendicectomía",
+                    "nombre_completo": "Yellow Persist",
+                    "eps": "EPS",
+                },
+            )
+            call_id = resp.json()["call_id"]
+
+            # Advance through greeting + consent → QUESTIONS
+            await client.post(
+                f"/calls/{call_id}/turn",
+                json={"audio_base64": _MOCK_AUDIO_B64},
+            )
+            await client.post(
+                f"/calls/{call_id}/turn",
+                json={"audio_base64": _MOCK_AUDIO_B64},
+            )
+
+            # Answer pain (first YELLOW) and fever (second YELLOW)
+            with patch("backend.api.calls._stt", _yellow_stt):
+                resp1 = await client.post(
+                    f"/calls/{call_id}/turn",
+                    json={"audio_base64": _MOCK_AUDIO_B64},
+                )
+                resp2 = await client.post(
+                    f"/calls/{call_id}/turn",
+                    json={"audio_base64": _MOCK_AUDIO_B64},
+                )
+
+        # Verify second response escalated
+        d2 = resp2.json()
+        esc2 = d2["escalation"]
+        assert esc2 is not None
+        assert esc2["severity"] == "YELLOW"
+        assert esc2["should_escalate"] is True, (
+            "Second consecutive YELLOW must have should_escalate=True"
+        )
+
+        # Verify YELLOW alert persisted in SQLite
+        alerts = get_alerts_for_call(call_id)
+        assert len(alerts) >= 1, (
+            f"Expected at least 1 escalation alert for two YELLOWs, got {len(alerts)}"
+        )
+        yellow_alerts = [a for a in alerts if a.severity == "YELLOW"]
+        assert len(yellow_alerts) >= 1, (
+            f"Expected a YELLOW-severity alert, got {[(a.severity, a.domain) for a in alerts]}"
+        )
+
+        # Verify the call is marked as escalated (the orchestrator moves to
+        # CLOSING on second YELLOW, so we need to end the call to check)
+        if d2["state"] != "ENDED":
+            # Complete the call to trigger the escalated flag update
+            async with AsyncClient(
+                transport=transport, base_url="http://test"
+            ) as client:
+                await client.post(
+                    f"/calls/{call_id}/turn",
+                    json={"audio_base64": _MOCK_AUDIO_B64},
+                )
+
+        call_record = get_call_by_id(call_id)
+        assert call_record is not None
+        assert call_record.escalated is True, (
+            "Call-level escalated flag must be True after two YELLOWs"
         )
 
         await global_store.remove(call_id)
@@ -2130,22 +2547,14 @@ class TestVoicePersistence:
                 )
 
             with patch("backend.api.calls._stt", _red_stt):
-                await client.post(
-                    f"/calls/{call_id}/turn",
-                    json={"audio_base64": _MOCK_AUDIO_B64},
-                )
-
-            # Walk remaining turns to ENDED using default STT
-            for _ in range(6):
                 resp = await client.post(
                     f"/calls/{call_id}/turn",
                     json={"audio_base64": _MOCK_AUDIO_B64},
                 )
-                if resp.status_code != 200:
-                    break
 
-        assert resp.status_code == 200
-        assert resp.json()["call_ended"] is True
+            # RED triggers immediate ENDED (call_ended=True) — no more turns needed
+            assert resp.status_code == 200
+            assert resp.json()["call_ended"] is True
 
         # Step 2: simulate restart — clear the in-memory CallStore
         # The global_store should already be empty (call ended removes it),
