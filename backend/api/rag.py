@@ -150,7 +150,15 @@ async def rag_query(body: RagQueryRequest) -> RagQueryResponse:
 
     # 1. Retrieve (single call — result used for both sufficiency and context)
     rag_config = _get_rag_config()
-    retrieval_result = retrieve(query, config=rag_config)
+    try:
+        from backend.persistence.sqlite import get_active_document_ids
+        valid_ids = get_active_document_ids()
+    except RuntimeError:
+        # SQLite not initialised — fall back to no filtering
+        valid_ids = None
+    retrieval_result = retrieve(
+        query, config=rag_config, valid_document_ids=valid_ids,
+    )
     context_chunks = [
         {
             "chunk_id": c.chunk_id,

@@ -122,16 +122,27 @@ Browser (base64 WAV via HTTP POST) → voice/STT → conversation/ orchestrator:
 ### Document lifecycle
 
 ```
-Upload:   Browser → api/ → documents/upload → persistence/SQLite (metadata)
-                                              → rag/ingest → ChromaDB (chunks + embeddings)
+Upload:   Browser → api/ → documents/upload
+           → SHA-256 content hash computed
+           → If active record with same hash exists → return existing (idempotent)
+           → persistence/SQLite (metadata + content_hash)
+           → rag/ingest → ChromaDB (chunks + embeddings, keyed by document_id)
 Delete:   Browser → api/ → documents/delete → rag/delete_chunks (ChromaDB purge by document_id)
-                                              → persistence/SQLite (soft-delete: status='deleted')
+           → persistence/SQLite (soft-delete: status='deleted', row preserved for audit)
+
+Reconcile:  POST /documents/reconcile
+           → Compare ChromaDB document_ids vs SQLite registry
+           → Report orphaned ChromaDB IDs (missing from registry or deleted with lingering chunks)
+           → Report missing ChromaDB entries (SQLite ready/processing but no indexed chunks)
+           → ?clean=true deletes orphaned ChromaDB chunks
 ```
 
 ### RAG retrieval during conversation
 
 ```
-conversation/ → rag/retrieve(query) → BGE-M3 embed → ChromaDB top-k → chunks + metadata
+conversation/ → rag/retrieve(query, valid_document_ids) → BGE-M3 embed → ChromaDB top-k
+→ Filter out chunks whose document_id is deleted or unregistered
+→ chunks + metadata with traceable citations
 conversation/ assembles prompt with retrieved chunks and source citations
 ```
 
@@ -149,7 +160,7 @@ summaries            — summary_id, call_id, created_at, patient_summary,
                        procedure_summary, symptoms_summary, decision_summary,
                        sources_json, next_steps
 documents            — document_id, filename, status, uploaded_at, size_bytes,
-                       error_message
+                        content_hash, error_message
 escalation_alerts    — alert_id, call_id, created_at, severity, reason, domain
 ```
 
@@ -172,6 +183,10 @@ collection: clinical_knowledge
 ### Key rules
 
 - Deleting a document must remove all ChromaDB chunks with matching `document_id` and soft-delete the SQLite row (``status = 'deleted'``). The metadata row is retained for auditability. No orphaned ChromaDB chunks.
+- Duplicate uploads are detected via SHA-256 content hash: if an active (non-deleted) record exists with the same hash, the service returns the existing record without creating a new one. If the original was deleted, a new record is created.
+- Retrieval automatically excludes chunks whose ``document_id`` is not in the SQLite registry or whose registry status is ``DELETED``, ensuring only active, registered documents contribute to search results.
+- Reconciliation (``POST /documents/reconcile``) compares ChromaDB document IDs against the SQLite registry and can clean orphaned chunks on demand.
+- Corpus ingestion is explicit (``scripts/ingest_corpus.py``) and never runs at startup. It is idempotent: re-running is safe as duplicates are detected by content hash.
 - Call data and summaries are never deleted through the document lifecycle API.
 - The vector store is rebuilt only on explicit re-index, never on restart.
 - Synthetic patient data is loaded from `dataset/` XLSX at startup and is read-only.

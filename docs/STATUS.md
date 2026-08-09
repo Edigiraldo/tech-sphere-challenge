@@ -97,9 +97,13 @@ adapter contracts, and phased implementation plan are documented in
   ``CallContext``. 98 tests pass.
 - Document lifecycle: ``backend/documents/`` — ``Document`` / ``DocumentStatus``,
   ``DocumentService`` (upload/list/delete). ``backend/api/documents.py`` —
-  POST/GET/DELETE /documents. 9 fast + 6+1 slow tests pass, including
-  duplicate-document isolation (deleting one upload does not affect another
-  copy of the same PDF).
+  POST/GET/DELETE /documents, ``POST /documents/reconcile``.
+  32 fast + 10 slow tests pass, including duplicate-document isolation
+  (deleting one document does not affect a different document's chunks).
+  Content-hash (SHA-256) duplicate detection makes upload idempotent:
+  identical content returns the existing active record. Reconciliation
+  detects and can clean orphaned ChromaDB chunks. Registry-filtered
+  retrieval excludes deleted/unregistered document IDs from search results.
 - Conversation orchestrator: ``backend/conversation/orchestrator.py`` — text-only
   deterministic flow through IDLE → GREETING → CONSENT → QUESTIONS (6 structured
   Spanish follow-up questions: pain, fever, wound, appetite, sleep, mobility) →
@@ -195,16 +199,17 @@ adapter contracts, and phased implementation plan are documented in
   fallback), post-hoc grounding validation (citation-integrity checks), and
   medication-dose grounding enforcement (ungrounded medication/dose claims
   force ``insufficient_knowledge=True`` with safe fallback, preserving valid
-  citations), duplicate-document isolation (deleting one upload preserves
-  other copies' chunks), and real Appendicitis PDF filename integration
-  tests.  63 LLM tests, 14 RAG API tests, and all existing conversation
-  and document tests pass with the new safety layers.
+  citations), deletion isolation (deleting one document preserves
+  other documents' chunks), registry-filtered retrieval (deleted and
+  unregistered document IDs excluded automatically), and real Appendicitis
+  PDF filename integration tests.  63 LLM tests, 14 RAG API tests, and all
+  existing conversation and document tests pass with the new safety layers.
 
 - Dependency audit: ``openpyxl>=3.0.0``, ``numpy>=1.24.0``, and ``pydantic>=2.0.0``
   declared as explicit base dependencies in ``pyproject.toml``; ``numpy`` removed from
   ``voice`` extra; ``kokoro>=0.7.0`` copied to ``dev`` extra.
 
-Test totals: 948 fast tests (pytest), 24 slow tests (`pytest -m slow`), 972 tests total.
+Test totals: 947 fast tests (pytest), 27 slow tests (`pytest -m slow`), 974 tests total.
 
 ## In Progress
 

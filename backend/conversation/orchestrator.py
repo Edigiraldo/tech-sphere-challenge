@@ -997,7 +997,16 @@ class ConversationOrchestrator:
         )
 
         try:
-            return retrieve(query=query, config=self._rag_config)
+            try:
+                from backend.persistence.sqlite import get_active_document_ids
+                valid_ids = get_active_document_ids()
+            except RuntimeError:
+                # SQLite not initialised — fall back to no filtering
+                valid_ids = None
+            return retrieve(
+                query=query, config=self._rag_config,
+                valid_document_ids=valid_ids,
+            )
         except Exception:
             logger.exception("RAG retrieval failed in orchestrator")
             return None

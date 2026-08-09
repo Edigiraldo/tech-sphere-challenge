@@ -103,6 +103,29 @@ class ChromaStore:
         """Return the number of documents currently in the collection."""
         return self.get_or_create_collection().count()
 
+    def get_all_document_ids(self) -> set[str]:
+        """Return the set of all unique ``document_id`` values in the collection.
+
+        Used by reconciliation to detect orphaned ChromaDB chunks whose
+        ``document_id`` has no corresponding SQLite registry entry.
+        """
+        collection = self.get_or_create_collection()
+        if collection.count() == 0:
+            return set()
+
+        # ChromaDB get() with no filter returns all items.  We only need
+        # the metadata.document_id field(s), so we fetch metadatas only.
+        result = collection.get(include=["metadatas"])
+        metadatas = result.get("metadatas", [])
+        if not metadatas:
+            return set()
+
+        return {
+            meta["document_id"]
+            for meta in metadatas
+            if isinstance(meta, dict) and "document_id" in meta
+        }
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
