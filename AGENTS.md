@@ -113,6 +113,11 @@ implemented in enough detail to be useful in the project history.
 - The work is not complete while the auditor has unresolved findings, doubts, or
   suggestions.
 - After every remediation, rerun the auditor checks.
+- Documentation-only exception: if the auditor's first report contains only
+  documentation findings, the coder fixes them and the auditor verifies once. If that
+  follow-up report contains only documentation findings again, the coder fixes them and
+  the task closes without another auditor invocation. The coder must report the final
+  documentation checks and confirm no code changed.
 - Finish only with an `APPROVED` audit and no unresolved findings, or a clearly
   documented blocker explicitly accepted by the user.
 

@@ -55,3 +55,8 @@ Every auditor finding, doubt, or actionable suggestion is mandatory, including f
 reported alongside `STATUS: APPROVED`. Do not declare the task complete while any remain
 unresolved. If a finding requires architectural changes outside the approved scope,
 return to `@planner` instead of ignoring or silently expanding the scope.
+
+If the follow-up auditor report contains documentation-only findings, correct them in the
+approved documents, verify links, counts, references, stale statements, and formatting,
+and report that no code changed. After this final documentation-only remediation, the
+orchestrator closes the task without invoking the auditor again.

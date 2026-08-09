@@ -42,6 +42,9 @@ or dataset unless the change requires it.
   obsolete milestones, contradictory current-state claims, and false implementation
   statements. A locally accurate addition does not pass if the document remains globally
   inconsistent.
+- Classify every finding as `CODE`, `DOCUMENTATION`, or `MIXED`. If all findings are
+  documentation-only, say so explicitly in the report so the orchestrator can apply the
+  documentation-only remediation rule.
 - Reserve full challenge gates, fifteen-minute setup, end-to-end voice, metrics, privacy,
   and final delivery checks for explicit integration or final audits.
 
