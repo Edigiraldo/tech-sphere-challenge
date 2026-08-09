@@ -84,21 +84,27 @@ adapter contracts, and phased implementation plan are documented in
   (ChromaDB cosine), ingestion, retrieval (``RetrievalResult`` with citations).
   14 fast + 10 slow tests pass. D6 (chunking strategy) resolved.
 - LLM adapter: ``backend/llm/`` — fixed to Llama 3.1 70B Versatile (Groq Cloud),
-  structured JSON output, Spanish prompts, citation mapping, multi-layer safety
-  validation. 41 tests pass. D1 (language model) and D7 (single provider) resolved.
-- RAG endpoint: ``backend/api/rag.py`` — ``POST /rag/query`` with fallback to
-  ``insufficient_knowledge``. 13 tests pass.
+  structured JSON output, Spanish prompts, multi-layer safety validation
+  including input-level prompt-injection detection (pattern-based jailbreak
+  scanning, length check, Spanish safe fallback) and post-hoc grounding
+   validation (citation-integrity and medication-dose grounding checks).
+   63 tests pass. D1 (language model) and D7 (single provider) resolved.
+- RAG endpoint: ``backend/api/rag.py`` — ``POST /rag/query`` with retrieval
+   sufficiency gates (minimum chunk count, average similarity threshold) and
+   fallback to ``insufficient_knowledge``. 14 tests pass.
 - Conversation domain foundation: ``backend/conversation/`` — finite state machine
   (7 valid transitions), ``Message`` / ``History`` / ``PatientContext`` /
   ``CallContext``. 98 tests pass.
 - Document lifecycle: ``backend/documents/`` — ``Document`` / ``DocumentStatus``,
   ``DocumentService`` (upload/list/delete). ``backend/api/documents.py`` —
-  POST/GET/DELETE /documents. 9 fast + 6 slow tests pass.
+  POST/GET/DELETE /documents. 9 fast + 6+1 slow tests pass, including
+  duplicate-document isolation (deleting one upload does not affect another
+  copy of the same PDF).
 - Conversation orchestrator: ``backend/conversation/orchestrator.py`` — text-only
   deterministic flow through IDLE → GREETING → CONSENT → QUESTIONS (6 structured
   Spanish follow-up questions: pain, fever, wound, appetite, sleep, mobility) →
-CLOSING → ENDED. Integrates RAG retrieval + LLM with safe fallbacks. 69 orchestrator
-   tests pass (167 total conversation tests including domain foundation).
+  CLOSING → ENDED. Integrates RAG retrieval + LLM with retrieval sufficiency
+  gates and safe fallbacks. 193 tests pass.
 - Escalation decision engine: ``backend/decision/`` — ``classify()`` returns typed
   ``EscalationResult`` (GREEN/YELLOW/RED) with deterministic Spanish red-flag
   lexicons, numeric thresholds, negation handling, ambiguity detection. 125 tests
@@ -183,12 +189,22 @@ CLOSING → ENDED. Integrates RAG retrieval + LLM with safe fallbacks. 69 orches
 - Metrics API and frontend: read-only typed ``GET /metrics/summary``,
   ``GET /metrics/calls``, and ``GET /metrics/calls/{call_id}`` endpoints and metrics
   frontend view; metrics collector module is distinct from the reporting API.
+- RAG/LLM safety hardening: retrieval sufficiency gates (minimum chunk count,
+  average similarity threshold, configurable via env vars), input-level prompt
+  injection detection (pattern-based jailbreak scanning with Spanish safe
+  fallback), post-hoc grounding validation (citation-integrity checks), and
+  medication-dose grounding enforcement (ungrounded medication/dose claims
+  force ``insufficient_knowledge=True`` with safe fallback, preserving valid
+  citations), duplicate-document isolation (deleting one upload preserves
+  other copies' chunks), and real Appendicitis PDF filename integration
+  tests.  63 LLM tests, 14 RAG API tests, and all existing conversation
+  and document tests pass with the new safety layers.
 
 - Dependency audit: ``openpyxl>=3.0.0``, ``numpy>=1.24.0``, and ``pydantic>=2.0.0``
   declared as explicit base dependencies in ``pyproject.toml``; ``numpy`` removed from
   ``voice`` extra; ``kokoro>=0.7.0`` copied to ``dev`` extra.
 
-Test totals: 895 fast tests (pytest), 16 slow tests (`pytest -m slow`), 911 tests total.
+Test totals: 948 fast tests (pytest), 24 slow tests (`pytest -m slow`), 972 tests total.
 
 ## In Progress
 

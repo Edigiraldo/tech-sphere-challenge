@@ -8,6 +8,12 @@ Does not own document lifecycle — that is the responsibility of the
 
 from backend.rag.config import RagConfig
 from backend.rag.ingestion import ingest_document
-from backend.rag.retrieval import retrieve
+from backend.rag.retrieval import RetrievedChunk, RetrievalResult, retrieve
 
-__all__ = ["RagConfig", "ingest_document", "retrieve"]
+__all__ = [
+    "RagConfig",
+    "ingest_document",
+    "retrieve",
+    "RetrievalResult",
+    "RetrievedChunk",
+]

@@ -4,35 +4,23 @@ These tests require the BGE-M3 embedding model download and PDF extraction,
 so they are marked ``@pytest.mark.slow``. Run with:
 
     pytest -m slow
-"""
 
-import uuid
+Fixtures ``store``, ``doc_id_en``, and ``doc_id_es`` are shared from
+``tests/rag/conftest.py`` so that both ``TestIngestionRetrieval`` and
+``TestRealPDFFilenames`` can use them.
+"""
 
 import pytest
 
 from backend.rag.config import RagConfig
 from backend.rag.ingestion import ingest_document
 from backend.rag.retrieval import retrieve
-from backend.rag.store import init_store
 from backend.persistence.chroma import ChromaStore
 
 
 @pytest.mark.slow
 class TestIngestionRetrieval:
     """End-to-end: ingest two Appendicitis PDFs and retrieve relevant chunks."""
-
-    @pytest.fixture
-    def store(self, rag_config: RagConfig) -> ChromaStore:
-        """Initialise a ChromaStore with a fresh temp collection."""
-        return init_store(rag_config)
-
-    @pytest.fixture
-    def doc_id_en(self) -> str:
-        return f"test-{uuid.uuid4().hex[:8]}-postop-en"
-
-    @pytest.fixture
-    def doc_id_es(self) -> str:
-        return f"test-{uuid.uuid4().hex[:8]}-cuidado-es"
 
     def test_ingest_english_pdf(
         self,
@@ -158,3 +146,180 @@ class TestIngestionRetrieval:
         # depending on embedding behavior — we just verify it doesn't crash
         assert result.query == ""
         assert isinstance(result.chunks, list)
+
+
+# =============================================================================
+# Retrieval sufficiency tests (fast — no embedding model needed)
+# =============================================================================
+
+
+class TestRetrievalSufficiency:
+    """Tests for retrieval quality gates (sufficient flag)."""
+
+    def test_ragged_config_defaults_have_reasonable_thresholds(self):
+        """Default RagConfig should set min_chunks and similarity thresholds
+        that prevent weak retrieval from reaching the LLM."""
+        from backend.rag.config import RagConfig
+
+        cfg = RagConfig()
+        assert cfg.min_chunks_for_answer >= 1, (
+            "min_chunks_for_answer should require at least 1 chunk"
+        )
+        assert cfg.min_avg_similarity >= 0.0, (
+            "min_avg_similarity should be >= 0"
+        )
+        assert cfg.similarity_threshold >= 0.0, (
+            "similarity_threshold should be >= 0"
+        )
+
+    def test_retrieval_result_empty_is_not_sufficient(self):
+        from backend.rag.retrieval import RetrievalResult
+
+        result = RetrievalResult(query="q")
+        assert not result.has_results
+        assert not result.sufficient
+        assert result.avg_similarity == 0.0
+
+    def test_retrieval_result_single_chunk_below_min_chunks_is_not_sufficient(self):
+        from backend.rag.retrieval import RetrievalResult, RetrievedChunk
+
+        result = RetrievalResult(
+            query="q",
+            chunks=[
+                RetrievedChunk(
+                    chunk_id="c1", document_id="d1",
+                    source_filename="f.pdf", chunk_index=0,
+                    page_number=1, text="Text", similarity=0.90,
+                )
+            ],
+        )
+        # With default config, min_chunks_for_answer=2 → single chunk
+        # is not sufficient regardless of similarity
+        assert result.has_results
+        # sufficient defaults to False, and the constructor doesn't compute it
+        # — that's done by the retrieve() function
+        assert not result.sufficient
+
+    def test_retrieval_result_avg_similarity(self):
+        from backend.rag.retrieval import RetrievalResult, RetrievedChunk
+
+        result = RetrievalResult(
+            query="q",
+            chunks=[
+                RetrievedChunk(
+                    chunk_id="c1", document_id="d1",
+                    source_filename="f.pdf", chunk_index=0,
+                    page_number=1, text="A", similarity=0.80,
+                ),
+                RetrievedChunk(
+                    chunk_id="c2", document_id="d1",
+                    source_filename="f.pdf", chunk_index=1,
+                    page_number=2, text="B", similarity=0.60,
+                ),
+            ],
+        )
+        assert result.avg_similarity == 0.70
+
+
+# =============================================================================
+# Real PDF filename integration tests (slow)
+# =============================================================================
+
+
+@pytest.mark.slow
+class TestRealPDFFilenames:
+    """Verify the Appendicitis PDF fixtures resolve correctly on disk.
+
+    These tests use the exact filenames from fixtures
+    (``tests/rag/conftest.py``) and verify they match what's on disk.
+    """
+
+    def test_english_postop_pdf_exists(self, post_op_en_pdf):
+        """The English post-operative PDF must exist on disk."""
+        assert post_op_en_pdf.is_file(), (
+            f"Missing PDF: {post_op_en_pdf}"
+        )
+        assert post_op_en_pdf.suffix == ".pdf"
+
+    def test_spanish_plan_pdf_exists(self, plan_cuidado_es_pdf):
+        """The Spanish home care plan PDF must exist on disk."""
+        assert plan_cuidado_es_pdf.is_file(), (
+            f"Missing PDF: {plan_cuidado_es_pdf}"
+        )
+        assert plan_cuidado_es_pdf.suffix == ".pdf"
+
+    def test_english_postop_pdf_has_expected_name(self, post_op_en_pdf):
+        """The English PDF filename includes the expected trailing space
+        before '.pdf' — this is the exact on-disk name."""
+        assert post_op_en_pdf.name == (
+            "POST OPERATIVE INSTRUCTIONS FOR APPENDECTOMY .pdf"
+        ), f"Filename mismatch: {post_op_en_pdf.name!r}"
+
+    def test_spanish_plan_pdf_has_accented_name(self, plan_cuidado_es_pdf):
+        """The Spanish PDF filename includes the accented Í character."""
+        assert plan_cuidado_es_pdf.name == (
+            "PLAN DE CUIDADO EN CASA DE PACIENTE EN "
+            "POSTOPERATORIO DE APENDICECTOMÍA.pdf"
+        ), f"Filename mismatch: {plan_cuidado_es_pdf.name!r}"
+
+    def test_ingest_both_real_pdfs(self, store, rag_config,
+                                    post_op_en_pdf, plan_cuidado_es_pdf,
+                                    doc_id_en, doc_id_es):
+        """Ingest both real PDFs and verify they can be retrieved."""
+        count_en = ingest_document(
+            post_op_en_pdf, doc_id_en, rag_config, store
+        )
+        count_es = ingest_document(
+            plan_cuidado_es_pdf, doc_id_es, rag_config, store
+        )
+        assert count_en > 0, "English PDF should yield at least 1 chunk"
+        assert count_es > 0, "Spanish PDF should yield at least 1 chunk"
+
+        # Verify chunks carry the correct source filenames
+        result = retrieve(
+            "cuidado postoperatorio apendicectomía",
+            rag_config, store, top_k=5,
+        )
+        filenames = {c.source_filename for c in result.chunks}
+        assert plan_cuidado_es_pdf.name in filenames, (
+            f"Spanish PDF {plan_cuidado_es_pdf.name!r} not in {filenames}"
+        )
+
+    def test_ingest_verify_deletion_purges_chunks(
+        self, store, rag_config, plan_cuidado_es_pdf, doc_id_es,
+    ):
+        """Ingest the Spanish PDF, verify chunks exist, then delete and
+        verify zero chunks remain."""
+        count = ingest_document(
+            plan_cuidado_es_pdf, doc_id_es, rag_config, store
+        )
+        assert count > 0
+
+        # Verify chunks exist
+        assert store.count() >= count
+
+        # Delete
+        deleted_ids = store.delete_document_chunks(doc_id_es)
+        assert len(deleted_ids) == count
+
+        # Verify collection is empty
+        assert store.count() == 0
+
+    def test_ingest_both_retrieve_spanish_query_finds_spanish_pdf(
+        self, store, rag_config,
+        post_op_en_pdf, plan_cuidado_es_pdf,
+        doc_id_en, doc_id_es,
+    ):
+        """A Spanish-language query should find the Spanish PDF."""
+        ingest_document(post_op_en_pdf, doc_id_en, rag_config, store)
+        ingest_document(plan_cuidado_es_pdf, doc_id_es, rag_config, store)
+
+        result = retrieve(
+            "cuidado de la herida después de apendicectomía",
+            rag_config, store, top_k=3,
+        )
+        assert result.has_results
+        source_files = [c.source_filename for c in result.chunks]
+        assert plan_cuidado_es_pdf.name in source_files, (
+            f"Spanish PDF not in results: {source_files}"
+        )

@@ -684,7 +684,7 @@ class TestRagLlmIntegration:
             similarity=0.85,
         )
         mock_retrieve.return_value = RetrievalResult(
-            query="", chunks=[chunk]
+            query="", chunks=[chunk], sufficient=True,
         )
 
         mock_answer = RagAnswer(
@@ -746,7 +746,7 @@ class TestRagLlmIntegration:
             similarity=0.85,
         )
         mock_retrieve.return_value = RetrievalResult(
-            query="", chunks=[chunk]
+            query="", chunks=[chunk], sufficient=True,
         )
 
         mock_answer = RagAnswer(
@@ -803,7 +803,7 @@ class TestRagLlmIntegration:
             similarity=0.85,
         )
         mock_retrieve.return_value = RetrievalResult(
-            query="", chunks=[chunk]
+            query="", chunks=[chunk], sufficient=True,
         )
         mock_generate.side_effect = RuntimeError("LLM unavailable")
 
@@ -822,6 +822,80 @@ class TestRagLlmIntegration:
         )
         assert "consult" in result.agent_message.lower()
         assert orch.state is State.CLOSING
+
+    @patch("backend.conversation.orchestrator.retrieve")
+    def test_non_empty_but_insufficient_retrieval_fallback_in_closing(
+        self, mock_retrieve,
+    ):
+        """When RAG returns chunks but sufficient=False during CLOSING,
+        the orchestrator must use the fallback without calling the LLM."""
+        from backend.rag.retrieval import RetrievedChunk, RetrievalResult
+
+        chunk = RetrievedChunk(
+            chunk_id="chunk1",
+            document_id="doc1",
+            source_filename="test.pdf",
+            chunk_index=0,
+            page_number=1,
+            text="Postoperative care guidance text.",
+            similarity=0.50,
+        )
+        mock_retrieve.return_value = RetrievalResult(
+            query="",
+            chunks=[chunk],
+            sufficient=False,  # below min_chunks or min_avg_similarity
+        )
+
+        rag_config = make_rag_config()
+        orch = make_orchestrator(rag_config=rag_config, llm_config=None)
+        self._advance_to_closing(orch)
+        result = orch.process_patient_message(
+            "¿Qué debo hacer si me duele la herida?"
+        )
+        # Fallback must be used, no LLM call
+        assert "consult" in result.agent_message.lower()
+        assert orch.state is State.CLOSING
+        assert result.citations == []
+
+    @patch("backend.conversation.orchestrator.generate_rag_answer")
+    @patch("backend.conversation.orchestrator.retrieve")
+    def test_non_empty_insufficient_skips_llm_call_in_closing(
+        self, mock_retrieve, mock_generate,
+    ):
+        """When retrieval has chunks but is insufficient, the LLM
+        must NOT be called."""
+        from backend.rag.retrieval import RetrievedChunk, RetrievalResult
+
+        chunk = RetrievedChunk(
+            chunk_id="chunk1",
+            document_id="doc1",
+            source_filename="test.pdf",
+            chunk_index=0,
+            page_number=1,
+            text="Some text.",
+            similarity=0.40,
+        )
+        mock_retrieve.return_value = RetrievalResult(
+            query="",
+            chunks=[chunk],
+            sufficient=False,
+        )
+
+        rag_config = make_rag_config()
+        llm_config = LlmConfig(
+            model_name="llama-3.1-70b-versatile",
+            api_key="fake-key",
+        )
+        orch = make_orchestrator(
+            rag_config=rag_config,
+            llm_config=llm_config,
+        )
+        self._advance_to_closing(orch)
+        orch.process_patient_message(
+            "¿Qué debo hacer si me duele la herida?"
+        )
+        # LLM must not be called when retrieval is insufficient
+        mock_generate.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

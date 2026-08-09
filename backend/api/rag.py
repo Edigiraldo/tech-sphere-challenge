@@ -11,7 +11,6 @@ LLM.
 from __future__ import annotations
 
 import logging
-from typing import Any
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
@@ -113,26 +112,6 @@ class RagQueryResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-def _context_chunks_from_retrieval(
-    query: str,
-    rag_config: RagConfig,
-) -> list[dict[str, Any]]:
-    """Retrieve RAG chunks and normalise them into the shape expected by
-    the LLM adapter."""
-    result = retrieve(query, config=rag_config)
-
-    return [
-        {
-            "chunk_id": c.chunk_id,
-            "document_id": c.document_id,
-            "source_filename": c.source_filename,
-            "page_number": c.page_number,
-            "text": c.text,
-        }
-        for c in result.chunks
-    ]
-
-
 def _llm_citation_to_api(c: LlmCitation) -> Citation:
     """Convert an internal ``RagCitation`` to the API response model."""
     return Citation(
@@ -169,13 +148,30 @@ async def rag_query(body: RagQueryRequest) -> RagQueryResponse:
     query = body.query.strip()
     logger.info("RAG query received: %r", query[:120])
 
-    # 1. Retrieve
+    # 1. Retrieve (single call — result used for both sufficiency and context)
     rag_config = _get_rag_config()
-    context_chunks = _context_chunks_from_retrieval(query, rag_config)
+    retrieval_result = retrieve(query, config=rag_config)
+    context_chunks = [
+        {
+            "chunk_id": c.chunk_id,
+            "document_id": c.document_id,
+            "source_filename": c.source_filename,
+            "page_number": c.page_number,
+            "text": c.text,
+        }
+        for c in retrieval_result.chunks
+    ]
 
-    # 2. No results → insufficient_knowledge (no LLM call)
-    if not context_chunks:
-        logger.info("No RAG results for query — returning insufficient_knowledge.")
+    # 2. Check retrieval sufficiency — not just "any results" but
+    #    "results that pass the quality gates (min count + avg sim)"
+    if not retrieval_result.has_results or not retrieval_result.sufficient:
+        logger.info(
+            "RAG retrieval insufficient for query %r "
+            "(chunks=%d, sufficient=%s) — returning insufficient_knowledge.",
+            query[:120],
+            len(retrieval_result.chunks),
+            retrieval_result.sufficient,
+        )
         return RagQueryResponse(
             query=query,
             answer=(
@@ -185,7 +181,7 @@ async def rag_query(body: RagQueryRequest) -> RagQueryResponse:
             ),
             citations=[],
             insufficient_knowledge=True,
-            model="none (no RAG results)",
+            model="none (insufficient RAG retrieval)",
         )
 
     # 3. Generate via LLM
