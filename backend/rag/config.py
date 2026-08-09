@@ -60,11 +60,36 @@ class RagConfig:
 
     similarity_threshold: float = field(
         default_factory=lambda: float(
-            os.getenv("RAG_SIMILARITY_THRESHOLD", "0.0")
+            os.getenv("RAG_SIMILARITY_THRESHOLD", "0.25")
         )
     )
     """Minimum similarity score for a chunk to be included in results.
 
-    Chunks below this threshold are filtered out. A value of 0.0 disables
-    filtering (returns all top_k results).
+    Chunks below this threshold are filtered out. The default of 0.25
+    provides a reasonable balance between recall and precision for
+    clinical BGE-M3 embeddings.  Values below 0.10 are treated as
+    practically irrelevant.
+    """
+
+    min_chunks_for_answer: int = field(
+        default_factory=lambda: int(
+            os.getenv("RAG_MIN_CHUNKS", "2")
+        )
+    )
+    """Minimum number of chunks above threshold required before the LLM
+    is invoked.  When fewer chunks pass the similarity threshold, the
+    response falls back to ``insufficient_knowledge`` without calling
+    the LLM, preventing weak/unreliable retrieval from reaching the
+    model.
+    """
+
+    min_avg_similarity: float = field(
+        default_factory=lambda: float(
+            os.getenv("RAG_MIN_AVG_SIMILARITY", "0.30")
+        )
+    )
+    """Minimum average similarity across the retrieved chunks required
+    before the LLM is invoked.  This prevents a single borderline chunk
+    from reaching the model while all others are far below threshold.
+    Set to 0.0 to disable this check.
     """

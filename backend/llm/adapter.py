@@ -151,6 +151,63 @@ _MEDICATION_DOSE_RE = re.compile(
 # characters OR Spanish question marks is flagged for manual review.
 _SPANISH_MARKERS_RE = re.compile(r"[áéíóúñÁÉÍÓÚÑ¿¡]")
 
+# ---------------------------------------------------------------------------
+# Prompt injection detection patterns
+# ---------------------------------------------------------------------------
+
+# Patterns that indicate prompt-injection or jailbreak attempts in
+# patient input.  The system warns when these are detected — they never
+# reach the LLM as instructions (system/user role separation prevents
+# that), but explicit detection at the input boundary provides an
+# additional layer of defense and contributes to audit logging.
+
+_INJECTION_PATTERNS: list[re.Pattern[str]] = [
+    # Role-switching / instruction injection
+    re.compile(
+        r"(?:ignor[aeá]\s+(?:todas\s+)?(?:las\s+)?instrucciones|"
+        r"ignore\s+(?:all\s+)?(?:previous\s+)?instructions)",
+        re.IGNORECASE,
+    ),
+    # System prompt extraction / leakage
+    re.compile(
+        r"(?:eres\s+un\s+asistente|you\s+are\s+(?:a\s+)?(?:helpful\s+)?"
+        r"(?:AI\s+)?assistant|system\s*prompt|"
+        r"repit[eé]\s+(?:el\s+)?prompt|repeat\s+(?:the\s+)?prompt)",
+        re.IGNORECASE,
+    ),
+    # Direct function / tool calling
+    re.compile(
+        r"(?:ejecut[aeá]\s+(?:el\s+)?(?:c[oó]digo|comando|funci[oó]n)|"
+        r"run\s+(?:the\s+)?(?:code|command|function)|"
+        r"sudo\b|\bexec\s*\()",
+        re.IGNORECASE,
+    ),
+    # Malicious JSON / structured injection
+    re.compile(
+        r'"role"\s*:\s*"system"|'
+        r'"role"\s*:\s*"assistant"|'
+        r"<\|im_start\|>|<\|im_end\|>|"
+        r"\[INST\]|\[/INST\]",
+        re.IGNORECASE,
+    ),
+    # Delimiter-based injection attempts (e.g.  "--- BEGIN SYSTEM ---")
+    re.compile(
+        r"-{3,}\s*(?:begin|start|system|instrucciones?|prompt)",
+        re.IGNORECASE,
+    ),
+]
+
+# Maximum safe length for queries (character count).  Extremely long
+# queries can be used for prompt-stuffing attacks.
+_MAX_QUERY_LENGTH: int = 2000
+
+# Spanish safe fallback message used when prompt injection is detected
+# in the input.  Deliberately terse and non-committal.
+_INJECTION_FALLBACK_ES = (
+    "No puedo procesar esta consulta. Por favor, reformule su pregunta "
+    "o comuníquese con su médico tratante para recibir orientación."
+)
+
 
 def _validate_answer(
     raw_answer: str,
@@ -203,8 +260,109 @@ def _validate_answer(
 
 
 # ---------------------------------------------------------------------------
-# LLM invocation
+# Prompt injection detection (input-level)
 # ---------------------------------------------------------------------------
+
+
+def _detect_injection(query: str) -> list[str]:
+    """Detect prompt injection / jailbreak patterns in the input query.
+
+    Returns a list of human-readable detection reasons (empty = clean).
+    These are logged server-side but never exposed to the caller by
+    default.
+
+    Note: system/user role separation in the Groq API already prevents
+    patient input from becoming system instructions.  These checks are
+    an additional defense-in-depth layer for audit logging and for
+    cases where the caller bypasses the normal prompt-assembly path.
+    """
+    reasons: list[str] = []
+
+    # Length check
+    if len(query) > _MAX_QUERY_LENGTH:
+        reasons.append(
+            f"Consulta demasiado larga ({len(query)} caracteres, "
+            f"máximo {_MAX_QUERY_LENGTH})."
+        )
+
+    # Pattern checks
+    for pattern in _INJECTION_PATTERNS:
+        if pattern.search(query):
+            reasons.append(
+                f"Posible intento de inyección detectado: "
+                f"patrón coincidente con {pattern.pattern!r}."
+            )
+
+    return reasons
+
+
+# ---------------------------------------------------------------------------
+# Grounding validation (post-hoc)
+# ---------------------------------------------------------------------------
+
+
+def _validate_grounding(
+    raw_answer: str,
+    cited_chunk_ids: list[str],
+    chunk_lookup: dict[str, dict[str, Any]],
+) -> list[str]:
+    """Check whether the answer claims are supported by cited excerpts.
+
+    This is a best-effort text-level grounding validation.  It checks
+    that cited chunks exist, carry non-empty text, and — for medication-
+    dose mentions — that the cited excerpt contains at least one shared
+    significant token (>= 5 chars) with the answer.
+
+    Returns a list of grounding warnings (empty = all checks passed).
+    """
+    warnings: list[str] = []
+
+    if not cited_chunk_ids:
+        return warnings  # already flagged by _validate_answer
+
+    for cid in cited_chunk_ids:
+        chunk = chunk_lookup.get(cid)
+        if chunk is None:
+            warnings.append(
+                f"El chunk citado {cid} no existe en el contexto "
+                f"proporcionado."
+            )
+            continue
+
+        excerpt = str(chunk.get("text", ""))
+        if not excerpt.strip():
+            warnings.append(
+                f"El chunk citado {cid} no contiene texto."
+            )
+            continue
+
+    # If the answer contains a medication dose, verify at least one
+    # cited excerpt shares a significant token with the answer.
+    if _MEDICATION_DOSE_RE.search(raw_answer):
+        grounded = False
+        answer_lower = raw_answer.lower()
+        for cid in cited_chunk_ids:
+            chunk = chunk_lookup.get(cid)
+            if chunk is None:
+                continue
+            excerpt_lower = str(chunk.get("text", "")).lower()
+            if not excerpt_lower:
+                continue
+            # Check for a shared significant token (>= 5 chars)
+            for word in answer_lower.split():
+                if len(word) >= 5 and word in excerpt_lower:
+                    grounded = True
+                    break
+            if grounded:
+                break
+        if not grounded:
+            warnings.append(
+                "La respuesta menciona dosis de medicamentos sin que "
+                "los extractos citados compartan evidencia textual "
+                "significativa."
+            )
+
+    return warnings
 
 
 def _call_groq(
@@ -345,6 +503,22 @@ def generate_rag_answer(
             model=config.model_name,
         )
 
+    # Detect prompt injection at the input boundary (defense-in-depth).
+    injection_reasons = _detect_injection(query)
+    if injection_reasons:
+        logger.warning(
+            "Prompt injection detected in query %r: %s",
+            query[:120],
+            "; ".join(injection_reasons),
+        )
+        # Return a safe Spanish fallback without calling the LLM.
+        return RagAnswer(
+            answer=_INJECTION_FALLBACK_ES,
+            insufficient_knowledge=True,
+            model=config.model_name,
+            validation_warnings=injection_reasons if debug else [],
+        )
+
     available_ids = {c["chunk_id"] for c in context_chunks}
 
     # Build chunk-id → full-metadata lookup for citation construction
@@ -386,6 +560,18 @@ def generate_rag_answer(
         raw_answer, cited_chunk_ids, available_ids, insufficient
     )
 
+    # Grounding validation (post-hoc): verify cited excerpts support claims
+    grounding_warnings = _validate_grounding(
+        raw_answer, cited_chunk_ids, chunk_lookup,
+    )
+    if grounding_warnings:
+        warnings.extend(grounding_warnings)
+        logger.warning(
+            "Grounding validation warnings for query %r: %s",
+            query[:80],
+            grounding_warnings,
+        )
+
     if warnings:
         logger.warning(
             "Validation warnings for query %r: %s", query[:80], warnings
@@ -398,6 +584,46 @@ def generate_rag_answer(
                 "No puedo proporcionar una respuesta confiable en este "
                 "momento. Por favor, consulte a su médico tratante."
             ),
+            insufficient_knowledge=True,
+            model=config.model_name,
+            validation_warnings=warnings if debug else [],
+            llm_duration_ms=llm_duration_ms,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+        )
+
+    # Safety: force insufficient_knowledge when grounding validation
+    # detects an unsupported medication/dose claim.  The answer must
+    # not reach the patient as grounded clinical advice if the cited
+    # excerpts do not share significant evidence with the dose claim.
+    _medication_grounding_failed = any(
+        "medicamento" in w.lower() or "dosis" in w.lower()
+        for w in grounding_warnings
+    )
+    if _medication_grounding_failed and _MEDICATION_DOSE_RE.search(raw_answer):
+        # Build citations only for genuinely valid chunk_ids so that
+        # the caller can still find which sources exist.
+        safe_citations: list[RagCitation] = []
+        for cid in cited_chunk_ids:
+            chunk = chunk_lookup.get(cid)
+            if chunk is not None:
+                safe_citations.append(
+                    RagCitation(
+                        chunk_id=cid,
+                        document_id=str(chunk.get("document_id", "")),
+                        source_filename=str(chunk.get("source_filename", "")),
+                        page_number=int(chunk.get("page_number", 1)),
+                        excerpt=str(chunk.get("text", ""))[:200],
+                    )
+                )
+        return RagAnswer(
+            answer=(
+                "No tengo suficiente información para responder a su "
+                "pregunta de manera confiable. Por favor, consulte a su "
+                "médico tratante para obtener orientación específica "
+                "sobre su caso."
+            ),
+            citations=safe_citations,
             insufficient_knowledge=True,
             model=config.model_name,
             validation_warnings=warnings if debug else [],

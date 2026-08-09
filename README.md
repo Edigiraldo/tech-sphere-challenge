@@ -13,15 +13,19 @@ llamada.
 ## Estado
 
 La aplicación implementa el pipeline completo de RAG (extracción → chunking →
-embedding BGE-M3 → almacenamiento ChromaDB → recuperación con citas trazables), el
-adaptador LLM (Llama 3.1 70B Versatile vía Groq), ciclo de vida de documentos
-(POST/GET/DELETE /documents con eliminación de chunks indexados), adaptadores de
-voz (STT Groq Whisper Large V3, TTS Kokoro-82M), endpoints de turnos de voz HTTP
-(POST /calls, POST /calls/{call_id}/turn con audio WAV base64), orquestación de
-conversación (máquina de estados, preguntas de seguimiento, RAG+LLM integrados),
-motor de escalamiento (clasificación GREEN/YELLOW/RED con lexicones en español),
-módulo de resúmenes estructurados, colector de métricas, y capa de persistencia
-(SQLite + ChromaDB).
+embedding BGE-M3 → almacenamiento ChromaDB → recuperación con citas trazables y
+controles de suficiencia: umbral de similitud, mínimo de chunks y similitud
+promedio), el adaptador LLM (Llama 3.1 70B Versatile vía Groq con validación
+estructurada, detección de inyección de prompts, validación de fundamentación
+post-hoc y fallback seguro en español), ciclo de vida de documentos
+(POST/GET/DELETE /documents con eliminación de chunks indexados y aislamiento
+de copias duplicadas), adaptadores de voz (STT Groq Whisper Large V3, TTS
+Kokoro-82M), endpoints de turnos de voz HTTP (POST /calls,
+POST /calls/{call_id}/turn con audio WAV base64), orquestación de conversación
+(máquina de estados, preguntas de seguimiento, RAG+LLM integrados con controles
+de suficiencia), motor de escalamiento (clasificación GREEN/YELLOW/RED con
+lexicones en español), módulo de resúmenes estructurados, colector de métricas,
+y capa de persistencia (SQLite + ChromaDB).
 
 El frontal (vanilla HTML/CSS/JS) está disponible en `/` y `/call` con
 selector de pacientes, interfaz de llamada con integración real de micrófono
@@ -114,6 +118,9 @@ GROQ_API_KEY=tu-clave-de-api-aqui
 | --- | --- | --- |
 | `LLM_TEMPERATURE` | `0.2` | Temperatura de muestreo (0–2). Valores bajos favorecen respuestas determinísticas y basadas en fuentes |
 | `LLM_MAX_TOKENS` | `1024` | Máximo de tokens en la respuesta generada |
+| `RAG_SIMILARITY_THRESHOLD` | `0.25` | Similitud coseno mínima para incluir un chunk en los resultados |
+| `RAG_MIN_CHUNKS` | `2` | Mínimo de chunks requeridos antes de invocar el LLM |
+| `RAG_MIN_AVG_SIMILARITY` | `0.30` | Similitud promedio mínima entre todos los chunks recuperados |
 
 El modelo de lenguaje está fijado a **Llama 3.1 70B Versatile** — el único modelo
 integrado en esta fase. No se puede seleccionar otro modelo mediante variables de
@@ -134,14 +141,15 @@ proyecto.
 pytest
 ```
 
-Estas pruebas (761) validan dataset, salud del servidor, chunking y extracción de
+Estas pruebas (948) validan dataset, salud del servidor, chunking y extracción de
 PDF (con error paths), el adaptador LLM (Llama 3.1 70B Versatile con prompts,
-validación y respuestas estructuradas), el endpoint RAG `/rag/query`, la capa de
-persistencia, los módulos de voz (STT/TTS), el motor de conversación, el
-clasificador de escalamiento, los endpoints de turnos de voz, el módulo de
-resúmenes, el colector de métricas y el frontal del navegador. Todas las llamadas a las
-APIs de Groq están mockeadas. No descargan el modelo de embeddings ni procesan
-PDFs reales.
+validación, respuestas estructuradas, detección de inyección de prompts y
+validación de fundamentación), el endpoint RAG `/rag/query` con controles de
+suficiencia, la capa de persistencia, los módulos de voz (STT/TTS), el motor de
+conversación, el clasificador de escalamiento, los endpoints de turnos de voz,
+el módulo de resúmenes, el colector de métricas y el frontal del navegador.
+Todas las llamadas a las APIs de Groq están mockeadas. No descargan el modelo
+de embeddings ni procesan PDFs reales.
 
 ### Pruebas lentas (requieren BGE-M3 y PDFs)
 
@@ -149,10 +157,12 @@ PDFs reales.
 pytest -m slow
 ```
 
-Estas pruebas (16) validan el pipeline completo de RAG: ingestión de PDFs reales
+Estas pruebas (24) validan el pipeline completo de RAG: ingestión de PDFs reales
 (Apendicectomía en inglés y español), embedding con BGE-M3, recuperación por similitud,
-eliminación de chunks y generación de citas trazables. El modelo de embeddings
-(~2 GB) se descarga automáticamente en el primer uso.
+controles de suficiencia, eliminación de chunks, generación de citas trazables,
+verificación de nombres de archivo reales en disco, y aislamiento de documentos
+duplicados. El modelo de embeddings (~2 GB) se descarga automáticamente en el
+primer uso.
 
 ## Contenido versionado
 
@@ -203,9 +213,9 @@ eliminación de chunks y generación de citas trazables. El modelo de embeddings
 │   ├── __init__.py
 │   ├── test_frontend.py   Pruebas de servido de archivos estáticos (8)
 │   ├── test_health.py     Prueba del endpoint /health (1)
-│   ├── test_llm.py        Pruebas del adaptador LLM (41)
-│   ├── test_rag_api.py    Pruebas del endpoint /rag/query (13)
-│   ├── test_documents.py  Pruebas del ciclo de vida de documentos (15)
+│   ├── test_llm.py        Pruebas del adaptador LLM (63)
+│   ├── test_rag_api.py    Pruebas del endpoint /rag/query (14)
+│   ├── test_documents.py  Pruebas del ciclo de vida de documentos (16)
 │   ├── test_calls_api.py  Pruebas de endpoints de turnos de voz (41)
 │   ├── test_persistence_extended.py  Pruebas de capa SQLite extendida (41)
 │   ├── test_summaries.py  Pruebas del generador de resúmenes (44)
@@ -218,7 +228,7 @@ eliminación de chunks y generación de citas trazables. El modelo de embeddings
 │   │   ├── test_extract.py
 │   │   └── test_ingestion_retrieval.py
 │   ├── decision/          Pruebas del motor de escalamiento (125)
-│   ├── conversation/      Pruebas de orquestación (153)
+│   ├── conversation/      Pruebas de orquestación (193)
 │   ├── metrics/           Pruebas del colector de métricas (82)
 │   └── voice/             Pruebas del adaptador TTS (51)
 ├── docs/                  Documentación del proyecto
@@ -306,6 +316,36 @@ Voz del paciente
 Aunque los datos entregados son sintéticos, la aplicación debe tratar la información
 clínica como sensible. No deben subirse datos reales, grabaciones reales, credenciales,
 claves API ni archivos `.env` al repositorio.
+
+### Defensa contra inyección de prompts
+
+El sistema implementa múltiples capas de defensa:
+
+- **Separación de roles**: las instrucciones del sistema y la entrada del paciente
+  se envían en roles de mensaje separados (system/user) en la API de Groq.
+- **Detección a nivel de entrada**: antes de cualquier llamada al LLM, la consulta
+  se escanea en busca de patrones conocidos de jailbreak (cambio de rol, extracción
+  de prompt del sistema, inyección de delimitadores, etiquetas `[INST]`, comandos
+  de ejecución, etc.). Cuando se detecta un patrón, se devuelve un fallback seguro
+  en español sin invocar el modelo.
+- **Salida estructurada**: el esquema JSON obligatorio impide que el LLM devuelva
+  texto libre fuera del formato esperado.
+- **Validación de fundamentación post-hoc**: después de la generación, un
+  validador secundario verifica que las citas referencien chunks existentes con
+  texto no vacío, y que las menciones de dosis de medicamentos estén respaldadas
+  por los extractos citados.
+
+### Controles de suficiencia RAG
+
+Antes de invocar el LLM, la recuperación RAG aplica controles de calidad
+configurables:
+
+- ``RAG_SIMILARITY_THRESHOLD`` (defecto: 0.25) — umbral mínimo de similitud coseno.
+- ``RAG_MIN_CHUNKS`` (defecto: 2) — mínimo de chunks requeridos.
+- ``RAG_MIN_AVG_SIMILARITY`` (defecto: 0.30) — similitud promedio mínima.
+
+Si algún control falla, el sistema devuelve ``insufficient_knowledge`` sin llamar
+al LLM.
 
 ## Licencia
 

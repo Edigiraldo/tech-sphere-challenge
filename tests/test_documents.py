@@ -793,3 +793,109 @@ class TestDocumentLifecycleE2E:
         assert not result.has_results, (
             "Expected no results after deleting the only document"
         )
+
+    @pytest.mark.asyncio
+    async def test_duplicate_pdf_upload_isolated_deletion(
+        self, temp_upload_dir, temp_db_path, test_pdf, rag_config
+    ):
+        """Upload the same PDF twice (two separate documents). Deleting
+        one must not affect the other's chunks or retrievability.
+
+        This verifies that the document lifecycle distinguishes uploaded
+        copies from each other: each upload gets a unique document_id,
+        and deletion by document_id only removes its own chunks.
+        """
+        import backend.api.documents as api_docs
+
+        api_docs._service = None
+        with patch.dict(
+            os.environ,
+            {
+                "DOCUMENTS_UPLOAD_DIR": str(temp_upload_dir),
+                "DOCUMENTS_DB_PATH": str(temp_db_path),
+                "RAG_CHROMA_DIR": str(rag_config.chroma_persist_dir),
+                "RAG_COLLECTION_NAME": rag_config.collection_name,
+            },
+        ):
+            transport = ASGITransport(app=app)
+            async with AsyncClient(
+                transport=transport, base_url="http://test"
+            ) as client:
+                # Upload first copy
+                with open(test_pdf, "rb") as f:
+                    content = f.read()
+                resp1 = await client.post(
+                    "/documents",
+                    files={
+                        "file": (test_pdf.name, content, "application/pdf")
+                    },
+                )
+                assert resp1.status_code == 201
+                doc1_id = resp1.json()["document_id"]
+                assert resp1.json()["status"] == "ready"
+
+                # Upload second copy (same PDF, different upload)
+                resp2 = await client.post(
+                    "/documents",
+                    files={
+                        "file": (test_pdf.name, content, "application/pdf")
+                    },
+                )
+                assert resp2.status_code == 201
+                doc2_id = resp2.json()["document_id"]
+                assert resp2.json()["status"] == "ready"
+
+                # Both documents should have different IDs
+                assert doc1_id != doc2_id, (
+                    "Two uploads of the same PDF must get distinct document IDs"
+                )
+
+                # Verify both are listed
+                list_resp = await client.get(
+                    "/documents", params={"status": "ready"}
+                )
+                ready_ids = {
+                    d["document_id"] for d in list_resp.json()["documents"]
+                }
+                assert doc1_id in ready_ids
+                assert doc2_id in ready_ids
+
+                # Total chunk count should be 2x one document's chunks
+                store = init_store(rag_config)
+                total_before = store.count()
+                assert total_before >= 2, (
+                    "Expected at least 2 chunks (one from each document copy)"
+                )
+
+                # Delete first copy
+                delete_resp = await client.delete(f"/documents/{doc1_id}")
+                assert delete_resp.status_code == 200
+
+                # Verify doc1 is deleted, doc2 is still ready
+                list_after = await client.get("/documents")
+                docs_after = list_after.json()["documents"]
+                doc1_status = next(
+                    d["status"] for d in docs_after
+                    if d["document_id"] == doc1_id
+                )
+                doc2_status = next(
+                    d["status"] for d in docs_after
+                    if d["document_id"] == doc2_id
+                )
+                assert doc1_status == "deleted"
+                assert doc2_status == "ready"
+
+                # Verify chunks from doc2 are still retrievable
+                result = retrieve(
+                    "cuidado de la herida",
+                    rag_config,
+                    store,
+                    top_k=5,
+                )
+                doc_ids = {c.document_id for c in result.chunks}
+                assert doc1_id not in doc_ids, (
+                    "Deleted document chunks must not appear in retrieval"
+                )
+                assert doc2_id in doc_ids, (
+                    "Second copy's chunks must still be retrievable"
+                )

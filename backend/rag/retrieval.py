@@ -31,10 +31,20 @@ class RetrievedChunk:
 
 @dataclass
 class RetrievalResult:
-    """Result of a RAG retrieval query."""
+    """Result of a RAG retrieval query.
+
+    Attributes:
+        query: The original query text.
+        chunks: Chunks retrieved above the similarity threshold.
+        sufficient: ``True`` when the retrieval passes all quality gates
+            (minimum chunk count, average similarity) and is safe to send
+            to the LLM.  ``False`` means the caller should fall back to
+            ``insufficient_knowledge`` without invoking the LLM.
+    """
 
     query: str
     chunks: list[RetrievedChunk] = field(default_factory=list)
+    sufficient: bool = False
 
     @property
     def has_results(self) -> bool:
@@ -45,6 +55,13 @@ class RetrievalResult:
     def sources(self) -> list[str]:
         """Deduplicated list of ``document_id`` values cited in results."""
         return sorted({c.document_id for c in self.chunks})
+
+    @property
+    def avg_similarity(self) -> float:
+        """Mean similarity score of the retrieved chunks, or 0.0 if empty."""
+        if not self.chunks:
+            return 0.0
+        return sum(c.similarity for c in self.chunks) / len(self.chunks)
 
 
 def retrieve(
@@ -87,11 +104,26 @@ def retrieve(
         for r in results
     ]
 
+    # Determine sufficiency: must meet minimum chunk count AND average
+    # similarity thresholds before the LLM is invoked.
+    sufficient = False
+    if chunks:
+        avg_sim = sum(c.similarity for c in chunks) / len(chunks)
+        sufficient = (
+            len(chunks) >= config.min_chunks_for_answer
+            and avg_sim >= config.min_avg_similarity
+        )
+
     logger.info(
-        "Retrieved %d chunks for query %r from %d source(s).",
+        "Retrieved %d chunks for query %r from %d source(s) — "
+        "avg_similarity=%.4f, sufficient=%s.",
         len(chunks),
         query[:80],
         len({c.document_id for c in chunks}),
+        sum(c.similarity for c in chunks) / len(chunks) if chunks else 0.0,
+        sufficient,
     )
 
-    return RetrievalResult(query=query, chunks=chunks)
+    return RetrievalResult(
+        query=query, chunks=chunks, sufficient=sufficient,
+    )

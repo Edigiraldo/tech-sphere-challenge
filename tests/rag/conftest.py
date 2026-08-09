@@ -6,12 +6,15 @@ an autouse fixture that resets the ChromaStore singleton between tests.
 
 import os
 import tempfile
+import uuid
 from pathlib import Path
 
 import pytest
 
 import backend.persistence.chroma as chroma_mod
 from backend.rag.config import RagConfig
+from backend.rag.store import init_store
+from backend.persistence.chroma import ChromaStore
 
 
 @pytest.fixture(autouse=True)
@@ -38,6 +41,24 @@ def rag_config():
         retrieval_top_k=3,
         collection_name="test_clinical_knowledge",
     )
+
+
+@pytest.fixture
+def store(rag_config: RagConfig) -> ChromaStore:
+    """Initialise a ChromaStore with a fresh temp collection."""
+    return init_store(rag_config)
+
+
+@pytest.fixture
+def doc_id_en() -> str:
+    """Generate a unique document ID for English PDF tests."""
+    return f"test-{uuid.uuid4().hex[:8]}-postop-en"
+
+
+@pytest.fixture
+def doc_id_es() -> str:
+    """Generate a unique document ID for Spanish PDF tests."""
+    return f"test-{uuid.uuid4().hex[:8]}-cuidado-es"
 
 
 @pytest.fixture

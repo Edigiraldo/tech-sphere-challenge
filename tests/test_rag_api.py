@@ -98,9 +98,12 @@ class TestRagQueryEndpoint:
     async def test_no_rag_results_returns_insufficient_knowledge(self):
         """When no RAG chunks are found, no LLM call is made and the
         response has insufficient_knowledge=True."""
+        from backend.rag.retrieval import RetrievalResult
+
+        mock_retrieval = RetrievalResult(query="q", chunks=[], sufficient=False)
         with patch(
-            "backend.api.rag._context_chunks_from_retrieval",
-            return_value=[],
+            "backend.api.rag.retrieve",
+            return_value=mock_retrieval,
         ):
             transport = ASGITransport(app=app)
             async with AsyncClient(
@@ -117,21 +120,75 @@ class TestRagQueryEndpoint:
         assert "No tengo suficiente información" in data["answer"]
         assert data["citations"] == []
 
+    @pytest.mark.asyncio
+    async def test_non_empty_but_insufficient_retrieval_no_llm_call(self):
+        """When RAG returns chunks but sufficient=False (e.g. too few
+        chunks or low avg similarity), the endpoint must return
+        insufficient_knowledge=True WITHOUT calling the LLM."""
+        from backend.rag.retrieval import RetrievedChunk, RetrievalResult
+
+        mock_retrieval = RetrievalResult(
+            query="q",
+            chunks=[
+                RetrievedChunk(
+                    chunk_id="c1",
+                    document_id="doc-1",
+                    source_filename="guia.pdf",
+                    chunk_index=0,
+                    page_number=3,
+                    text="Mantener la herida limpia.",
+                    similarity=0.50,
+                )
+            ],
+            sufficient=False,  # e.g. below min_chunks threshold
+        )
+
+        with patch(
+            "backend.api.rag.retrieve",
+            return_value=mock_retrieval,
+        ):
+            with patch(
+                "backend.api.rag.generate_rag_answer",
+            ) as mock_llm:
+                transport = ASGITransport(app=app)
+                async with AsyncClient(
+                    transport=transport, base_url="http://test"
+                ) as client:
+                    response = await client.post(
+                        "/rag/query",
+                        json={"query": "¿Cómo cuido mi herida?"},
+                    )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["insufficient_knowledge"] is True
+        assert "No tengo suficiente información" in data["answer"]
+        # LLM must not have been called
+        mock_llm.assert_not_called()
+
     # -- Successful RAG + LLM ------------------------------------------------
 
     @pytest.mark.asyncio
     async def test_successful_rag_answer(self):
         """When RAG chunks are retrieved and the LLM produces a valid answer,
         the endpoint returns the answer with citations."""
-        context_chunks = [
-            {
-                "chunk_id": "c1",
-                "document_id": "doc-1",
-                "source_filename": "guia.pdf",
-                "page_number": 3,
-                "text": "Mantener la herida limpia.",
-            }
-        ]
+        from backend.rag.retrieval import RetrievedChunk, RetrievalResult
+
+        mock_retrieval = RetrievalResult(
+            query="q",
+            chunks=[
+                RetrievedChunk(
+                    chunk_id="c1",
+                    document_id="doc-1",
+                    source_filename="guia.pdf",
+                    chunk_index=0,
+                    page_number=3,
+                    text="Mantener la herida limpia.",
+                    similarity=0.85,
+                )
+            ],
+            sufficient=True,
+        )
 
         mock_result = MagicMock()
         mock_result.answer = (
@@ -144,8 +201,8 @@ class TestRagQueryEndpoint:
         mock_result.validation_warnings = []
 
         with patch(
-            "backend.api.rag._context_chunks_from_retrieval",
-            return_value=context_chunks,
+            "backend.api.rag.retrieve",
+            return_value=mock_retrieval,
         ):
             with patch(
                 "backend.api.rag.generate_rag_answer",
@@ -171,16 +228,23 @@ class TestRagQueryEndpoint:
         """When the LLM produces citations, they are returned in the
         response."""
         from backend.llm.adapter import RagCitation
+        from backend.rag.retrieval import RetrievedChunk, RetrievalResult
 
-        context_chunks = [
-            {
-                "chunk_id": "c1",
-                "document_id": "doc-1",
-                "source_filename": "guia.pdf",
-                "page_number": 3,
-                "text": "Texto de la guía.",
-            }
-        ]
+        mock_retrieval = RetrievalResult(
+            query="q",
+            chunks=[
+                RetrievedChunk(
+                    chunk_id="c1",
+                    document_id="doc-1",
+                    source_filename="guia.pdf",
+                    chunk_index=0,
+                    page_number=3,
+                    text="Texto de la guía.",
+                    similarity=0.85,
+                )
+            ],
+            sufficient=True,
+        )
 
         mock_result = MagicMock()
         mock_result.answer = "Respuesta basada en la guía."
@@ -198,8 +262,8 @@ class TestRagQueryEndpoint:
         mock_result.validation_warnings = []
 
         with patch(
-            "backend.api.rag._context_chunks_from_retrieval",
-            return_value=context_chunks,
+            "backend.api.rag.retrieve",
+            return_value=mock_retrieval,
         ):
             with patch(
                 "backend.api.rag.generate_rag_answer",
@@ -226,15 +290,23 @@ class TestRagQueryEndpoint:
     async def test_llm_insufficient_knowledge(self):
         """When the LLM returns insufficient_knowledge=True, the endpoint
         propagates it."""
-        context_chunks = [
-            {
-                "chunk_id": "c1",
-                "document_id": "doc-1",
-                "source_filename": "guia.pdf",
-                "page_number": 3,
-                "text": "Texto irrelevante.",
-            }
-        ]
+        from backend.rag.retrieval import RetrievedChunk, RetrievalResult
+
+        mock_retrieval = RetrievalResult(
+            query="q",
+            chunks=[
+                RetrievedChunk(
+                    chunk_id="c1",
+                    document_id="doc-1",
+                    source_filename="guia.pdf",
+                    chunk_index=0,
+                    page_number=3,
+                    text="Texto irrelevante.",
+                    similarity=0.60,
+                )
+            ],
+            sufficient=True,
+        )
 
         mock_result = MagicMock()
         mock_result.answer = "No tengo información sobre ese tema."
@@ -244,8 +316,8 @@ class TestRagQueryEndpoint:
         mock_result.validation_warnings = []
 
         with patch(
-            "backend.api.rag._context_chunks_from_retrieval",
-            return_value=context_chunks,
+            "backend.api.rag.retrieve",
+            return_value=mock_retrieval,
         ):
             with patch(
                 "backend.api.rag.generate_rag_answer",
@@ -269,19 +341,27 @@ class TestRagQueryEndpoint:
     @pytest.mark.asyncio
     async def test_llm_runtime_error_returns_502(self):
         """When the LLM raises RuntimeError, the endpoint returns 502."""
-        context_chunks = [
-            {
-                "chunk_id": "c1",
-                "document_id": "doc-1",
-                "source_filename": "guia.pdf",
-                "page_number": 3,
-                "text": "Texto.",
-            }
-        ]
+        from backend.rag.retrieval import RetrievedChunk, RetrievalResult
+
+        mock_retrieval = RetrievalResult(
+            query="q",
+            chunks=[
+                RetrievedChunk(
+                    chunk_id="c1",
+                    document_id="doc-1",
+                    source_filename="guia.pdf",
+                    chunk_index=0,
+                    page_number=3,
+                    text="Texto.",
+                    similarity=0.85,
+                )
+            ],
+            sufficient=True,
+        )
 
         with patch(
-            "backend.api.rag._context_chunks_from_retrieval",
-            return_value=context_chunks,
+            "backend.api.rag.retrieve",
+            return_value=mock_retrieval,
         ):
             with patch(
                 "backend.api.rag.generate_rag_answer",
@@ -322,15 +402,23 @@ class TestRagQueryEndpoint:
     @pytest.mark.asyncio
     async def test_response_conforms_to_model(self):
         """The response JSON should deserialise into RagQueryResponse."""
-        context_chunks = [
-            {
-                "chunk_id": "c1",
-                "document_id": "doc-1",
-                "source_filename": "guia.pdf",
-                "page_number": 3,
-                "text": "Texto.",
-            }
-        ]
+        from backend.rag.retrieval import RetrievedChunk, RetrievalResult
+
+        mock_retrieval = RetrievalResult(
+            query="q",
+            chunks=[
+                RetrievedChunk(
+                    chunk_id="c1",
+                    document_id="doc-1",
+                    source_filename="guia.pdf",
+                    chunk_index=0,
+                    page_number=3,
+                    text="Texto.",
+                    similarity=0.85,
+                )
+            ],
+            sufficient=True,
+        )
 
         mock_result = MagicMock()
         mock_result.answer = "Respuesta."
@@ -340,8 +428,8 @@ class TestRagQueryEndpoint:
         mock_result.validation_warnings = []
 
         with patch(
-            "backend.api.rag._context_chunks_from_retrieval",
-            return_value=context_chunks,
+            "backend.api.rag.retrieve",
+            return_value=mock_retrieval,
         ):
             with patch(
                 "backend.api.rag.generate_rag_answer",

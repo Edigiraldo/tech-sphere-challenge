@@ -574,7 +574,7 @@ class ConversationOrchestrator:
         if retrieval_result is not None:
             meta["rag_queries"] = 1
 
-        if not retrieval_result or not retrieval_result.has_results:
+        if not retrieval_result or not retrieval_result.has_results or not retrieval_result.sufficient:
             return (
                 "Gracias por su pregunta. No cuento con información "
                 "suficiente para responderla en este momento. Le "
@@ -887,7 +887,7 @@ class ConversationOrchestrator:
         if retrieval_result is not None:
             meta["rag_queries"] = 1
 
-        if not retrieval_result or not retrieval_result.has_results:
+        if not retrieval_result or not retrieval_result.has_results or not retrieval_result.sufficient:
             return (
                 "Gracias por compartir esta información. No cuento con "
                 "material de consulta suficiente para darle una "

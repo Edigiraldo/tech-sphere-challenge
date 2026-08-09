@@ -198,6 +198,22 @@ conversation module never depends on a specific provider.
 
 ## Safety and Validation Boundaries
 
+### Retrieval sufficiency gates
+
+Before the LLM is invoked, the RAG retrieval pipeline applies quantitative
+quality gates to prevent weak or empty retrieval from reaching the model:
+
+1. **Similarity threshold** (default 0.25, env ``RAG_SIMILARITY_THRESHOLD``):
+   chunks below this cosine-similarity floor are discarded.
+2. **Minimum chunk count** (default 2, env ``RAG_MIN_CHUNKS``): at least this
+   many chunks must pass the similarity threshold.
+3. **Minimum average similarity** (default 0.30, env ``RAG_MIN_AVG_SIMILARITY``):
+   the mean similarity of all retrieved chunks must meet this bar.
+
+When any gate fails, the ``RetrievalResult.sufficient`` flag is ``False``.
+Callers (API endpoint, orchestrator) fall back to ``insufficient_knowledge``
+without invoking the LLM — no weak context ever reaches the model.
+
 ### Structured output validation
 
 Before output reaches the patient, application code validates the LLM's structured
@@ -212,6 +228,18 @@ response:
 
 If validation fails, the response is discarded and either retried or escalated to a
 safe fallback.
+
+### Post-hoc grounding validation
+
+After the LLM produces a response, a secondary grounding validator
+(``_validate_grounding``) checks that:
+
+- All cited chunk IDs exist in the context and carry non-empty text.
+- When the answer mentions a medication dose, at least one cited excerpt
+  shares a significant token (>= 5 characters) with the answer.
+
+Grounding warnings are logged server-side and exposed in ``validation_warnings``
+only when ``debug=True``.  They never reach the patient-facing output.
 
 ### Escalation policy (safety-first)
 
@@ -233,18 +261,30 @@ safe fallback.
 
 ### Prompt injection defense
 
-- System instructions are in a separate message role from user input.
+- System instructions are in a separate message role from user input (Groq
+  API role separation).
 - Patient speech is never concatenated into instructions.
 - The structured output schema constrains the LLM to a fixed JSON shape.
 - Role-switching attempts in LLM output are rejected during validation.
+- **Input-level injection detection** (``_detect_injection``): the query is
+  scanned for known jailbreak patterns (role-switching, system prompt
+  extraction, delimiter injection, ``[INST]`` tags, etc.) before any LLM
+  call.  When a pattern matches, the call returns a safe Spanish fallback
+  (``insufficient_knowledge=True``) without invoking the model.
+- **Length check**: queries longer than 2000 characters are rejected at
+  the injection-detection layer.
+- **Output-level checks**: the grounding validator catches hallucinated
+  citations and ungrounded medication claims in the LLM output.
 
 ### Clinical hallucination prevention
 
 - The LLM is instructed to only cite sources from the provided RAG context.
-- If no RAG chunks are retrieved (below similarity threshold), the agent states it
-  lacks information rather than fabricating.
+- If no RAG chunks meet the sufficiency gates, the agent states it lacks
+  information rather than fabricating.
 - The `decision/` module cross-checks the LLM's clinical reasoning against explicit
   red-flag rules independent of the LLM.
+- Post-hoc grounding validation verifies that medication-dose claims in the
+  answer are supported by the cited excerpts.
 
 ## Phased Implementation Plan
 
