@@ -64,12 +64,12 @@ class TestLlmConfig:
     def test_model_name_not_llama_3_1_70b_raises(self):
         """Any model_name other than exactly 'llama-3.1-70b-versatile'
         raises ValueError at construction time."""
-        with pytest.raises(ValueError, match="model_name must be"):
+        with pytest.raises(ValueError, match="not allowed"):
             LlmConfig(model_name="gemini-1.5-flash")
 
     def test_model_name_empty_string_raises(self):
         """An empty model_name is also rejected."""
-        with pytest.raises(ValueError, match="model_name must be"):
+        with pytest.raises(ValueError, match="not allowed"):
             LlmConfig(model_name="")
 
 

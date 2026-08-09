@@ -1840,7 +1840,7 @@ class TestTurnMetricsIntegration:
         assert detail_resp.status_code == 200
         detail = detail_resp.json()
         for t in detail["turns"]:
-            assert t["model"] == "llama-3.1-70b-versatile", (
+            assert t["model"] == "llama3.2:3b", (
                 f"model should be the default model name, "
                 f"got {t['model']} at turn {t['turn_index']}"
             )

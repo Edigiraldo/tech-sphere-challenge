@@ -599,6 +599,7 @@ class ConversationOrchestrator:
                 "source_filename": c.source_filename,
                 "page_number": c.page_number,
                 "text": c.text,
+                "similarity": c.similarity,
             }
             for c in retrieval_result.chunks
         ]
@@ -921,6 +922,7 @@ class ConversationOrchestrator:
                 "source_filename": c.source_filename,
                 "page_number": c.page_number,
                 "text": c.text,
+                "similarity": c.similarity,
             }
             for c in retrieval_result.chunks
         ]

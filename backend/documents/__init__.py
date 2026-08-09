@@ -8,23 +8,13 @@ Public interface:
     * ``Document``, ``DocumentStatus`` — domain models.
     * ``DocumentService`` — business logic (upload, list, delete); imported
       directly from ``backend.documents.service``.
-    * ``reconcile`` — compare ChromaDB indexed IDs against SQLite registry.
-    * ``clean_orphaned_chunks`` — delete orphaned ChromaDB chunks.
-    * ``ReconciliationResult`` — structured reconciliation output.
+    Reconciliation helpers are imported from ``backend.documents.reconciliation``
+    by the administration API to avoid a package-level SQLite import cycle.
 """
 
 from backend.documents.models import Document, DocumentStatus
-from backend.documents.reconciliation import (
-    ReconciliationResult,
-    clean_orphaned_chunks,
-    reconcile,
-)
-
 __all__ = [
     "Document",
     "DocumentStatus",
-    "ReconciliationResult",
-    "clean_orphaned_chunks",
-    "reconcile",
 ]
 

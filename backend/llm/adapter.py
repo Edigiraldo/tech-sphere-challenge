@@ -1,8 +1,9 @@
-"""Llama 3.1 70B (Groq) adapter for RAG-grounded clinical answers.
+"""LLM adapter for RAG-grounded clinical answers.
 
-Produces validated Spanish answers with traceable citations and an explicit
-``insufficient_knowledge`` flag when the RAG context cannot support a safe
-clinical response.
+Supports Groq Llama 3.3 70B Versatile, the current successor authorized by the
+challenge organizers. Produces validated Spanish answers
+with traceable citations and an explicit ``insufficient_knowledge`` flag
+when the RAG context cannot support a safe clinical response.
 """
 
 from __future__ import annotations
@@ -76,7 +77,7 @@ class RagAnswer:
 # Prompt assembly
 # ---------------------------------------------------------------------------
 
-_SYSTEM_PROMPT = """\
+_GROQ_SYSTEM_PROMPT = """\
 Eres un asistente clínico virtual que ayuda a pacientes postoperatorios \
 en Colombia. Responde ÚNICAMENTE basándote en las fuentes proporcionadas.
 
@@ -92,7 +93,7 @@ información.
 5. NO hagas recomendaciones médicas más allá de lo que dicen las fuentes."""
 
 
-_USER_PROMPT_TEMPLATE = """\
+_GROQ_USER_PROMPT_TEMPLATE = """\
 PREGUNTA DEL PACIENTE:
 {query}
 
@@ -101,17 +102,19 @@ para citar):
 {context}
 
 Responde EXCLUSIVAMENTE en formato JSON. No incluyas texto fuera del JSON.
+Si la respuesta aparece en las fuentes, debes responderla y citar el chunk_id
+EXACTO, copiándolo sin prefijos ni texto adicional. No marques
+insufficient_knowledge como true cuando una fuente contiene la respuesta.
 {{
   "answer": "tu respuesta en español colombiano",
   "cited_chunk_ids": ["chunk_id_1", "chunk_id_2"],
   "insufficient_knowledge": false
 }}"""
 
-
 def _build_prompt(
     query: str, context_chunks: list[dict[str, Any]]
 ) -> tuple[str, str]:
-    """Build (system_prompt, user_prompt) for the LLM.
+    """Build (system_prompt, user_prompt) for the LLM (Groq format).
 
     Each context chunk dict must have at least ``chunk_id`` and ``text``.
     """
@@ -126,11 +129,11 @@ def _build_prompt(
         )
 
     context_str = "\n\n---\n\n".join(context_lines)
-    user_prompt = _USER_PROMPT_TEMPLATE.format(
+    user_prompt = _GROQ_USER_PROMPT_TEMPLATE.format(
         query=query, context=context_str
     )
 
-    return _SYSTEM_PROMPT, user_prompt
+    return _GROQ_SYSTEM_PROMPT, user_prompt
 
 
 # ---------------------------------------------------------------------------
@@ -365,6 +368,29 @@ def _validate_grounding(
     return warnings
 
 
+def _normalize_cited_chunk_ids(
+    cited_chunk_ids: list[str],
+    available_chunk_ids: set[str],
+) -> list[str]:
+    """Normalize provider citation labels to retrieved chunk IDs only.
+
+    Small local models may echo the complete source label instead of returning
+    the bare ID. A citation is accepted only when it contains exactly one ID
+    from the retrieved context; unknown or ambiguous labels remain unchanged
+    and are rejected by the normal citation validation.
+    """
+    normalized: list[str] = []
+    for cited_id in cited_chunk_ids:
+        if cited_id in available_chunk_ids:
+            normalized.append(cited_id)
+            continue
+        matches = [
+            chunk_id for chunk_id in available_chunk_ids if chunk_id in cited_id
+        ]
+        normalized.append(matches[0] if len(matches) == 1 else cited_id)
+    return normalized
+
+
 def _call_groq(
     system_prompt: str,
     user_prompt: str,
@@ -456,6 +482,82 @@ def _call_groq(
     return parsed
 
 
+def _extractive_fallback(
+    context_chunks: list[dict[str, Any]],
+    config: LlmConfig,
+) -> RagAnswer:
+    """Build a safe extractive answer from the best available RAG chunk.
+
+    Used when the LLM call fails (network error, timeout, unparseable
+    output) or when the model returns ``insufficient_knowledge`` despite
+    sufficiently similar retrieved chunks.  Only the single highest-
+    similarity chunk is used; its citation metadata is preserved.
+
+    When no chunk has a similarity >= 0.30 or no chunks are available,
+    ``insufficient_knowledge`` is ``True`` and no citations are returned.
+    """
+    if not context_chunks:
+        return RagAnswer(
+            answer=(
+                "No tengo suficiente información para responder a su "
+                "pregunta. Por favor, consulte a su médico tratante para "
+                "obtener orientación específica sobre su caso."
+            ),
+            insufficient_knowledge=True,
+            model=config.model_name,
+        )
+
+    # Select highest-similarity chunk; fall back to the first chunk
+    # when similarity is absent.
+    sorted_chunks = sorted(
+        context_chunks,
+        key=lambda c: float(c.get("similarity", 0.0)),
+        reverse=True,
+    )
+    best = sorted_chunks[0]
+    similarity = float(best.get("similarity", 0.0))
+
+    # Evidence threshold: similarity < 0.30 → insufficient knowledge
+    if similarity < 0.30:
+        return RagAnswer(
+            answer=(
+                "No tengo suficiente información para responder a su "
+                "pregunta de manera confiable. Por favor, consulte a su "
+                "médico tratante para obtener orientación específica "
+                "sobre su caso."
+            ),
+            insufficient_knowledge=True,
+            model=config.model_name,
+        )
+
+    # Build a single citation from the best chunk
+    citation = RagCitation(
+        chunk_id=str(best.get("chunk_id", "")),
+        document_id=str(best.get("document_id", "")),
+        source_filename=str(best.get("source_filename", "")),
+        page_number=int(best.get("page_number", 1)),
+        excerpt=str(best.get("text", ""))[:200],
+    )
+
+    source_text = " ".join(str(best.get("text", "")).split())
+    sentences = re.split(r"(?<=[.!?])\s+", source_text)
+    excerpt = " ".join(sentence.strip() for sentence in sentences[:3] if sentence.strip())
+    if not excerpt:
+        excerpt = source_text[:500].strip()
+    answer = (
+        "Según la fuente consultada, el documento indica: "
+        f"{excerpt[:600]} "
+        "Para una orientación específica sobre su caso, consulte a su equipo tratante."
+    ).strip()
+
+    return RagAnswer(
+        answer=answer,
+        citations=[citation],
+        insufficient_knowledge=False,
+        model=config.model_name,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -532,15 +634,7 @@ def generate_rag_answer(
         parsed = _call_groq(system_prompt, user_prompt, config)
     except (RuntimeError, ValueError) as exc:
         logger.error("LLM call failed: %s", exc)
-        return RagAnswer(
-            answer=(
-                "No puedo procesar su consulta en este momento. "
-                "Por favor, comuníquese con su médico tratante."
-            ),
-            insufficient_knowledge=True,
-            model=config.model_name,
-            validation_warnings=[str(exc)] if debug else [],
-        )
+        return _extractive_fallback(context_chunks, config)
 
     # Pop internal metadata before processing the response.
     llm_duration_ms = parsed.pop("_llm_duration_ms", None)
@@ -553,6 +647,9 @@ def generate_rag_answer(
         for cid in parsed.get("cited_chunk_ids", [])
         if isinstance(cid, (str, int))
     ]
+    cited_chunk_ids = _normalize_cited_chunk_ids(
+        cited_chunk_ids, available_ids
+    )
     insufficient = bool(parsed.get("insufficient_knowledge", False))
 
     # Validate

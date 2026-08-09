@@ -296,6 +296,13 @@ def init_sqlite(db_path: str | Path) -> None:
             )
             """
         )
+        # Migrate databases created before content-hash identity was added.
+        document_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(documents)")
+        }
+        if "content_hash" not in document_columns:
+            conn.execute("ALTER TABLE documents ADD COLUMN content_hash TEXT")
+            logger.info("Migrated documents table with content_hash column")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS calls (

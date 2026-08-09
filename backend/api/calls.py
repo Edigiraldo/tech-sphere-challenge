@@ -115,7 +115,7 @@ controls state transitions; this counter is authoritative for the HTTP
 response escalation verdict in the fallback path.
 """
 
-_DEFAULT_MODEL: str = "llama-3.1-70b-versatile"
+_DEFAULT_MODEL: str = "llama-3.3-70b-versatile"
 """Default model identifier for metrics when LLM is not invoked."""
 
 
