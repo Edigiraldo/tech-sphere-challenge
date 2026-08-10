@@ -54,15 +54,15 @@ flowchart TB
     LLM --> Groq
 
     Calls --> Conversation
-    Conversation --> RAG
-    Conversation --> LLM
-    Conversation --> Decision
+    Conversation -->|QUESTIONS: classify first| Decision
+    Conversation -->|CLOSING clinical question only| RAG
+    RAG -->|sufficient context only| LLM
     Calls --> Summary
     Calls --> Metrics
     Calls --> Persistence
 
     RAGAPI --> RAG
-    RAGAPI --> LLM
+    RAGAPI -->|sufficient context only| LLM
     Documents --> Uploads
     Documents --> RAG
     Documents --> Persistence
@@ -101,17 +101,25 @@ sequenceDiagram
     else GREEN or first YELLOW
         D-->>C: Classification
         C-->>API: Deterministic acknowledgement + next question
-    else Clinical question
+    else Second YELLOW
+        D-->>C: Escalation, transition to CLOSING
+        C-->>API: Deterministic escalation response
+    else CLOSING clinical question
         C->>R: Retrieve relevant chunks
         R-->>C: Chunks and traceable citations
         C->>L: Question + patient context + retrieved sources
         L-->>C: Validated Spanish JSON response
         C-->>API: Answer and citations
+    else CLOSING non-question
+        C-->>API: Deterministic farewell, ENDED, no RAG/LLM
     end
 
     API->>T: Synthesize response text
     T-->>API: WAV audio
-    API->>DB: Persist turn, alert, summary, and metrics
+    API->>DB: Persist turn, alert, and metrics
+    opt Call ended
+        API->>DB: Generate and persist structured summary
+    end
     API-->>P: Audio, transcription, state, citations, escalation
 ```
 
