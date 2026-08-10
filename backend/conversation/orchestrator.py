@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import datetime
 import logging
+import unicodedata
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
@@ -47,6 +48,43 @@ from backend.rag.config import RagConfig
 from backend.rag.retrieval import RetrievalResult, retrieve
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Spanish text normalisation helper (stdlib only, no external deps)
+# ---------------------------------------------------------------------------
+
+
+def _normalize_spanish_text(text: str) -> str:
+    """Remove diacritics and normalise Spanish text for question detection.
+
+    STT transcriptions (Groq Whisper Large V3) frequently omit accents
+    and punctuation, so ``"cómo"`` becomes ``"como"`` and ``"¿Qué?"``
+    becomes ``"que"``.  This helper strips combining characters so
+    question-marker matching works on both accented and unaccented input
+    without requiring the caller to duplicate every pattern.
+
+    Parameters
+    ----------
+    text : str
+        Raw input text (may contain diacritics, punctuation, mixed case).
+
+    Returns
+    -------
+    str
+        Lower-case, diacritic-free, whitespace-stripped text suitable
+        for heuristic substring matching.  Punctuation other than
+        question marks is *not* removed — those are handled separately
+        in ``_is_clinical_question``.
+    """
+    # Unicode NFD decomposes accented chars into base + combining diacritic
+    # (e.g. 'é' → 'e' + U+0301).  Filtering out Unicode category 'Mn'
+    # (Non-Spacing Mark) strips all diacritics while preserving the base
+    # letters and whitespace.
+    nfd = unicodedata.normalize("NFD", text)
+    stripped = "".join(ch for ch in nfd if unicodedata.category(ch) != "Mn")
+    return stripped.lower().strip()
+
 
 # ---------------------------------------------------------------------------
 # Structured postoperative questions (Spanish, Colombian regionalisms)
@@ -88,6 +126,7 @@ _QUESTION_DOMAINS: tuple[str, ...] = (
     "sueño",
     "movilidad",
 )
+
 
 # ---------------------------------------------------------------------------
 # Public result type
@@ -501,28 +540,154 @@ class ConversationOrchestrator:
     def _is_clinical_question(self, text: str) -> bool:
         """Detect whether the patient is asking a clinical question.
 
-        Uses simple heuristics: question marks, Spanish question words,
-        and inquiry patterns that suggest the patient wants information.
+        Handles STT output that lacks accents and punctuation by
+        normalising diacritics before matching.  Uses compound patterns
+        (e.g. ``"que cuidados"`` rather than bare ``"que "``) to avoid
+        false positives from relative-pronoun uses like
+        ``"la herida que tengo"``.
         """
         lowered = text.lower().strip()
 
-        # Direct question markers
+        # -- Direct question marks (written/typed input) ------------------
         if "?" in lowered or "¿" in lowered:
             return True
 
-        # Spanish question words / inquiry patterns (avoid ambiguous
-        # matches like "como" meaning "I eat", "que" as relative pronoun).
-        question_markers = (
-            "cómo ", "qué ", "cuándo ", "cuando ",
-            "dónde ", "donde ", "por qué", "por que",
-            "pregunta", "duda", "quisiera saber",
-            "necesito saber", "me puede decir",
-            "me podría decir", "me podría explicar",
-            "me puede explicar", "explíqueme",
-            "expliqueme", "cuénteme", "cuenteme",
+        # -- Normalise away diacritics for STT-style matching ------------
+        normalized = _normalize_spanish_text(text)
+
+        # -- Explicit question words (accented forms still work in
+        #    normalised input because the normaliser strips diacritics) --
+        explicit_q_words = ("por que",)
+        for w in explicit_q_words:
+            if w in normalized:
+                return True
+
+        # -- Compound "que" patterns (interrogative, avoids relative
+        #    pronoun false positives like "la herida que tengo") ---------
+        que_patterns = (
+            # clinical-care questions (catches "que cuidados debo seguir")
+            "que cuidados", "que cuidos", "que cuidado",
+            "que debo", "que puedo", "que hago", "que hacer",
+            "que significa", "que quiere decir", "que pasa",
+            "que paso", "que pasaria", "que sucede", "que ocurre",
+            # medication / symptom questions
+            "que medicamento", "que medicina", "que remedio",
+            "que pastilla", "que analgesico",
+            "que sintoma", "que malestar", "que molestia",
+            "que enfermedad", "que infeccion",
+            # treatment / recovery questions
+            "que tratamiento", "que ejercicio", "que actividad",
+            "que dieta", "que alimentacion", "que comida", "que comer",
+            "que bebida", "que tomar", "que liquido",
+            "que recomienda", "que aconseja", "que sugiere",
+            "que tipo", "que clase", "que examenes", "que examen",
+            "que es ", "que son ", "que esta ",
+            # urgency indicators
+            "que urgencia", "que emergencia", "que gravedad",
+            # common interrogative anchors
+            "que tengo que", "que debo de", "que puedo hacer",
+            "y que", "o que",
         )
-        for marker in question_markers:
-            if marker in lowered:
+        for p in que_patterns:
+            if p in normalized:
+                return True
+
+        # -- Compound "como" patterns (interrogative; "como" alone can
+        #    mean "I eat", so we only match it with following context) --
+        como_patterns = (
+            "como debo", "como puedo", "como limpio", "como esta", "como estan",
+            "como me", "como le", "como se", "como hago",
+            "como va", "como van", "como es", "como son",
+            "como saber", "como saber si", "como reconozco",
+            "como identificar", "como trato", "como tratar",
+            "como cuidar", "como curo", "como curar",
+            "como aliviar", "como manejar", "como controlar",
+            "como evitar", "como prevenir",
+            "como proceder", "como seguir", "como continuar",
+            "como queda", "como quedo",
+            "como funciona",
+        )
+        for p in como_patterns:
+            if p in normalized:
+                return True
+
+        # -- Other interrogatives (non-accented forms for STT) -----------
+        other_q_words = (
+            "cual ", "cuales ", "cuanta ", "cuantas ", "cuanto ",
+            "cuantos ", "quien ", "quienes ", "adonde ", "adónde ",
+        )
+        for w in other_q_words:
+            if w in normalized:
+                return True
+
+        # -- Common clinical-question sub-phrases ------------------------
+        clinical_q_phrases = (
+            "cuanto tiempo", "cuanto dura", "cuanto tarda",
+            "cada cuanto", "hasta cuando", "desde cuando",
+            "cuantos dias", "cuantas veces", "cuantas horas",
+            "cuando puedo", "cuando debo", "a donde", "a donde debo",
+            "me toca ir",
+        )
+        for p in clinical_q_phrases:
+            if p in normalized:
+                return True
+
+        # -- Explicit inquiry / "I have a question" patterns -------------
+        inquiry_patterns = (
+            "tengo una duda", "tengo una pregunta",
+            "quisiera saber", "quisiera preguntar",
+            "necesito saber", "quiero saber", "quiero preguntar",
+            "me puede decir", "me podría decir",
+            "me puede explicar", "me podría explicar",
+            "me puede ayudar", "me podría ayudar",
+            "me puede orientar", "me podría orientar",
+            "me puede aclarar", "me podría aclarar",
+            "me puede contar", "me podría contar",
+            "puede decirme", "podria decirme",
+            "puede explicarme", "podria explicarme",
+            "me dice", "me explica", "me cuenta",
+            "me ayudas", "me ayudas con",
+            # imperative inquiry forms
+            "explíqueme", "expliqueme", "cuénteme", "cuenteme",
+            "digame", "diga me", "aconseje", "aconsejeme",
+            "recomiende", "recomiendeme", "explique",
+            "indique", "indiqueme",
+            "orienteme", "informeme", "aclarame", "acláreme",
+            "expliqueme",
+        )
+        for p in inquiry_patterns:
+            if p in normalized:
+                return True
+
+        # -- General question/inquiry keywords (broad but low-risk in
+        #    CLOSING context where patient is explicitly invited to ask) --
+        general_q_keywords = (
+            "pregunta", "duda", "inquietud", "consultar",
+            "consulta",
+        )
+        for kw in general_q_keywords:
+            if kw in normalized:
+                return True
+
+        # -- Colombian-regionalism inquiry openers -----------------------
+        colombian_inquiries = (
+            "oiga doctor", "oiga doc", "oiga", "vea pues",
+            "vea doctor",
+        )
+        for p in colombian_inquiries:
+            if p in normalized:
+                return True
+
+        # -- "Is it normal?" patterns -----------------------------------
+        normal_question_patterns = (
+            "es normal", "sera normal", "es grave",
+            "sera grave", "es peligroso", "sera peligroso",
+            "sera malo", "es malo",
+            "puedo comer", "puedo tomar", "puedo hacer",
+            "se puede", "se pueden",
+        )
+        for p in normal_question_patterns:
+            if p in normalized:
                 return True
 
         return False

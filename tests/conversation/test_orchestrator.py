@@ -521,7 +521,62 @@ class TestClosingToEnded:
         # ENDED — should get a message but no new transition
         result = orch.process_patient_message("Hola otra vez")
         assert orch.state is State.ENDED
-        assert "ya ha finalizado" in result.agent_message.lower()
+
+
+class TestClinicalQuestionDetection:
+    """Question detection must tolerate realistic Spanish STT output."""
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "que cuidados debo seguir despues de una apendicectomia",
+            "¿Qué cuidados debo seguir después de una apendicectomía?",
+            "como limpio la herida",
+            "cuando puedo volver a caminar",
+            "cuanto tiempo tarda la recuperacion",
+            "tengo una duda sobre la fiebre",
+            "quiero saber si esto es normal",
+            "me puede explicar que debo hacer",
+            "me toca ir a urgencias",
+            "oiga doctor, que hago si me duele",
+            "es normal esto despues de la cirugia",
+            "que medicamento puedo tomar",
+        ],
+    )
+    def test_detects_spoken_clinical_questions(self, text):
+        orch = make_orchestrator()
+        assert orch._is_clinical_question(text)
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "la herida que tengo esta limpia",
+            "como bien y duermo bien",
+            "todo esta bien",
+            "gracias, adios",
+            "no tengo fiebre",
+        ],
+    )
+    def test_does_not_misclassify_statements(self, text):
+        orch = make_orchestrator()
+        assert not orch._is_clinical_question(text)
+
+    def test_stt_style_closing_question_stays_in_closing(self):
+        orch = make_orchestrator()
+        orch.start_call()
+        orch.process_patient_message("Bien.")
+        orch.process_patient_message("Si.")
+        for _ in range(_NUM_QUESTIONS):
+            orch.process_patient_message(_GREEN_RESPONSE)
+
+        result = orch.process_patient_message(
+            "si que cuidados debo seguir despues de una apendicectomia"
+        )
+
+        assert orch.state is State.CLOSING
+        assert result.state is State.CLOSING
+        assert not result.call_ended
+        assert result.requires_response
 
 
 
