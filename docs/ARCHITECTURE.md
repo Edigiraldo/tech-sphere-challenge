@@ -44,15 +44,15 @@ remains future work.
 │  │ adapters │  │ orchestrate │  │ retrieve  │  │ list, delete│     │
 │  └─────┬────┘  └──────┬──────┘  └─────┬─────┘  └──────┬──────┘     │
 │        │              │               │               │             │
-│  ┌─────┴──────────────┴───────────────┴───────────────┴──────┐     │
-│  │  llm/           Llama 3.3 70B (Groq) adapter               │     │
-│  └────────────────────────────────────────────────────────────┘     │
-│        │              │                                             │
-│  ┌─────┴────┐  ┌──────┴──────┐                                      │
-│  │decision/ │  │ summaries/  │                                      │
-│  │escalate  │  │ structured  │                                      │
-│  │classify  │  │ call record │                                      │
-│  └─────┬────┘  └──────┬──────┘                                      │
+│  ┌─────┴──────┐  ┌────┴────────┐  ┌───┴──────────────┐              │
+│  │ decision/  │  │ summaries/ │  │ llm/ (conditional)│              │
+│  │ GREEN/YELLOW│  │ structured │  │ CLOSING clinical  │              │
+│  │ /RED safety │  │ call record│  │ questions only    │              │
+│  └─────┬──────┘  └────┬────────┘  └───┬──────────────┘              │
+│        │               │              │                              │
+│        │      GREEN/YELLOW deterministic; RED ends immediately       │
+│        │               │              │                              │
+│        └───────────────┴──────────────┘                              │
 │        │              │                                             │
 │  ┌─────┴──────────────┴──────┐                                      │
 │  │  metrics/                 │                                      │
@@ -77,11 +77,11 @@ remains future work.
 |--------|---------------|-------------|
 | `api/` | HTTP REST surface. Validates inputs, delegates to domain modules. Includes calls, documents, RAG, and metrics routers. WebSocket endpoints are not yet implemented. | Only layer the browser touches. No business logic. |
 | `voice/` | STT and TTS adapters behind a common interface. | Pure I/O adapter. Owns no state, patient data, or clinical knowledge. |
-| `conversation/` | Call state machine: greeting → consent → structured questions → close. Composes prompts from patient profile + RAG chunks, calls `llm/` for reasoning, `decision/` for classification. | Owns turn state and prompt assembly. Never calls `documents/` or touches persistence/embeddings directly. |
+| `conversation/` | Call state machine: greeting → consent → structured questions → close. Classifies each follow-up answer before downstream processing. Uses deterministic responses for GREEN/first-YELLOW, terminates RED immediately, and calls RAG + `llm/` only for clinical questions during CLOSING. | Owns turn state and prompt assembly. Never calls `documents/` or touches persistence/embeddings directly. |
 | `llm/` | Adapter for **Llama 3.3 70B Versatile** via Groq Cloud with validated structured JSON, grounding, prompt-injection checks, and safe fallbacks. | Knows nothing about voice, documents, RAG, or escalation. Pure text-in/text-out. |
 | `rag/` | Ingestion (extract → chunk → embed BGE-M3 → store in ChromaDB) and retrieval (embed query → similarity search → return chunks + metadata). | Owns the embedding model, ChromaDB collection, chunking and retrieval. Does not own document lifecycle or know about patients/conversations. |
 | `documents/` | Document lifecycle: upload, list, status, delete. Orchestrates metadata in SQLite and triggers RAG ingestion/deletion. | Calls `rag/` for ingestion and purge. Does not call `rag/` for retrieval. |
-| `decision/` | Escalation classifier (Green / Yellow / Red). Runs after every LLM response using explicit symptom rules cross-checked against the LLM's classification. | Isolated from RAG, voice, and documents. Produces a verdict; does not modify conversation flow. Conservative: false negatives are catastrophic. |
+| `decision/` | Escalation classifier (Green / Yellow / Red). Runs on patient answers before any RAG/LLM call during QUESTIONS, using explicit symptom rules, thresholds, negation handling, and ambiguity detection. | Isolated from RAG, voice, documents, and LLM output. Produces a verdict consumed by `conversation/`. Conservative: false negatives are catastrophic. |
 | `summaries/` | At call end, produces a structured summary (patient, procedure, symptoms, decision, cited sources, next steps). SQLite persistence of the summary record is handled by the `persistence/` module. | Write-only, read-only on conversation history. |
 | `metrics/` | Observes latency (P50/P95), token consumption, model invocations, RAG queries, estimated cost. The collector module feeds read-only typed ``GET /metrics/summary``, ``GET /metrics/calls``, and ``GET /metrics/calls/{call_id}`` endpoints plus a metrics frontend view. The collector and reporting API are distinct concerns. | Non-blocking observer. Never modifies application behavior. |
 | `persistence/` | SQLite (calls, turns, summaries, document metadata, alerts) and ChromaDB (chunks, embeddings, source metadata). | Only owning modules write. `rag/` owns ChromaDB; `documents/`, `conversation/`, `summaries/`, `decision/` own their SQLite tables. |
