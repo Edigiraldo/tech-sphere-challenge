@@ -332,6 +332,7 @@ El enlace debe mantenerse con permisos de visualización para el jurado.
 
 La documentación del proyecto incluye:
 
+- [Informe final](INFORME_FINAL.md)
 - [Diagrama de arquitectura](docs/ARCHITECTURE-DIAGRAM.md)
 - [Arquitectura técnica completa](docs/ARCHITECTURE.md)
 - [Estado del proyecto](docs/STATUS.md)
