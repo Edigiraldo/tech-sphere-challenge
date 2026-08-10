@@ -100,7 +100,7 @@ Backend (FastAPI)
 
 ### D2: STT — Groq Whisper Large V3
 
-**Alternativas:** Whisper local,其他 servicios de STT.
+**Alternativas:** Whisper local, otros servicios de STT.
 
 **Por qué:** transcripción en español con latencia ultra-baja vía Groq Cloud. Implementado en `backend/voice/groq.py` detrás del Protocolo `SttProvider`.
 
@@ -190,12 +190,35 @@ Ingestión idempotente: re-ejecutar es seguro, los duplicados se detectan por ha
 
 ### Prompt del sistema (español)
 
-El orquestador construye el prompt para el LLM incluyendo:
+El prompt implementado en `backend/llm/adapter.py` comienza así:
+
+```text
+Eres un asistente clínico virtual que ayuda a pacientes postoperatorios
+en Colombia. Responde ÚNICAMENTE basándote en las fuentes proporcionadas.
+```
+
+Sus reglas principales son:
 
 - Rol del agente como asistente de seguimiento postoperatorio.
 - Instrucción de responder solo con base en el contexto RAG proporcionado.
 - Restricción de no inventar medicamentos, dosis o procedimientos.
+- Citar siempre el `chunk_id` exacto de cada afirmación.
+- Responder en español colombiano, con tono claro y empático.
+- Marcar `insufficient_knowledge: true` cuando las fuentes no sean suficientes.
 - Formato de salida JSON estructurado con campos obligatorios.
+
+La plantilla de usuario implementada incluye la pregunta del paciente y las fuentes
+con sus identificadores, archivos y páginas:
+
+```text
+PREGUNTA DEL PACIENTE:
+{query}
+
+FUENTES DISPONIBLES:
+{context}
+
+Responde exclusivamente en formato JSON.
+```
 
 ### Configuración del LLM
 
@@ -222,8 +245,11 @@ El orquestador construye el prompt para el LLM incluyendo:
 
 ### Cobertura
 
-- 999 pruebas rápidas (pytest): dataset, salud, chunking, LLM mock, RAG API, persistencia, voz, conversación, escalamiento, resúmenes, métricas, frontend.
-- 27 pruebas lentas (`pytest -m slow`): pipeline RAG completo con BGE-M3 y PDFs reales.
+La suite rápida (`pytest`) cubre dataset, salud, chunking, LLM mock, RAG API,
+persistencia, voz, conversación, escalamiento, resúmenes, métricas y frontend.
+La suite lenta (`pytest -m slow`) cubre el pipeline RAG completo con BGE-M3 y PDFs
+reales. Los conteos deben obtenerse de la ejecución final que acompañe la entrega y
+no se fijan aquí para evitar reportar cifras obsoletas.
 
 ### Estrategia
 
@@ -278,7 +304,8 @@ Y una vista frontend en `/metrics`.
 5. **Fase 6:** interfaz de navegador con MediaRecorder.
 6. **Fase 7:** consola de administración.
 7. **Fase 8:** métricas + pulido.
-8. **Fase 9:** corrección del detector de preguntas habladas en STT.
+8. **Iteración de estabilización:** corrección del detector de preguntas habladas en
+   transcripciones STT sin tildes ni puntuación.
 
 ### Evaluación y ajuste de prompts
 
@@ -287,7 +314,28 @@ Y una vista frontend en `/metrics`.
 - Se implementó detección de inyección de prompts a nivel de entrada.
 - Se ajustaron umbrales de suficiencia RAG para evitar respuestas débiles.
 
-## 11. Con más tiempo cambiaría
+## 11. Evidencias de la entrega
+
+La evidencia audiovisual principal está en el video de demo de la entrega. Debe mostrar
+la llamada de voz, una respuesta normal, una alerta `RED`, el ciclo de conocimiento vivo
+desde `/admin`, las citas RAG, el rechazo de prompt injection y la respuesta a las dos
+preguntas de cierre del reto.
+
+La evidencia técnica reproducible está en:
+
+- Arquitectura: `docs/ARCHITECTURE.md` y `docs/ARCHITECTURE-DIAGRAM.md`.
+- Pruebas del orquestador: `tests/conversation/test_orchestrator.py`.
+- Pruebas RAG: `tests/rag/` y `tests/test_rag_api.py`.
+- Pruebas de documentos: `tests/test_documents.py`.
+- Pruebas de voz: `tests/test_voice.py` y `tests/voice/test_tts.py`.
+- Pruebas de métricas: `tests/metrics/` y `tests/test_metrics_api.py`.
+- Configuración real del prompt: `backend/llm/adapter.py`.
+- Modelo y dependencias: `pyproject.toml`, `.env` local y `backend/llm/config.py`.
+
+La autorización del organizador para utilizar el sucesor vigente de un modelo retirado
+debe conservarse como evidencia externa del informe y presentarse junto con la entrega.
+
+## 12. Con más tiempo cambiaría
 
 1. **WebSocket/streaming:** transporte de audio en tiempo real para reducir latencia percibida.
 2. **Preguntas adaptativas:** generar preguntas de seguimiento basadas en el contexto del paciente en vez de un cuestionario fijo.
@@ -298,7 +346,7 @@ Y una vista frontend en `/metrics`.
 7. **Tests de audio end-to-end:** pruebas automatizadas que validan el flujo completo de micrófono a altavoz.
 8. **Optimización de costos:** cache de respuestas frecuentes y optimización de tokens.
 
-## 12. Limitaciones conocidas
+## 13. Limitaciones conocidas
 
 1. El cuestionario de seguimiento es fijo (6 preguntas hardcodeadas).
 2. Las preguntas clínicas con RAG solo funcionan durante `CLOSING`.

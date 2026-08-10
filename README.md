@@ -296,6 +296,14 @@ para coordinar el desarrollo con el pipeline planificador/codificador/auditor.
 
 ## Documentación
 
+### Video de demo
+
+Video funcional de demostración para el jurado:
+
+https://drive.google.com/file/d/10T2mC5O_yOeEs7ysnRf4_74Dv_dqYsAH/view?usp=drive_link
+
+El enlace debe mantenerse con permisos de visualización para el jurado.
+
 La documentación del proyecto incluye:
 
 - [Diagrama de arquitectura](docs/ARCHITECTURE-DIAGRAM.md)
