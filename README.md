@@ -221,7 +221,7 @@ primer uso.
 │   │   └── call_store.py  Almacenamiento en memoria de llamadas
 │   ├── llm/               Adaptador de modelo de lenguaje Groq Llama 3.3
 │   │   ├── __init__.py
-│   │   ├── config.py      Configuración (Llama 3.2 3B local por defecto, timeout configurable)
+│   │   ├── config.py      Configuración del modelo Groq Llama 3.3
 │   │   └── adapter.py     Generación validada con citas trazables y fallback extractivo
 │   ├── data/              Acceso tipado de solo lectura a los datos sintéticos
 │   ├── rag/               RAG pipeline (ingestión, recuperación)

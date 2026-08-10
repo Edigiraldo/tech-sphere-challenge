@@ -214,7 +214,7 @@ adapter contracts, and phased implementation plan are documented in
   declared as explicit base dependencies in ``pyproject.toml``; ``numpy`` removed from
   ``voice`` extra; ``kokoro>=0.7.0`` copied to ``dev`` extra.
 
-Test totals: 999 fast tests (pytest), 27 slow tests (`pytest -m slow`), 1026 tests total.
+Test totals: 948 fast tests (pytest), 27 slow tests (`pytest -m slow`), 975 tests total.
 
 ## In Progress
 
