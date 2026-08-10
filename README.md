@@ -298,6 +298,7 @@ para coordinar el desarrollo con el pipeline planificador/codificador/auditor.
 
 La documentación del proyecto incluye:
 
+- [Diagrama de arquitectura](docs/ARCHITECTURE-DIAGRAM.md)
 - [Arquitectura técnica completa](docs/ARCHITECTURE.md)
 - [Estado del proyecto](docs/STATUS.md)
 

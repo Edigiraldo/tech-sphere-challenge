@@ -86,6 +86,7 @@ docs/                  Maintained project documentation
 - Inspect only the files listed by the planner and their direct dependencies.
 - Keep implementation details in code, docstrings, and tests.
 - Keep stable architectural facts in `docs/ARCHITECTURE.md`.
+- Use `docs/ARCHITECTURE-DIAGRAM.md` for the current visual runtime and deployment flows.
 - Keep current progress, milestones, and blockers in `docs/STATUS.md`.
 - Track unresolved architectural decisions in `docs/ARCHITECTURE.md` § Open Decisions.
 - Remove stale documentation when the behavior it describes is removed.
