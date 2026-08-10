@@ -595,7 +595,8 @@ class ConversationOrchestrator:
         # -- Compound "como" patterns (interrogative; "como" alone can
         #    mean "I eat", so we only match it with following context) --
         como_patterns = (
-            "como debo", "como puedo", "como limpio", "como esta", "como estan",
+            "como debo", "como deberia", "como puedo", "como limpio",
+            "como cuidarme", "como esta", "como estan",
             "como me", "como le", "como se", "como hago",
             "como va", "como van", "como es", "como son",
             "como saber", "como saber si", "como reconozco",

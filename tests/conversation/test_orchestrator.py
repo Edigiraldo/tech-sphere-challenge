@@ -532,6 +532,7 @@ class TestClinicalQuestionDetection:
             "que cuidados debo seguir despues de una apendicectomia",
             "¿Qué cuidados debo seguir después de una apendicectomía?",
             "como limpio la herida",
+            "si, que como deberia yo cuidarme ante una apendicectomia",
             "cuando puedo volver a caminar",
             "cuanto tiempo tarda la recuperacion",
             "tengo una duda sobre la fiebre",
