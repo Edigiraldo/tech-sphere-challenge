@@ -1,154 +1,155 @@
-# Architecture
+# Arquitectura
 
-## Overview
+## Visión general
 
-A single deployable Python backend (modular monolith) serving a browser frontend. The
-application implements a Spanish voice agent for postoperative follow-up using synthetic
-Colombian patient data.
+Un backend Python desplegable único (monolito modular) que sirve un frontal de
+navegador. La aplicación implementa un agente de voz en español para seguimiento
+postoperatorio usando datos sintéticos de pacientes colombianos.
 
-The architecture is designed for the challenge's constraints: reproducible setup in
-15 minutes or less, permitted language models only, local-first RAG with traceable
-sources, conservative escalation, a REST API for document lifecycle management,
-a browser voice-call interface with real microphone capture, an administration
-console at ``/admin``, and a read-only metrics API. WebSocket/streaming transport
-remains future work.
+La arquitectura está diseñada para las restricciones del reto: configuración
+reproducible en 15 minutos o menos, solo modelos de lenguaje permitidos, RAG
+local-first con fuentes trazables, escalamiento conservador, una API REST para la
+gestión del ciclo de vida de documentos, una interfaz de llamada de voz en el
+navegador con captura real de micrófono, una consola de administración en ``/admin``
+y una API de métricas de solo lectura. El transporte WebSocket/streaming queda como
+trabajo futuro.
 
-## Architecture Diagram
+## Diagrama de arquitectura
 
 ```text
 ┌──────────────────────────────────────────────────────────────────────┐
-│                           BROWSER                                    │
+│                           NAVEGADOR                                   │
 │                                                                      │
 │  ┌──────────────────────────┐     ┌──────────────────────────────┐  │
-│  │  Call Interface          │     │  Administration Console       │  │
-│  │  - Patient selection     │     │  - Upload document            │  │
-│  │  - MediaRecorder capture │     │  - List documents + status    │  │
-│  │  - WAV playback          │     │  - Status polling + refresh   │  │
-│  │  - Transcript + history  │     │  - Delete document + chunks   │  │
-│  │  - Citations + escalation│     │                               │  │
+│  │  Interfaz de llamada     │     │  Consola de administración    │  │
+│  │  - Selección de paciente │     │  - Cargar documento           │  │
+│  │  - Captura MediaRecorder │     │  - Listar documentos + estado │  │
+│  │  - Reproducción WAV      │     │  - Sondeo de estado + refresco│  │
+│  │  - Transcripción + hist. │     │  - Eliminar documento + chunks│  │
+│  │  - Citas + escalamiento  │     │                               │  │
 │  └────────────┬─────────────┘     └──────────────┬───────────────┘  │
 └───────────────┼──────────────────────────────────┼───────────────────┘
                 │                                  │
-           HTTP REST                         HTTP REST
+            HTTP REST                         HTTP REST
                 │                                  │
 ┌───────────────┴──────────────────────────────────┴───────────────────┐
-│                     APPLICATION BACKEND (Python)                     │
+│                     BACKEND DE APLICACIÓN (Python)                    │
 │                                                                      │
 │  ┌──────────────────────────────────────────────────────────────┐   │
-│  │  api/                      REST endpoints                     │   │
+│  │  api/                      Endpoints REST                     │   │
 │  └──────────────────────────────────────────────────────────────┘   │
 │        │              │               │               │             │
 │  ┌─────┴────┐  ┌──────┴──────┐  ┌─────┴─────┐  ┌──────┴──────┐     │
 │  │ voice/   │  │conversation/│  │  rag/     │  │ documents/  │     │
-│  │ STT, TTS │  │ state, flow │  │ ingest,   │  │ upload,     │     │
-│  │ adapters │  │ orchestrate │  │ retrieve  │  │ list, delete│     │
+│  │ STT, TTS │  │ estado,     │  │ ingerir,  │  │ cargar,     │     │
+│  │ adaptad. │  │ flujo orq.  │  │ recuperar │  │ listar, elim│     │
 │  └─────┬────┘  └──────┬──────┘  └─────┬─────┘  └──────┬──────┘     │
 │        │              │               │               │             │
 │  ┌─────┴──────┐  ┌────┴────────┐  ┌───┴──────────────┐              │
-│  │ decision/  │  │ summaries/ │  │ llm/ (conditional)│              │
-│  │ GREEN/YELLOW│  │ structured │  │ CLOSING clinical  │              │
-│  │ /RED safety │  │ call record│  │ questions only    │              │
+│  │ decision/  │  │ summaries/ │  │ llm/ (condicional) │              │
+│  │ GREEN/     │  │ registro   │  │ Solo preguntas     │              │
+│  │ YELLOW/RED │  │ estructur. │  │ clínicas en CIERRE │              │
 │  └─────┬──────┘  └────┬────────┘  └───┬──────────────┘              │
-│        │               │              │                              │
-│        │      GREEN/YELLOW deterministic; RED ends immediately       │
-│        │               │              │                              │
-│        └───────────────┴──────────────┘                              │
+│        │              │               │                              │
+│        │   GREEN/YELLOW determinista; RED termina inmediatamente     │
+│        │              │               │                              │
+│        └──────────────┴──────────────┘                              │
 │        │              │                                             │
 │  ┌─────┴──────────────┴──────┐                                      │
 │  │  metrics/                 │                                      │
-│  │  latency, tokens, cost    │                                      │
+│  │  latencia, tokens, costo  │                                      │
 │  └───────────────────────────┘                                      │
 │        │                                                            │
 │  ┌─────┴───────────────────────────────────────────────┐            │
 │  │  persistence/                                       │            │
 │  │  ┌─────────────────┐  ┌──────────────────────────┐  │            │
 │  │  │ SQLite           │  │ ChromaDB                 │  │            │
-│  │  │ - calls          │  │ - document chunks        │  │            │
-│  │  │ - summaries      │  │ - embeddings (BGE-M3)    │  │            │
-│  │  │ - documents meta │  │ - source metadata        │  │            │
+│  │  │ - llamadas       │  │ - chunks de documentos   │  │            │
+│  │  │ - resúmenes      │  │ - embeddings (BGE-M3)    │  │            │
+│  │  │ - metadatos docs │  │ - metadatos de fuente    │  │            │
 │  │  └─────────────────┘  └──────────────────────────┘  │            │
 │  └─────────────────────────────────────────────────────┘            │
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
-## Module Boundaries
+## Límites de módulos
 
-| Module | Responsibility | Key boundary |
-|--------|---------------|-------------|
-| `api/` | HTTP REST surface. Validates inputs, delegates to domain modules. Includes calls, documents, RAG, and metrics routers. WebSocket endpoints are not yet implemented. | Only layer the browser touches. No business logic. |
-| `voice/` | STT and TTS adapters behind a common interface. | Pure I/O adapter. Owns no state, patient data, or clinical knowledge. |
-| `conversation/` | Call state machine: greeting → consent → structured questions → close. Classifies each follow-up answer before downstream processing. Uses deterministic responses for GREEN/first-YELLOW, terminates RED immediately, and calls RAG + `llm/` only for clinical questions during CLOSING. | Owns turn state and prompt assembly. Never calls `documents/` or touches persistence/embeddings directly. |
-| `llm/` | Adapter for **Llama 3.3 70B Versatile** via Groq Cloud with validated structured JSON, grounding, prompt-injection checks, and safe fallbacks. | Knows nothing about voice, documents, RAG, or escalation. Pure text-in/text-out. |
-| `rag/` | Ingestion (extract → chunk → embed BGE-M3 → store in ChromaDB) and retrieval (embed query → similarity search → return chunks + metadata). | Owns the embedding model, ChromaDB collection, chunking and retrieval. Does not own document lifecycle or know about patients/conversations. |
-| `documents/` | Document lifecycle: upload, list, status, delete. Orchestrates metadata in SQLite and triggers RAG ingestion/deletion. | Calls `rag/` for ingestion and purge. Does not call `rag/` for retrieval. |
-| `decision/` | Escalation classifier (Green / Yellow / Red). Runs on patient answers before any RAG/LLM call during QUESTIONS, using explicit symptom rules, thresholds, negation handling, and ambiguity detection. | Isolated from RAG, voice, documents, and LLM output. Produces a verdict consumed by `conversation/`. Conservative: false negatives are catastrophic. |
-| `summaries/` | At call end, produces a structured summary (patient, procedure, symptoms, decision, cited sources, next steps). SQLite persistence of the summary record is handled by the `persistence/` module. | Write-only, read-only on conversation history. |
-| `metrics/` | Observes latency (P50/P95), token consumption, model invocations, RAG queries, estimated cost. The collector module feeds read-only typed ``GET /metrics/summary``, ``GET /metrics/calls``, and ``GET /metrics/calls/{call_id}`` endpoints plus a metrics frontend view. The collector and reporting API are distinct concerns. | Non-blocking observer. Never modifies application behavior. |
-| `persistence/` | SQLite (calls, turns, summaries, document metadata, alerts) and ChromaDB (chunks, embeddings, source metadata). | Only owning modules write. `rag/` owns ChromaDB; `documents/`, `conversation/`, `summaries/`, `decision/` own their SQLite tables. |
+| Módulo | Responsabilidad | Límite clave |
+|--------|----------------|-------------|
+| `api/` | Superficie HTTP REST. Valida entradas, delega a módulos de dominio. Incluye routers de llamadas, documentos, RAG y métricas. Los endpoints WebSocket aún no están implementados. | Única capa que el navegador toca. Sin lógica de negocio. |
+| `voice/` | Adaptadores STT y TTS tras una interfaz común. | Adaptador de E/S puro. No posee estado, datos de pacientes ni conocimiento clínico. |
+| `conversation/` | Máquina de estados de llamada: saludo → consentimiento → preguntas estructuradas → cierre. Clasifica cada respuesta de seguimiento antes del procesamiento posterior. Usa respuestas deterministas para GREEN/primer-YELLOW, termina RED inmediatamente y llama a RAG + `llm/` solo para preguntas clínicas durante CLOSING. | Posee el estado de turno y el ensamblaje de prompts. Nunca llama a `documents/` ni toca directamente persistencia/embeddings. |
+| `llm/` | Adaptador para **Llama 3.3 70B Versatile** vía Groq Cloud con JSON estructurado validado, controles de fundamentación, detección de inyección de prompts y fallbacks seguros. | No sabe nada de voz, documentos, RAG o escalamiento. Texto puro de entrada/salida. |
+| `rag/` | Ingestión (extraer → chunking → embedding BGE-M3 → almacenar en ChromaDB) y recuperación (embedding de consulta → búsqueda por similitud → devolver chunks + metadatos). | Posee el modelo de embedding, la colección ChromaDB, el chunking y la recuperación. No posee el ciclo de vida de documentos ni conoce pacientes/conversaciones. |
+| `documents/` | Ciclo de vida de documentos: cargar, listar, estado, eliminar. Orquesta metadatos en SQLite y dispara la ingestión/eliminación de RAG. | Llama a `rag/` para ingestión y purgado. No llama a `rag/` para recuperación. |
+| `decision/` | Clasificador de escalamiento (Green / Yellow / Red). Se ejecuta sobre las respuestas del paciente antes de cualquier llamada RAG/LLM durante QUESTIONS, usando reglas explícitas de síntomas, umbrales, manejo de negaciones y detección de ambigüedad. | Aislado de RAG, voz, documentos y salida del LLM. Produce un veredicto consumido por `conversation/`. Conservador: los falsos negativos son catastróficos. |
+| `summaries/` | Al finalizar la llamada, produce un resumen estructurado (paciente, procedimiento, síntomas, decisión, fuentes citadas, próximos pasos). La persistencia SQLite del registro de resumen la maneja el módulo `persistence/`. | Solo escritura, solo lectura sobre el historial de conversación. |
+| `metrics/` | Observa latencia (P50/P95), consumo de tokens, invocaciones del modelo, consultas RAG, costo estimado. El módulo colector alimenta endpoints tipados de solo lectura ``GET /metrics/summary``, ``GET /metrics/calls`` y ``GET /metrics/calls/{call_id}`` más una vista frontal de métricas. El colector y la API de reporte son responsabilidades distintas. | Observador no bloqueante. Nunca modifica el comportamiento de la aplicación. |
+| `persistence/` | SQLite (llamadas, turnos, resúmenes, metadatos de documentos, alertas) y ChromaDB (chunks, embeddings, metadatos de fuente). | Solo los módulos propietarios escriben. `rag/` posee ChromaDB; `documents/`, `conversation/`, `summaries/`, `decision/` poseen sus tablas SQLite. |
 
-## Data Flows
+## Flujos de datos
 
-### Voice conversation (per turn)
+### Conversación de voz (por turno)
 
-The current transport is **HTTP REST** with base64-encoded WAV audio
-(``POST /calls/{call_id}/turn``). The browser captures audio via MediaRecorder
-and sends base64-encoded WAV chunks; responses are decoded and played back as
-WAV audio. WebSocket/streaming transport remains future work.
+El transporte actual es **HTTP REST** con audio WAV codificado en base64
+(``POST /calls/{call_id}/turn``). El navegador captura audio mediante MediaRecorder
+y envía fragmentos WAV codificados en base64; las respuestas se decodifican y
+reproducen como audio WAV. El transporte WebSocket/streaming queda como trabajo
+futuro.
 
-The orchestrator implements a **safety-first flow**: each patient answer is
-classified by the ``decision/`` module before any RAG/LLM call. GREEN and
-first-YELLOW classifications receive deterministic Spanish acknowledgments
-without RAG/LLM. RED answers short-circuit immediately to ENDED with an urgent
-safety message and ``call_ended=True`` (no further turns possible).
-Two consecutive YELLOW results
-trigger escalation. Clinical questions during CLOSING are answered via
-RAG+LLM with citations; non-questions end the call.
-
-```
-Browser (base64 WAV via HTTP POST) → voice/STT → conversation/ orchestrator:
-  1. Load patient profile + turn history
-  2. **Classify** patient answer against symptom domain (decision/classify)
-  3a. If RED → short-circuit: no RAG/LLM, urgent safety message,
-       transition directly to ENDED, ``call_ended=True``
-  3b. If GREEN / first YELLOW → deterministic acknowledgment, ask next
-      question (no RAG/LLM)
-  3c. If second consecutive YELLOW → escalate to CLOSING
-  4. (CLOSING only) If clinical question → call rag/retrieve + llm/generate
-     with citations, stay in CLOSING
-  5. If CLOSING non-question → end call
-  → voice/TTS → Browser (base64 WAV in HTTP response)
-```
-
-### Document lifecycle
+El orquestador implementa un **flujo que prioriza la seguridad**: cada respuesta del
+paciente es clasificada por el módulo ``decision/`` antes de cualquier llamada
+RAG/LLM. Las clasificaciones GREEN y primer YELLOW reciben acuses deterministas en
+español sin RAG/LLM. Las respuestas RED derivan inmediatamente a ENDED con un mensaje
+urgente de seguridad y ``call_ended=True`` (no se permiten más turnos). Dos resultados
+YELLOW consecutivos disparan el escalamiento. Las preguntas clínicas durante CLOSING se
+responden mediante RAG+LLM con citas; las no-preguntas finalizan la llamada.
 
 ```
-Upload:   Browser → api/ → documents/upload
-           → SHA-256 content hash computed
-           → If active record with same hash exists → return existing (idempotent)
-           → persistence/SQLite (metadata + content_hash)
-           → rag/ingest → ChromaDB (chunks + embeddings, keyed by document_id)
-Delete:   Browser → api/ → documents/delete → rag/delete_chunks (ChromaDB purge by document_id)
-           → persistence/SQLite (soft-delete: status='deleted', row preserved for audit)
-
-Reconcile:  POST /documents/reconcile
-           → Compare ChromaDB document_ids vs SQLite registry
-           → Report orphaned ChromaDB IDs (missing from registry or deleted with lingering chunks)
-           → Report missing ChromaDB entries (SQLite ready/processing but no indexed chunks)
-           → ?clean=true deletes orphaned ChromaDB chunks
+Navegador (WAV base64 vía HTTP POST) → voice/STT → conversation/ orquestador:
+  1. Cargar perfil del paciente + historial de turnos
+  2. **Clasificar** respuesta del paciente contra el dominio de síntomas (decision/classify)
+  3a. Si RED → derivación inmediata: sin RAG/LLM, mensaje urgente de seguridad,
+       transición directa a ENDED, ``call_ended=True``
+  3b. Si GREEN / primer YELLOW → acuse determinista, siguiente
+       pregunta (sin RAG/LLM)
+  3c. Si segundo YELLOW consecutivo → escalar a CLOSING
+  4. (Solo CLOSING) Si pregunta clínica → llamar rag/retrieve + llm/generate
+      con citas, permanecer en CLOSING
+  5. Si CLOSING no-pregunta → finalizar llamada
+  → voice/TTS → Navegador (WAV base64 en respuesta HTTP)
 ```
 
-### RAG retrieval during conversation
+### Ciclo de vida de documentos
+
+```
+Carga:    Navegador → api/ → documents/upload
+           → Calcular hash SHA-256 del contenido
+           → Si existe registro activo con el mismo hash → devolver existente (idempotente)
+           → persistence/SQLite (metadatos + content_hash)
+           → rag/ingest → ChromaDB (chunks + embeddings, indexados por document_id)
+Eliminar: Navegador → api/ → documents/delete → rag/delete_chunks (purgado ChromaDB por document_id)
+           → persistence/SQLite (borrado suave: status='deleted', fila preservada para auditoría)
+
+Reconciliar:  POST /documents/reconcile
+           → Comparar document_ids de ChromaDB vs registro SQLite
+           → Reportar IDs huérfanos en ChromaDB (faltantes en el registro o eliminados con chunks residuales)
+           → Reportar entradas faltantes en ChromaDB (SQLite ready/processing pero sin chunks indexados)
+           → ?clean=true elimina chunks huérfanos de ChromaDB
+```
+
+### Recuperación RAG durante la conversación
 
 ```
 conversation/ → rag/retrieve(query, valid_document_ids) → BGE-M3 embed → ChromaDB top-k
-→ Filter out chunks whose document_id is deleted or unregistered
-→ chunks + metadata with traceable citations
-conversation/ assembles prompt with retrieved chunks and source citations
+→ Filtrar chunks cuyo document_id esté eliminado o no registrado
+→ chunks + metadatos con citas trazables
+conversation/ ensambla el prompt con los chunks recuperados y las citas de fuente
 ```
 
-## Persistence Boundaries
+## Límites de persistencia
 
-### SQLite schema (conceptual)
+### Esquema SQLite (conceptual)
 
 ```
 calls                — call_id, paciente_id, nombre_completo, procedimiento,
@@ -164,185 +165,200 @@ documents            — document_id, filename, status, uploaded_at, size_bytes,
 escalation_alerts    — alert_id, call_id, created_at, severity, reason, domain
 ```
 
-Document deletion uses **soft deletion**: deleting a document changes its ``status``
-to ``deleted`` and purges ChromaDB chunks, but the SQLite row is retained for
-auditability. The ``error_message`` column stores a human-readable description
-when ``status`` is ``failed``.
+La eliminación de documentos usa **borrado suave**: eliminar un documento cambia su
+``status`` a ``deleted`` y purga los chunks de ChromaDB, pero la fila SQLite se
+conserva para auditabilidad. La columna ``error_message`` almacena una descripción
+legible por humanos cuando ``status`` es ``failed``.
 
-### ChromaDB schema
+### Esquema ChromaDB
 
 ```
 collection: clinical_knowledge
-  distance: cosine  (configured via hnsw:space metadata)
+  distance: cosine  (configurado mediante metadatos hnsw:space)
   id: uuid
-  embedding: BGE-M3 float vector (1024 dimensions, L2-normalised)
-  document: chunk text
+  embedding: vector float BGE-M3 (1024 dimensiones, normalizado L2)
+  document: texto del chunk
   metadata: document_id, source_filename, chunk_index, page_number, ingested_at (UTC ISO-8601)
 ```
 
-### Key rules
+### Reglas clave
 
-- Deleting a document must remove all ChromaDB chunks with matching `document_id` and soft-delete the SQLite row (``status = 'deleted'``). The metadata row is retained for auditability. No orphaned ChromaDB chunks.
-- Duplicate uploads are detected via SHA-256 content hash: if an active (non-deleted) record exists with the same hash, the service returns the existing record without creating a new one. If the original was deleted, a new record is created.
-- Retrieval automatically excludes chunks whose ``document_id`` is not in the SQLite registry or whose registry status is ``DELETED``, ensuring only active, registered documents contribute to search results.
-- Reconciliation (``POST /documents/reconcile``) compares ChromaDB document IDs against the SQLite registry and can clean orphaned chunks on demand.
-- Corpus ingestion is explicit (``scripts/ingest_corpus.py``) and never runs at startup. It is idempotent: re-running is safe as duplicates are detected by content hash.
-- Call data and summaries are never deleted through the document lifecycle API.
-- The vector store is rebuilt only on explicit re-index, never on restart.
-- Synthetic patient data is loaded from `dataset/` XLSX at startup and is read-only.
+- Eliminar un documento debe eliminar todos los chunks de ChromaDB con el `document_id`
+  correspondiente y hacer borrado suave de la fila SQLite (``status = 'deleted'``). La
+  fila de metadatos se conserva para auditabilidad. Sin chunks huérfanos en ChromaDB.
+- Las cargas duplicadas se detectan mediante hash SHA-256 del contenido: si existe un
+  registro activo (no eliminado) con el mismo hash, el servicio devuelve el registro
+  existente sin crear uno nuevo. Si el original fue eliminado, se crea un nuevo
+  registro.
+- La recuperación excluye automáticamente los chunks cuyo ``document_id`` no esté en
+  el registro SQLite o cuyo estado en el registro sea ``DELETED``, asegurando que solo
+  documentos activos y registrados contribuyan a los resultados de búsqueda.
+- La reconciliación (``POST /documents/reconcile``) compara los IDs de documento de
+  ChromaDB con el registro SQLite y puede limpiar chunks huérfanos bajo demanda.
+- La ingestión del corpus es explícita (``scripts/ingest_corpus.py``) y nunca se
+  ejecuta al inicio. Es idempotente: re-ejecutar es seguro ya que los duplicados se
+  detectan por hash de contenido.
+- Los datos de llamadas y resúmenes nunca se eliminan a través de la API de ciclo de
+  vida de documentos.
+- El almacén vectorial se reconstruye solo en re-indexación explícita, nunca al
+  reiniciar.
+- Los datos sintéticos de pacientes se cargan desde `dataset/` XLSX al inicio y son de
+  solo lectura.
 
-## Permitted Models and Voice Adapters
+## Modelos permitidos y adaptadores de voz
 
-The language model is **Llama 3.3 70B Versatile** via Groq Cloud, the current
-successor authorized by the challenge organizers. It provides fast inference,
-structured JSON output, and strong Spanish-language performance. The model is
-selected through ``LLM_MODEL`` and validated against the permitted Groq model
-allowlist.
+El modelo de lenguaje es **Llama 3.3 70B Versatile** vía Groq Cloud, el sucesor actual
+autorizado por los organizadores del reto. Proporciona inferencia rápida, salida JSON
+estructurada y buen rendimiento en español. El modelo se selecciona mediante
+``LLM_MODEL`` y se valida contra la lista blanca de modelos Groq permitidos.
 
-Voice adapters (STT and TTS) are free choice. Selected STT: **Groq Whisper Large V3**
-(resolved D2) — ultra-low-latency Spanish transcription via Groq Cloud, implemented
-in ``backend/voice/groq.py`` behind the ``SttProvider`` Protocol. Selected TTS:
-**Kokoro-82M** (resolved D3) — CPU-only Spanish voice (``ef_dora``), implemented in
-``backend/voice/tts/kokoro.py`` behind the ``TTSProvider`` Protocol. Adapters are
-selected at startup via configuration and wrapped behind a common interface so the
-conversation module never depends on a specific provider.
+Los adaptadores de voz (STT y TTS) son de libre elección. STT seleccionado:
+**Groq Whisper Large V3** (D2 resuelta) — transcripción en español de latencia
+ultra-baja vía Groq Cloud, implementado en ``backend/voice/groq.py`` tras el Protocolo
+``SttProvider``. TTS seleccionado: **Kokoro-82M** (D3 resuelta) — voz española solo
+CPU (``ef_dora``), implementado en ``backend/voice/tts/kokoro.py`` tras el Protocolo
+``TTSProvider``. Los adaptadores se seleccionan al inicio mediante configuración y se
+envuelven tras una interfaz común para que el módulo de conversación nunca dependa de
+un proveedor específico.
 
-## Safety and Validation Boundaries
+## Límites de seguridad y validación
 
-### Retrieval sufficiency gates
+### Controles de suficiencia de recuperación
 
-Before the LLM is invoked, the RAG retrieval pipeline applies quantitative
-quality gates to prevent weak or empty retrieval from reaching the model:
+Antes de invocar el LLM, el pipeline de recuperación RAG aplica controles de calidad
+cuantitativos para evitar que una recuperación débil o vacía llegue al modelo:
 
-1. **Similarity threshold** (default 0.25, env ``RAG_SIMILARITY_THRESHOLD``):
-   chunks below this cosine-similarity floor are discarded.
-2. **Minimum chunk count** (default 2, env ``RAG_MIN_CHUNKS``): at least this
-   many chunks must pass the similarity threshold.
-3. **Minimum average similarity** (default 0.30, env ``RAG_MIN_AVG_SIMILARITY``):
-   the mean similarity of all retrieved chunks must meet this bar.
+1. **Umbral de similitud** (defecto 0.25, env ``RAG_SIMILARITY_THRESHOLD``):
+   los chunks por debajo de este piso de similitud coseno se descartan.
+2. **Cantidad mínima de chunks** (defecto 2, env ``RAG_MIN_CHUNKS``): al menos esta
+   cantidad de chunks debe superar el umbral de similitud.
+3. **Similitud promedio mínima** (defecto 0.30, env ``RAG_MIN_AVG_SIMILARITY``):
+   la similitud media de todos los chunks recuperados debe alcanzar este nivel.
 
-When any gate fails, the ``RetrievalResult.sufficient`` flag is ``False``.
-Callers (API endpoint, orchestrator) fall back to ``insufficient_knowledge``
-without invoking the LLM — no weak context ever reaches the model.
+Cuando algún control falla, la bandera ``RetrievalResult.sufficient`` es ``False``.
+Los llamadores (endpoint API, orquestador) recurren a ``insufficient_knowledge`` sin
+invocar el LLM — ningún contexto débil llega al modelo.
 
-### Structured output validation
+### Validación de salida estructurada
 
-Before output reaches the patient, application code validates the LLM's structured
-response:
+Antes de que la salida llegue al paciente, el código de aplicación valida la respuesta
+estructurada del LLM:
 
-1. JSON parses and all required fields are present.
-2. Cited source `document_id` values exist in the document registry.
-3. The escalation signal is consistent with the symptom list and `decision/` classification.
-4. The patient-facing message contains no medication dose, invented procedure, or
-   clinical claim not traceable to a cited source.
-5. The message is in Spanish.
+1. El JSON se parsea y todos los campos requeridos están presentes.
+2. Los valores `document_id` de las fuentes citadas existen en el registro de
+   documentos.
+3. La señal de escalamiento es consistente con la lista de síntomas y la clasificación
+   de `decision/`.
+4. El mensaje dirigido al paciente no contiene dosis de medicamento, procedimiento
+   inventado ni afirmación clínica no trazable a una fuente citada.
+5. El mensaje está en español.
 
-If validation fails, the response is discarded and either retried or escalated to a
-safe fallback.
+Si la validación falla, la respuesta se descarta y se reintenta o se escala a un
+fallback seguro.
 
-### Post-hoc grounding validation
+### Validación de fundamentación post-hoc
 
-After the LLM produces a response, a secondary grounding validator
-(``_validate_grounding``) checks that:
+Después de que el LLM produce una respuesta, un validador secundario de fundamentación
+(``_validate_grounding``) verifica que:
 
-- All cited chunk IDs exist in the context and carry non-empty text.
-- When the answer mentions a medication dose, at least one cited excerpt
-  shares a significant token (>= 5 characters) with the answer.
+- Todos los IDs de chunk citados existan en el contexto y tengan texto no vacío.
+- Cuando la respuesta menciona una dosis de medicamento, al menos un extracto citado
+  comparta un token significativo (>= 5 caracteres) con la respuesta.
 
-Grounding warnings are logged server-side and exposed in ``validation_warnings``
-only when ``debug=True``.  They never reach the patient-facing output.
+Las advertencias de fundamentación se registran en el servidor y se exponen en
+``validation_warnings`` solo cuando ``debug=True``. Nunca llegan a la salida visible
+para el paciente.
 
-### Escalation policy (safety-first)
+### Política de escalamiento (la seguridad primero)
 
-- **Classification happens before RAG/LLM.** During the QUESTIONS phase, the
-  ``decision/classify`` call gates all downstream processing.
-- **Red always escalates immediately.** The orchestrator short-circuits: no RAG/LLM
-  call, a clear Spanish urgent safety message is returned, the state
-  transitions directly to ENDED with ``call_ended=True``, and the frontend
-  disables further recording.  No further turns are possible.
-- **Yellow escalates on accumulation.** Two consecutive YELLOW turns trigger
-  escalation (transition to CLOSING) with ``should_escalate=True``.
-  First YELLOW receives a deterministic acknowledgment without RAG/LLM.
-- **Green receives deterministic acknowledgment.** GREEN answers get a
-  domain-specific positive message and the next structured question, without
-  RAG/LLM.
-- **Unknown is yellow.** Unclassifiable or validation-failed turns default to
-  yellow.
-- **Ambiguity triggers inquiry.** One clarifying question before classifying.
+- **La clasificación ocurre antes de RAG/LLM.** Durante la fase QUESTIONS, la llamada a
+  ``decision/classify`` controla todo el procesamiento posterior.
+- **Red siempre escala inmediatamente.** El orquestador deriva: sin llamada RAG/LLM, se
+  devuelve un mensaje claro de seguridad urgente en español, el estado transita
+  directamente a ENDED con ``call_ended=True``, y el frontal deshabilita la grabación
+  adicional. No se permiten más turnos.
+- **Yellow escala por acumulación.** Dos turnos YELLOW consecutivos disparan el
+  escalamiento (transición a CLOSING) con ``should_escalate=True``. El primer YELLOW
+  recibe un acuse determinista sin RAG/LLM.
+- **Green recibe acuse determinista.** Las respuestas GREEN obtienen un mensaje
+  positivo específico del dominio y la siguiente pregunta estructurada, sin RAG/LLM.
+- **Desconocido es yellow.** Los turnos no clasificables o con validación fallida se
+  tratan como yellow por defecto.
+- **La ambigüedad dispara indagación.** Una pregunta aclaratoria antes de clasificar.
 
-### Prompt injection defense
+### Defensa contra inyección de prompts
 
-- System instructions are in a separate message role from user input (Groq
-  API role separation).
-- Patient speech is never concatenated into instructions.
-- The structured output schema constrains the LLM to a fixed JSON shape.
-- Role-switching attempts in LLM output are rejected during validation.
-- **Input-level injection detection** (``_detect_injection``): the query is
-  scanned for known jailbreak patterns (role-switching, system prompt
-  extraction, delimiter injection, ``[INST]`` tags, etc.) before any LLM
-  call.  When a pattern matches, the call returns a safe Spanish fallback
-  (``insufficient_knowledge=True``) without invoking the model.
-- **Length check**: queries longer than 2000 characters are rejected at
-  the injection-detection layer.
-- **Output-level checks**: the grounding validator catches hallucinated
-  citations and ungrounded medication claims in the LLM output.
+- Las instrucciones del sistema están en un rol de mensaje separado de la entrada del
+  usuario (separación de roles de la API de Groq).
+- El habla del paciente nunca se concatena en las instrucciones.
+- El esquema de salida estructurada restringe al LLM a una forma JSON fija.
+- Los intentos de cambio de rol en la salida del LLM se rechazan durante la validación.
+- **Detección de inyección a nivel de entrada** (``_detect_injection``): la consulta se
+  escanea en busca de patrones conocidos de jailbreak (cambio de rol, extracción de
+  prompt del sistema, inyección de delimitadores, etiquetas ``[INST]``, etc.) antes de
+  cualquier llamada al LLM. Cuando un patrón coincide, la llamada devuelve un fallback
+  seguro en español (``insufficient_knowledge=True``) sin invocar el modelo.
+- **Control de longitud**: las consultas de más de 2000 caracteres se rechazan en la
+  capa de detección de inyección.
+- **Controles a nivel de salida**: el validador de fundamentación detecta citas
+  alucinadas y afirmaciones de medicamentos sin fundamento en la salida del LLM.
 
-### Clinical hallucination prevention
+### Prevención de alucinaciones clínicas
 
-- The LLM is instructed to only cite sources from the provided RAG context.
-- If no RAG chunks meet the sufficiency gates, the agent states it lacks
-  information rather than fabricating.
-- The `decision/` module cross-checks the LLM's clinical reasoning against explicit
-  red-flag rules independent of the LLM.
-- Post-hoc grounding validation verifies that medication-dose claims in the
-  answer are supported by the cited excerpts.
-- When the Groq provider fails (network error, timeout, or unparseable output)
-  or returns insufficient knowledge despite sufficiently similar retrieved
-  chunks, a safe **extractive RAG fallback** uses only the highest-similarity
-  chunk with preserved citation metadata and marks ``insufficient_knowledge``
-  ``True`` when the best chunk similarity is below 0.30.
-- Groq failures use a generic safe fallback without extractive chunk content,
-  keeping the original provider behaviour isolated.
+- Se instruye al LLM para que solo cite fuentes del contexto RAG proporcionado.
+- Si ningún chunk RAG cumple los controles de suficiencia, el agente indica que carece
+  de información en lugar de inventar.
+- El módulo `decision/` verifica de forma cruzada el razonamiento clínico del LLM
+  contra reglas explícitas de señales de alarma independientes del LLM.
+- La validación de fundamentación post-hoc verifica que las afirmaciones de dosis de
+  medicamentos en la respuesta estén respaldadas por los extractos citados.
+- Cuando el proveedor Groq falla (error de red, timeout o salida no parseable) o
+  devuelve conocimiento insuficiente a pesar de tener chunks recuperados con suficiente
+  similitud, un **fallback extractivo seguro de RAG** usa solo el chunk de mayor
+  similitud con metadatos de cita preservados y marca ``insufficient_knowledge`` como
+  ``True`` cuando la similitud del mejor chunk está por debajo de 0.30.
+- Los fallos de Groq usan un fallback seguro genérico sin contenido extractivo de
+  chunks, manteniendo el comportamiento original del proveedor aislado.
 
-## Phased Implementation Plan
+## Plan de implementación por fases
 
-Implementation is ordered so each phase produces a testable artifact and the 15-minute
-setup gate is verifiable from the earliest phase.
+La implementación está ordenada para que cada fase produzca un artefacto comprobable y
+la puerta de configuración en 15 minutos sea verificable desde la fase más temprana.
 
-| Phase | Focus | Deliverable | Status |
+| Fase | Enfoque | Entregable | Estado |
 |-------|-------|-------------|--------|
-| 1 | Project skeleton and persistence | App starts, SQLite + ChromaDB init, schema tests pass | ✅ Complete |
-| 2 | Document ingestion and deletion (RAG) | Upload → index → retrieve → delete → chunks gone; tests pass | ✅ Complete |
-| 3 | LLM adapter and structured output | Text-in/text-out with validated JSON from permitted model | ✅ Complete |
-| 4 | Voice adapters | STT + TTS round-trip in Spanish | ✅ Complete |
-| 5 | Conversation orchestration and decision | Text-based conversation with RAG, escalation, summaries, metrics collector | ✅ Complete |
-| 6 | Browser call interface | Real browser voice capture and audio playback in Spanish (gate G4) | ✅ Complete — MediaRecorder capture, fetch-based POST to /calls and /calls/{call_id}/turn, WAV playback, transcript/history/citations/escalation display; WebSocket streaming not yet implemented |
-| 7 | Administration console | Graphical console for upload, list, delete documents with live knowledge (gate G5) | ✅ Complete — ``/admin`` page with upload, listing, status polling, refresh, and deletion; document lifecycle REST API remains distinct from admin console |
-| 8 | Metrics API and polish | Metrics endpoint, README metrics, edge cases, all gates passable | ✅ Complete — read-only typed metrics endpoints (summary, calls, and per-call detail) and metrics frontend view; metrics collector module is distinct from the reporting API; summaries generator exists |
+| 1 | Esqueleto del proyecto y persistencia | La app inicia, SQLite + ChromaDB init, pruebas de esquema pasan | ✅ Completo |
+| 2 | Ingestión y eliminación de documentos (RAG) | Cargar → indexar → recuperar → eliminar → chunks eliminados; pruebas pasan | ✅ Completo |
+| 3 | Adaptador LLM y salida estructurada | Texto de entrada/salida con JSON validado del modelo permitido | ✅ Completo |
+| 4 | Adaptadores de voz | Ida y vuelta STT + TTS en español | ✅ Completo |
+| 5 | Orquestación de conversación y decisión | Conversación basada en texto con RAG, escalamiento, resúmenes, colector de métricas | ✅ Completo |
+| 6 | Interfaz de llamada en navegador | Captura real de voz en navegador y reproducción de audio en español (puerta G4) | ✅ Completo — captura MediaRecorder, POST vía fetch a /calls y /calls/{call_id}/turn, reproducción WAV, visualización de transcripción/historial/citas/escalamiento; streaming WebSocket aún no implementado |
+| 7 | Consola de administración | Consola gráfica para cargar, listar, eliminar documentos con conocimiento en vivo (puerta G5) | ✅ Completo — página ``/admin`` con carga, listado, sondeo de estado, refresco y eliminación; la API REST de ciclo de vida de documentos permanece separada de la consola de administración |
+| 8 | API de métricas y pulido | Endpoint de métricas, métricas en README, casos límite, todas las puertas superables | ✅ Completo — endpoints de métricas tipados de solo lectura (resumen, llamadas y detalle por llamada) y vista frontal de métricas; el módulo colector de métricas es distinto de la API de reporte; el generador de resúmenes existe |
 
-## Open Decisions
+## Decisiones abiertas
 
-These decisions affect multiple modules or have meaningful alternatives. Each has a
-"resolve by" deadline tied to the phase that needs it.
+Estas decisiones afectan a múltiples módulos o tienen alternativas significativas. Cada
+una tiene una fecha límite de resolución vinculada a la fase que la necesita.
 
-| # | Decision | Alternatives | Depends on | Resolve by |
+| # | Decisión | Alternativas | Depende de | Resolver para |
 |---|----------|-------------|------------|------------|
-| D5 | Audio transport format | Raw PCM16 / Opus-encoded / MediaRecorder chunks / WebSocket streaming | D4 | Phase 6 — de facto: HTTP REST with base64-encoded WAV for voice turn endpoints; streaming/WebSocket transport remains a future option |
+| D5 | Formato de transporte de audio | PCM16 crudo / codificado Opus / fragmentos MediaRecorder / streaming WebSocket | D4 | Fase 6 — de facto: HTTP REST con WAV codificado en base64 para los endpoints de turnos de voz; el transporte streaming/WebSocket sigue como opción futura |
 
-## Resolved Decisions
+## Decisiones resueltas
 
-| # | Decision | Chosen option | Rationale | Resolved |
+| # | Decisión | Opción elegida | Justificación | Resuelta |
 |---|----------|--------------|-----------|----------|
-| D1 | Language model | **Llama 3.3 70B Versatile (Groq Cloud)** | Current successor authorized by the challenge organizers after the originally suggested Groq model was retired. Provides fast inference and structured Spanish responses. | Phase 3 |
-| D2 | STT provider | **Groq Whisper Large V3** | Recommended in the challenge's ``stack-tecnico.md`` for ultra-low-latency Spanish transcription. Free tier via Groq Cloud. Implemented in Phase 4 (``backend/voice/``). | Phase 4 |
-| D4 | Backend framework | **FastAPI** (async, WebSocket-native) | Required for WebSocket call interface (Phase 6), async-native, strong OpenAPI support for the administration console (Phase 7). Already implemented in Phase 1. | Phase 1 |
-| D6 | Chunking strategy | **Fixed-size with overlap** (800 chars, 150 overlap) | Simple, predictable, well-tested. The 800-character default balances context completeness against retrieval precision for the challenge's clinical PDFs (typically 1–3 paragraphs per page). The 150-character overlap prevents splitting mid-sentence while keeping the duplication ratio below 19 %. Both values are tunable via env vars (``RAG_CHUNK_SIZE``, ``RAG_CHUNK_OVERLAP``). Implemented in Phase 2. | Phase 2 |
-| D7 | LLM provider failover | **Single Groq provider** | A single current provider keeps the runtime and Docker setup simple; the safe extractive RAG fallback handles provider failures. | Phase 3 |
-| D8 | Patient data loading | **Load all 40 profiles at startup** | The dataset is small (40 patients, ~160 trajectory days, ~4 000 conversation turns), fitting comfortably in memory. Startup loading from ``dataset/`` XLSX via ``backend/data/loader.py`` is simpler than lazy-loading, avoids race conditions during call creation, and ensures immediate availability of patient demographics, trajectories, and reference conversations for the conversation orchestrator. Implemented during Phases 1–5 (``backend/data/`` read-only dataclass access layer). | Phase 5 |
-| D3 | TTS provider | **Kokoro-82M** | Minimal model size (82 M parameters, ~0.6 GB RAM) that runs on CPU without GPU; native Spanish voice (``ef_dora``), natural prosody for clinical tone; outputs 24 kHz float32 audio that the adapter normalises to 16-bit PCM WAV for browser playback.  The ``KokoroAdapter`` implements the ``TTSProvider`` Protocol with lazy dependency loading — the optional ``kokoro`` package is only imported on the first ``synthesize()`` call.  Piper was considered but Kokoro's Spanish voice quality is significantly better for the challenge's clinical conversation UX.  Implemented in Phase 4 (``backend/voice/tts/kokoro.py``). | Phase 4 |
-| D9 | PDF text extraction library | **pdfplumber** | Reliable character-level extraction, explicit page numbers, and consistent Unicode handling for Spanish clinical text. pdfplumber is actively maintained, has no external system dependencies, and produces structured page-by-page output — all critical for traceable source citations. pyMuPDF was considered but its AGPL license is incompatible with the challenge's proprietary license. | Phase 2 |
+| D1 | Modelo de lenguaje | **Llama 3.3 70B Versatile (Groq Cloud)** | Sucesor actual autorizado por los organizadores del reto tras la retirada del modelo Groq originalmente sugerido. Proporciona inferencia rápida y respuestas estructuradas en español. | Fase 3 |
+| D2 | Proveedor STT | **Groq Whisper Large V3** | Recomendado en el ``stack-tecnico.md`` del reto para transcripción en español de latencia ultra-baja. Capa gratuita vía Groq Cloud. Implementado en la Fase 4 (``backend/voice/``). | Fase 4 |
+| D4 | Framework backend | **FastAPI** (asíncrono, nativo WebSocket) | Requerido para la interfaz de llamada WebSocket (Fase 6), nativo asíncrono, soporte OpenAPI sólido para la consola de administración (Fase 7). Ya implementado en la Fase 1. | Fase 1 |
+| D6 | Estrategia de chunking | **Tamaño fijo con solapamiento** (800 caracteres, 150 de solapamiento) | Simple, predecible, bien probado. El valor por defecto de 800 caracteres equilibra la completitud del contexto con la precisión de recuperación para los PDFs clínicos del reto (típicamente 1–3 párrafos por página). El solapamiento de 150 caracteres evita dividir a mitad de frase manteniendo la tasa de duplicación por debajo del 19 %. Ambos valores son ajustables mediante variables de entorno (``RAG_CHUNK_SIZE``, ``RAG_CHUNK_OVERLAP``). Implementado en la Fase 2. | Fase 2 |
+| D7 | Failover del proveedor LLM | **Proveedor único Groq** | Un solo proveedor actual mantiene simple la configuración de ejecución y Docker; el fallback extractivo seguro de RAG maneja los fallos del proveedor. | Fase 3 |
+| D8 | Carga de datos de pacientes | **Cargar los 40 perfiles al inicio** | El dataset es pequeño (40 pacientes, ~160 días de trayectoria, ~4 000 turnos de conversación), cabe cómodamente en memoria. La carga al inicio desde ``dataset/`` XLSX mediante ``backend/data/loader.py`` es más simple que la carga perezosa, evita condiciones de carrera durante la creación de llamadas y asegura disponibilidad inmediata de datos demográficos, trayectorias y conversaciones de referencia para el orquestador de conversación. Implementado durante las Fases 1–5 (capa de acceso con dataclasses de solo lectura en ``backend/data/``). | Fase 5 |
+| D3 | Proveedor TTS | **Kokoro-82M** | Tamaño de modelo mínimo (82 M de parámetros, ~0.6 GB de RAM) que se ejecuta en CPU sin GPU; voz nativa en español (``ef_dora``), prosodia natural para tono clínico; genera audio float32 a 24 kHz que el adaptador normaliza a WAV PCM 16-bit para reproducción en navegador. El ``KokoroAdapter`` implementa el Protocolo ``TTSProvider`` con carga perezosa de dependencias — el paquete opcional ``kokoro`` solo se importa en la primera llamada a ``synthesize()``. Se consideró Piper pero la calidad de la voz española de Kokoro es significativamente mejor para la UX de conversación clínica del reto. Implementado en la Fase 4 (``backend/voice/tts/kokoro.py``). | Fase 4 |
+| D9 | Biblioteca de extracción de texto PDF | **pdfplumber** | Extracción fiable a nivel de caracteres, números de página explícitos y manejo consistente de Unicode para texto clínico en español. pdfplumber tiene mantenimiento activo, no tiene dependencias externas del sistema y produce salida estructurada página por página — todo crítico para citas trazables de fuentes. Se consideró pyMuPDF pero su licencia AGPL es incompatible con la licencia propietaria del reto. | Fase 2 |
 
-When an open decision is resolved, move it to this resolved section with the chosen
-option and rationale. Add decisions here only when they affect multiple modules, are
-difficult to reverse, or have meaningful alternatives — avoid routine implementation
-steps.
+Cuando una decisión abierta se resuelva, muévela a esta sección de resueltas con la
+opción elegida y su justificación. Añade decisiones aquí solo cuando afecten a
+múltiples módulos, sean difíciles de revertir o tengan alternativas significativas —
+evita pasos rutinarios de implementación.

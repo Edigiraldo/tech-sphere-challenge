@@ -56,8 +56,8 @@ y la API de reporte son módulos independientes.
 - Python 3.11 o superior
 - pip (incluido con Python)
 - Git
-- macOS 12+ or Windows 10/11
-- A Groq Cloud API key for Llama 3.3 and Whisper STT
+- macOS 12+ o Windows 10/11
+- Una clave de API de Groq Cloud para Llama 3.3 y Whisper STT
 
 ## Instalación desde cero
 
@@ -84,13 +84,13 @@ python -m pip install --upgrade pip
 pip install -e ".[dev,voice]"
 ```
 
-Create `.env` in the repository root on either operating system:
+Crea `.env` en la raíz del repositorio en cualquiera de los dos sistemas operativos:
 
 ```ini
 GROQ_API_KEY=your-groq-api-key
 ```
 
-The application loads `.env` automatically at startup. Never commit this file.
+La aplicación carga `.env` automáticamente al iniciar. Nunca versiones este archivo.
 
 ## Instalación y ejecución
 

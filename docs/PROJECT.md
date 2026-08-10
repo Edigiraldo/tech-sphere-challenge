@@ -1,92 +1,95 @@
-# Project Guide
+# Guía del proyecto
 
-## Purpose
+## Propósito
 
-Tech Sphere Challenge implementation: a Spanish voice agent for postoperative
-follow-up using synthetic Colombian patient data.
+Implementación del Tech Sphere Challenge: un agente de voz en español para
+seguimiento postoperatorio usando datos sintéticos de pacientes colombianos.
 
-The product must support:
+El producto debe soportar:
 
-- Spanish voice conversations via HTTP REST endpoints (``POST /calls``,
-  ``POST /calls/{call_id}/turn``) with base64-encoded WAV audio and browser-native
-  microphone capture (MediaRecorder). WebSocket/streaming transport remains future
-  work.
-- Clinical retrieval-augmented generation (RAG) with traceable source citations.
-- Live document upload, listing, processing-status tracking, and deletion (including
-  purging indexed chunks) via a REST API (``POST/GET/DELETE /documents``) and a
-  graphical administration console at ``/admin`` with upload, status polling, refresh,
-  and deletion.
-- Conservative escalation decisions with a safety-first classification policy.
-- Structured call summaries with patient, procedure, symptoms, decision, sources, and
-  next steps.
-- Observable metrics: latency, token consumption, model invocations, RAG queries, and
-  estimated cost per call. The metrics collector module feeds a read-only typed
-  metrics API endpoints (``GET /metrics/summary``, ``GET /metrics/calls``, and
-  ``GET /metrics/calls/{call_id}``) and a metrics frontend view.
+- Conversaciones de voz en español mediante endpoints HTTP REST (``POST /calls``,
+  ``POST /calls/{call_id}/turn``) con audio WAV codificado en base64 y captura de
+  micrófono nativa del navegador (MediaRecorder). El transporte WebSocket/streaming
+  queda como trabajo futuro.
+- Generación aumentada por recuperación (RAG) clínica con citas trazables de fuentes.
+- Carga, listado, seguimiento de estado de procesamiento y eliminación de documentos
+  en vivo (incluyendo purgado de chunks indexados) mediante una API REST
+  (``POST/GET/DELETE /documents``) y una consola de administración gráfica en
+  ``/admin`` con carga, sondeo de estado, refresco y eliminación.
+- Decisiones de escalamiento conservadoras con una política de clasificación que
+  prioriza la seguridad.
+- Resúmenes estructurados de llamadas con paciente, procedimiento, síntomas, decisión,
+  fuentes y próximos pasos.
+- Métricas observables: latencia, consumo de tokens, invocaciones del modelo, consultas
+  RAG y costo estimado por llamada. El módulo colector de métricas alimenta endpoints
+  de API de métricas tipados de solo lectura (``GET /metrics/summary``,
+  ``GET /metrics/calls`` y ``GET /metrics/calls/{call_id}``) y una vista frontal de
+  métricas.
 
-The language model must be one of the four permitted by the challenge
-(`.challenge-docs/stack-tecnico.md`). The rest of the stack — orchestration, voice,
-RAG, embeddings — is open choice.
+El modelo de lenguaje debe ser uno de los cuatro permitidos por el reto
+(`.challenge-docs/stack-tecnico.md`). El resto del stack — orquestación, voz, RAG,
+embeddings — es de libre elección.
 
-## Architecture
+## Arquitectura
 
-The target is a modular monolith: one Python backend with internal modules and a
-browser frontend. The frontend provides a call interface with real voice
-integration (MediaRecorder + WAV playback), an administration console at ``/admin``
-for document lifecycle management, and a metrics view. The document lifecycle
-backend (``POST/GET/DELETE /documents``) is a separate module from the
-administration console UI.
-See `docs/ARCHITECTURE.md` for the full module catalog, data flows, persistence
-boundaries, permitted adapters, phased implementation plan, and open decisions.
+El objetivo es un monolito modular: un backend Python con módulos internos y un
+frontal de navegador. El frontal proporciona una interfaz de llamada con integración
+de voz real (MediaRecorder + reproducción WAV), una consola de administración en
+``/admin`` para la gestión del ciclo de vida de documentos y una vista de métricas.
+El backend del ciclo de vida de documentos (``POST/GET/DELETE /documents``) es un
+módulo separado de la UI de la consola de administración.
+Consulta `docs/ARCHITECTURE.md` para el catálogo completo de módulos, flujos de datos,
+límites de persistencia, adaptadores permitidos, plan de implementación por fases y
+decisiones abiertas.
 
-## Repository Map
+## Mapa del repositorio
 
 ```text
-backend/               Application backend (Python modular monolith)
-  data/                Normalized read-only dataset access (patients, trajectories,
-                         conversations, PDF resolver)
-  api/                 REST endpoints (calls, documents, RAG, metrics); WebSocket not yet implemented
-  voice/               STT and TTS adapters
-  conversation/        Dialogue orchestration and state machine
-  llm/                 Permitted language model adapter
-  rag/                 Document ingestion, embedding, and retrieval
-  documents/           Document lifecycle (upload, list, status, delete)
-  decision/            Escalation classification
-  summaries/           Structured call summary generation
-  metrics/             Latency, token, and cost instrumentation
-  persistence/         SQLite and ChromaDB access layer
-frontend/              Browser UI (vanilla HTML/CSS/JS): call interface with MediaRecorder + API, admin console, metrics
-dataset/               Synthetic challenge data and reference PDFs
-docs/                  Maintained project documentation
-.challenge-docs/       Challenge requirements and evaluation rules
+backend/               Backend de la aplicación (monolito modular Python)
+  data/                Acceso tipado de solo lectura al dataset (pacientes, trayectorias,
+                         conversaciones, resolvedor de PDFs)
+  api/                 Endpoints REST (llamadas, documentos, RAG, métricas); WebSocket aún no implementado
+  voice/               Adaptadores STT y TTS
+  conversation/        Orquestación de diálogo y máquina de estados
+  llm/                 Adaptador del modelo de lenguaje permitido
+  rag/                 Ingestión, embedding y recuperación de documentos
+  documents/           Ciclo de vida de documentos (cargar, listar, estado, eliminar)
+  decision/            Clasificación de escalamiento
+  summaries/           Generación de resúmenes estructurados de llamadas
+  metrics/             Instrumentación de latencia, tokens y costo
+  persistence/         Capa de acceso a SQLite y ChromaDB
+frontend/              UI de navegador (HTML/CSS/JS vanilla): interfaz de llamada con MediaRecorder + API, consola de administración, métricas
+dataset/               Datos sintéticos del reto y PDFs de referencia
+docs/                  Documentación mantenida del proyecto
+.challenge-docs/       Requisitos del reto y reglas de evaluación
 ```
 
-## Where To Look
+## Dónde buscar
 
-| Task | First files to inspect |
+| Tarea | Primeros archivos a inspeccionar |
 | --- | --- |
-| Architecture | `docs/ARCHITECTURE.md` |
-| Current work and open decisions | `docs/STATUS.md` |
-| Document lifecycle | `backend/documents/`, `backend/rag/` |
-| RAG retrieval | `backend/rag/` |
-| Conversation flow | `backend/conversation/` |
-| Escalation logic | `backend/decision/` |
-| Voice I/O | `backend/voice/` |
-| LLM adapter | `backend/llm/` |
-| API contract | `backend/api/` |
-| Persistence schema | `backend/persistence/` |
-| Browser UI | `frontend/` |
-| Challenge constraints | `.challenge-docs/README.md` and `.challenge-docs/rubrica-evaluacion.md` |
-| Permitted models | `.challenge-docs/stack-tecnico.md` |
+| Arquitectura | `docs/ARCHITECTURE.md` |
+| Trabajo actual y decisiones abiertas | `docs/STATUS.md` |
+| Ciclo de vida de documentos | `backend/documents/`, `backend/rag/` |
+| Recuperación RAG | `backend/rag/` |
+| Flujo de conversación | `backend/conversation/` |
+| Lógica de escalamiento | `backend/decision/` |
+| Entrada/salida de voz | `backend/voice/` |
+| Adaptador LLM | `backend/llm/` |
+| Contrato de API | `backend/api/` |
+| Esquema de persistencia | `backend/persistence/` |
+| UI del navegador | `frontend/` |
+| Restricciones del reto | `.challenge-docs/README.md` y `.challenge-docs/rubrica-evaluacion.md` |
+| Modelos permitidos | `.challenge-docs/stack-tecnico.md` |
 
-## Working Rules
+## Reglas de trabajo
 
-- Read this file and `docs/STATUS.md` before exploring the repository.
-- Read `docs/ARCHITECTURE.md` only when the task affects architecture or interfaces.
-- Inspect only the files listed by the planner and their direct dependencies.
-- Keep implementation details in code, docstrings, and tests.
-- Keep stable architectural facts in `docs/ARCHITECTURE.md`.
-- Use `docs/ARCHITECTURE-DIAGRAM.md` for the current visual runtime and deployment flows.
-- Keep current progress, milestones, and blockers in `docs/STATUS.md`.
-- Track unresolved architectural decisions in `docs/ARCHITECTURE.md` § Open Decisions.
-- Remove stale documentation when the behavior it describes is removed.
+- Lee este archivo y `docs/STATUS.md` antes de explorar el repositorio.
+- Lee `docs/ARCHITECTURE.md` solo cuando la tarea afecte la arquitectura o las interfaces.
+- Inspecciona únicamente los archivos listados por el planificador y sus dependencias directas.
+- Mantén los detalles de implementación en el código, docstrings y pruebas.
+- Mantén los hechos arquitectónicos estables en `docs/ARCHITECTURE.md`.
+- Usa `docs/ARCHITECTURE-DIAGRAM.md` para los flujos visuales actuales de ejecución y despliegue.
+- Mantén el progreso actual, hitos y bloqueos en `docs/STATUS.md`.
+- Registra las decisiones arquitectónicas no resueltas en `docs/ARCHITECTURE.md` § Decisiones abiertas.
+- Elimina documentación obsoleta cuando el comportamiento que describe sea eliminado.

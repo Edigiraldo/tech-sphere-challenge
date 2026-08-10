@@ -1,40 +1,40 @@
-# Architecture Diagram
+# Diagrama de arquitectura
 
-## Runtime Architecture
+## Arquitectura en tiempo de ejecución
 
 ```mermaid
 flowchart TB
-    Browser[Browser]
+    Browser[Navegador]
 
-    subgraph Frontend[Browser Frontend]
-        CallUI[Call interface<br/>MediaRecorder + WAV playback]
-        AdminUI[Administration console<br/>upload, list, delete]
-        MetricsUI[Metrics view]
+    subgraph Frontend[Frontal del navegador]
+        CallUI[Interfaz de llamada<br/>MediaRecorder + reproducción WAV]
+        AdminUI[Consola de administración<br/>cargar, listar, eliminar]
+        MetricsUI[Vista de métricas]
     end
 
-    subgraph App[FastAPI Modular Monolith]
-        API[API routers]
-        Calls[Voice call endpoints<br/>POST /calls<br/>POST /calls/{id}/turn]
-        Documents[Document lifecycle<br/>POST/GET/DELETE /documents]
-        RAGAPI[RAG query endpoint<br/>POST /rag/query]
-        MetricsAPI[Metrics reporting API]
+    subgraph App[Monolito modular FastAPI]
+        API[Routers de API]
+        Calls[Endpoints de llamadas de voz<br/>POST /calls<br/>POST /calls/{id}/turn]
+        Documents[Ciclo de vida de documentos<br/>POST/GET/DELETE /documents]
+        RAGAPI[Endpoint de consulta RAG<br/>POST /rag/query]
+        MetricsAPI[API de reporte de métricas]
 
-        Conversation[Conversation orchestrator<br/>state, history, patient context]
-        Decision[Deterministic escalation engine<br/>GREEN / YELLOW / RED]
-        RAG[RAG engine<br/>retrieve chunks + citations]
-        LLM[Groq Llama 3.3 70B adapter<br/>structured JSON + safety validation]
-        Voice[Voice adapters]
+        Conversation[Orquestador de conversación<br/>estado, historial, contexto del paciente]
+        Decision[Motor de escalamiento determinista<br/>GREEN / YELLOW / RED]
+        RAG[Motor RAG<br/>recuperar chunks + citas]
+        LLM[Adaptador Groq Llama 3.3 70B<br/>JSON estructurado + validación de seguridad]
+        Voice[Adaptadores de voz]
         STT[Groq Whisper Large V3]
         TTS[Kokoro ef_dora]
-        Summary[Structured summary generator]
-        Metrics[Metrics collector<br/>latency, tokens, cost]
-        Persistence[Persistence layer]
+        Summary[Generador de resúmenes estructurados]
+        Metrics[Colector de métricas<br/>latencia, tokens, costo]
+        Persistence[Capa de persistencia]
     end
 
-    subgraph Storage[Runtime Storage]
-        SQLite[(SQLite<br/>calls, turns, summaries,<br/>alerts, documents)]
-        Chroma[(ChromaDB<br/>chunks, embeddings,<br/>source metadata)]
-        Uploads[(Uploaded PDFs)]
+    subgraph Storage[Almacenamiento en ejecución]
+        SQLite[(SQLite<br/>llamadas, turnos, resúmenes,<br/>alertas, documentos)]
+        Chroma[(ChromaDB<br/>chunks, embeddings,<br/>metadatos de fuente)]
+        Uploads[(PDFs cargados)]
     end
 
     Groq[Groq Cloud]
@@ -54,15 +54,15 @@ flowchart TB
     LLM --> Groq
 
     Calls --> Conversation
-    Conversation -->|QUESTIONS: classify first| Decision
-    Conversation -->|CLOSING clinical question only| RAG
-    RAG -->|sufficient context only| LLM
+    Conversation -->|QUESTIONS: clasificar primero| Decision
+    Conversation -->|CLOSING solo pregunta clínica| RAG
+    RAG -->|solo contexto suficiente| LLM
     Calls --> Summary
     Calls --> Metrics
     Calls --> Persistence
 
     RAGAPI --> RAG
-    RAGAPI -->|sufficient context only| LLM
+    RAGAPI -->|solo contexto suficiente| LLM
     Documents --> Uploads
     Documents --> RAG
     Documents --> Persistence
@@ -75,92 +75,92 @@ flowchart TB
     Metrics --> SQLite
 ```
 
-## Voice Turn Flow
+## Flujo de turno de voz
 
 ```mermaid
 sequenceDiagram
-    participant P as Patient browser
+    participant P as Navegador del paciente
     participant API as FastAPI
     participant STT as Groq Whisper
-    participant C as Conversation orchestrator
+    participant C as Orquestador de conversación
     participant R as ChromaDB RAG
     participant L as Groq Llama 3.3
-    participant D as Decision engine
+    participant D as Motor de decisión
     participant T as Kokoro TTS
     participant DB as SQLite
 
-    P->>API: POST /calls/{call_id}/turn (base64 audio)
-    API->>STT: Transcribe audio in Spanish
-    STT-->>API: Patient transcription
-    API->>C: Process patient message and current state
-    C->>D: Classify symptom before clinical generation
+    P->>API: POST /calls/{call_id}/turn (audio base64)
+    API->>STT: Transcribir audio en español
+    STT-->>API: Transcripción del paciente
+    API->>C: Procesar mensaje del paciente y estado actual
+    C->>D: Clasificar síntoma antes de generación clínica
 
-    alt RED signal
+    alt Señal RED
         D-->>C: RED, should_escalate=true
-        C-->>API: Urgent response, ENDED, no RAG/LLM
-    else GREEN or first YELLOW
-        D-->>C: Classification
-        C-->>API: Deterministic acknowledgement + next question
-    else Second YELLOW
-        D-->>C: Escalation, transition to CLOSING
-        C-->>API: Deterministic escalation response
-    else CLOSING clinical question
-        C->>R: Retrieve relevant chunks
-        R-->>C: Chunks and traceable citations
-        C->>L: Question + patient context + retrieved sources
-        L-->>C: Validated Spanish JSON response
-        C-->>API: Answer and citations
-    else CLOSING non-question
-        C-->>API: Deterministic farewell, ENDED, no RAG/LLM
+        C-->>API: Respuesta urgente, ENDED, sin RAG/LLM
+    else GREEN o primer YELLOW
+        D-->>C: Clasificación
+        C-->>API: Acuse determinista + siguiente pregunta
+    else Segundo YELLOW
+        D-->>C: Escalamiento, transición a CLOSING
+        C-->>API: Respuesta determinista de escalamiento
+    else CLOSING pregunta clínica
+        C->>R: Recuperar chunks relevantes
+        R-->>C: Chunks y citas trazables
+        C->>L: Pregunta + contexto del paciente + fuentes recuperadas
+        L-->>C: Respuesta JSON validada en español
+        C-->>API: Respuesta y citas
+    else CLOSING no-pregunta
+        C-->>API: Despedida determinista, ENDED, sin RAG/LLM
     end
 
-    API->>T: Synthesize response text
-    T-->>API: WAV audio
-    API->>DB: Persist turn, alert, and metrics
-    opt Call ended
-        API->>DB: Generate and persist structured summary
+    API->>T: Sintetizar texto de respuesta
+    T-->>API: Audio WAV
+    API->>DB: Persistir turno, alerta y métricas
+    opt Llamada finalizada
+        API->>DB: Generar y persistir resumen estructurado
     end
-    API-->>P: Audio, transcription, state, citations, escalation
+    API-->>P: Audio, transcripción, estado, citas, escalamiento
 ```
 
-## Document Lifecycle
+## Ciclo de vida de documentos
 
 ```mermaid
 sequenceDiagram
-    participant A as Admin browser
+    participant A as Navegador de administración
     participant API as FastAPI
-    participant S as Document service
-    participant DB as SQLite registry
-    participant R as RAG ingestion
+    participant S as Servicio de documentos
+    participant DB as Registro SQLite
+    participant R as Ingestión RAG
     participant C as ChromaDB
 
     A->>API: POST /documents (PDF)
-    API->>S: Validate and hash content
-    S->>DB: Register document and status
-    S->>R: Extract, chunk, embed
-    R->>C: Store chunks with document_id
-    S->>DB: Mark document ready
-    API-->>A: ready + document_id
+    API->>S: Validar y calcular hash del contenido
+    S->>DB: Registrar documento y estado
+    S->>R: Extraer, chunking, embedding
+    R->>C: Almacenar chunks con document_id
+    S->>DB: Marcar documento como listo
+    API-->>A: listo + document_id
 
     A->>API: DELETE /documents/{document_id}
-    API->>C: Delete chunks by document_id
-    API->>DB: Mark document deleted
-    API-->>A: deleted
+    API->>C: Eliminar chunks por document_id
+    API->>DB: Marcar documento como eliminado
+    API-->>A: eliminado
 ```
 
-## Deployment Shape
+## Forma de despliegue
 
-The current application is a single FastAPI modular monolith. Docker distribution is
-intended to provide a prebuilt image containing the application, dependencies, BGE-M3
-cache, and pre-indexed corpus. Runtime secrets such as `GROQ_API_KEY` are injected by
-the environment and are never included in the image.
+La aplicación actual es un monolito modular FastAPI único. La distribución Docker está
+prevista para proporcionar una imagen preconstruida que contenga la aplicación, las
+dependencias, la caché de BGE-M3 y el corpus pre-indexado. Los secretos de ejecución
+como `GROQ_API_KEY` se inyectan mediante el entorno y nunca se incluyen en la imagen.
 
 ```mermaid
 flowchart LR
-    Judge[Judge machine]
-    Image[Prebuilt application image]
-    Volume[(Persistent runtime volume)]
-    App[FastAPI + frontend]
+    Judge[Máquina del jurado]
+    Image[Imagen de aplicación preconstruida]
+    Volume[(Volumen persistente de ejecución)]
+    App[FastAPI + frontal]
     Groq[Groq Cloud]
 
     Judge -->|docker compose pull/up| Image
