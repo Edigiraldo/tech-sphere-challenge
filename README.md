@@ -61,6 +61,28 @@ y la API de reporte son módulos independientes.
 
 ## Instalación desde cero
 
+Todos los comandos de esta sección y de las siguientes deben ejecutarse desde la
+raíz del repositorio: la carpeta que contiene `pyproject.toml`, `backend/`,
+`frontend/` y `dataset/`. Si ya descargaste el repositorio, entra primero en esa
+carpeta.
+
+Windows PowerShell:
+
+```powershell
+Set-Location -LiteralPath "C:\ruta\a\tech-sphere-challenge"
+Test-Path .\pyproject.toml
+```
+
+macOS:
+
+```bash
+cd /ruta/a/tech-sphere-challenge
+test -f pyproject.toml && echo "Raiz del repositorio confirmada"
+```
+
+El comando de verificación debe confirmar que `pyproject.toml` existe. No ejecutes
+los comandos desde `backend/`, `scripts/` ni otra subcarpeta.
+
 ### Windows PowerShell
 
 ```powershell
@@ -94,6 +116,9 @@ La aplicación carga `.env` automáticamente al iniciar. Nunca versiones este ar
 
 ## Instalación y ejecución
 
+Después de instalar las dependencias y crear `.env`, mantén la terminal ubicada en la
+raíz del repositorio y ejecuta:
+
 ```bash
 # Ejecutar la aplicación después de la instalación
 python -m backend.main
@@ -115,7 +140,8 @@ Documentación interactiva de la API (Swagger UI) en `http://127.0.0.1:8000/docs
 ### Ingestión del corpus clínico
 
 El conocimiento clínico no se carga al iniciar la aplicación. Debe ingerirse
-explícitamente con el script de corpus:
+explícitamente con el script de corpus. Ejecuta este comando desde otra terminal,
+también ubicada en la raíz del repositorio, mientras el backend está ejecutándose:
 
 ```bash
 python scripts/ingest_corpus.py
