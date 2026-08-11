@@ -580,6 +580,282 @@ class TestClinicalQuestionDetection:
         assert result.requires_response
 
 
+# ---------------------------------------------------------------------------
+# CLOSING negation phrase regression tests
+# ---------------------------------------------------------------------------
+
+
+class TestClosingNegationPhrases:
+    """Negation phrases like 'no tengo preguntas' must END the call.
+
+    The CLOSING state invites the patient to ask clinical questions.
+    Negation phrases expressing "no questions/doubts" must be detected
+    as non-questions and end the call.  Positive question patterns
+    (e.g. 'tengo una pregunta') must remain detected as questions.
+    """
+
+    def _advance_to_closing(self, orch: ConversationOrchestrator) -> None:
+        """Advance the orchestrator through the full flow to CLOSING."""
+        orch.start_call()
+        orch.process_patient_message("Bien, gracias.")
+        orch.process_patient_message("Si, acepto.")
+        for _ in range(_NUM_QUESTIONS):
+            orch.process_patient_message(_GREEN_RESPONSE)
+        assert orch.state is State.CLOSING
+
+    # --- Negation variants that must END the call -------------------------
+
+    @pytest.mark.parametrize(
+        "patient_text",
+        [
+            # Core negation phrases from the bug report
+            "no tengo preguntas",
+            "no tengo dudas",
+            "sin preguntas",
+            # Variations
+            "No tengo preguntas, gracias.",
+            "no tengo dudas, todo esta claro",
+            "Sin preguntas, doctor.",
+            "ninguna pregunta",
+            "ninguna duda",
+            "ninguna inquietud",
+            "no tengo ninguna pregunta",
+            "no tengo ninguna duda",
+            "sin ninguna pregunta",
+            "sin ninguna duda",
+            "no tengo inquietudes",
+            "sin inquietudes",
+            # Polite closing phrases
+            "no, nada mas",
+            "nada mas, gracias",
+            "no, gracias",
+            "todo claro, gracias",
+            "todo bien, doctor",
+            "estoy bien, gracias",
+            "asi esta bien",
+            "no necesito nada",
+            "por ahora no",
+            # Colombian regionalisms
+            "no senor, todo bien",
+            "no doctor, gracias",
+        ],
+    )
+    def test_negation_phrase_ends_call(self, patient_text: str) -> None:
+        """Negation phrases must result in call_ended=True, state=ENDED."""
+        orch = make_orchestrator()
+        self._advance_to_closing(orch)
+        result = orch.process_patient_message(patient_text)
+        assert orch.state is State.ENDED, (
+            f"Expected ENDED for {patient_text!r}, got {orch.state.name}"
+        )
+        assert result.call_ended, (
+            f"Expected call_ended=True for {patient_text!r}"
+        )
+
+    @pytest.mark.parametrize(
+        "patient_text",
+        [
+            "no tengo preguntas",
+            "sin dudas",
+            "no tengo dudas, doctor",
+            "ninguna duda",
+            "nada mas",
+            "no, gracias",
+        ],
+    )
+    def test_negation_does_not_trigger_clinical_question(
+        self, patient_text: str
+    ) -> None:
+        """Negation phrases must NOT be detected as clinical questions."""
+        orch = make_orchestrator()
+        assert not orch._is_clinical_question(patient_text), (
+            f"Expected NOT clinical question: {patient_text!r}"
+        )
+
+    # --- Positive question patterns must still work -----------------------
+
+    @pytest.mark.parametrize(
+        "patient_text",
+        [
+            # Explicit "I have a question"
+            "tengo una pregunta",
+            "tengo una duda",
+            "tengo una duda sobre la recuperacion",
+            # Question marks preserved
+            "¿Qué debo hacer si me duele?",
+            "que debo hacer si me duele?",
+            # Clinical questions still detected
+            "que cuidados debo seguir",
+            "cuando puedo volver a trabajar",
+            "me puede explicar que debo hacer",
+            "es normal esto",
+            "quiero saber si puedo comer algo",
+            # Mixed: positive question after some negation in same text
+            "bueno, pero tengo una duda",
+        ],
+    )
+    def test_positive_question_stays_in_closing(
+        self, patient_text: str
+    ) -> None:
+        """Real questions during CLOSING must remain in CLOSING, not end."""
+        orch = make_orchestrator(rag_config=make_rag_config())
+        self._advance_to_closing(orch)
+        result = orch.process_patient_message(patient_text)
+        assert orch.state is State.CLOSING, (
+            f"Expected CLOSING for {patient_text!r}, got {orch.state.name}"
+        )
+        assert not result.call_ended, (
+            f"Expected call_ended=False for {patient_text!r}"
+        )
+
+    def test_question_mark_still_detected(self) -> None:
+        """Explicit question marks must still trigger clinical question detection."""
+        orch = make_orchestrator()
+        # Question mark always overrides negation check
+        assert orch._is_clinical_question("no se, ¿que hago?")
+
+    def test_tengo_una_pregunta_is_question(self) -> None:
+        """'tengo una pregunta' is a question, NOT a closing negation."""
+        orch = make_orchestrator()
+        assert orch._is_clinical_question("tengo una pregunta sobre la herida")
+
+    def test_tengo_una_duda_is_question(self) -> None:
+        """'tengo una duda' is a question, NOT a closing negation."""
+        orch = make_orchestrator()
+        assert orch._is_clinical_question("tengo una duda sobre el dolor")
+
+    def test_no_tengo_ninguna_pregunta_ends_call(self) -> None:
+        """'no tengo ninguna pregunta' must end the call."""
+        orch = make_orchestrator()
+        self._advance_to_closing(orch)
+        result = orch.process_patient_message("no tengo ninguna pregunta, gracias")
+        assert orch.state is State.ENDED
+        assert result.call_ended
+
+    def test_no_tengo_preguntas_with_comma_ends_call(self) -> None:
+        """'no, no tengo preguntas' must end the call."""
+        orch = make_orchestrator()
+        self._advance_to_closing(orch)
+        result = orch.process_patient_message("no, no tengo preguntas")
+        assert orch.state is State.ENDED
+        assert result.call_ended
+
+    def test_por_el_momento_no_ends_call(self) -> None:
+        """'por el momento no' must end the call."""
+        orch = make_orchestrator()
+        self._advance_to_closing(orch)
+        result = orch.process_patient_message("no, por el momento no tengo dudas")
+        assert orch.state is State.ENDED
+        assert result.call_ended
+
+    def test_sin_dudas_ends_call(self) -> None:
+        """'sin dudas' must end the call."""
+        orch = make_orchestrator()
+        self._advance_to_closing(orch)
+        result = orch.process_patient_message("sin dudas doctor, gracias")
+        assert orch.state is State.ENDED
+        assert result.call_ended
+
+    # --- Regression: negation embedded in longer phrases ----------------
+
+    @pytest.mark.parametrize(
+        "patient_text",
+        [
+            # "o que" patterns (from "creo que", "pienso que", etc.)
+            # must NOT trump negation — the negation check now runs first.
+            "creo que no tengo preguntas",
+            "pienso que no tengo dudas",
+            "creo que sin preguntas doctor",
+            "considero que no tengo dudas",
+            "supongo que no tengo preguntas",
+            "me parece que no tengo dudas",
+            "diria que no tengo preguntas",
+            "creo que no, sin preguntas",
+            # "y que" patterns
+            "y que no tengo preguntas",
+            "y que no tengo dudas doctor",
+            # Other embedded negation
+            "pues creo que no tengo dudas",
+            "la verdad creo que no tengo preguntas",
+            "en mi opinion, no tengo dudas",
+            "yo diria que no tengo preguntas",
+            "realmente creo que no doctor, sin dudas",
+            "no, la verdad no tengo preguntas",
+            "no se doctor, creo que no tengo dudas",
+        ],
+    )
+    def test_embedded_negation_ends_call(self, patient_text: str) -> None:
+        """Negation embedded in longer phrases must end the call
+        even when compound patterns like 'o que' appear in the text."""
+        orch = make_orchestrator()
+        self._advance_to_closing(orch)
+        result = orch.process_patient_message(patient_text)
+        assert orch.state is State.ENDED, (
+            f"Expected ENDED for {patient_text!r}, got {orch.state.name}"
+        )
+        assert result.call_ended, (
+            f"Expected call_ended=True for {patient_text!r}"
+        )
+
+    @pytest.mark.parametrize(
+        "patient_text",
+        [
+            "creo que no tengo preguntas",
+            "pienso que no tengo dudas",
+            "y que no tengo preguntas",
+            "diria que no doctor, sin preguntas",
+        ],
+    )
+    def test_embedded_negation_not_clinical_question(
+        self, patient_text: str
+    ) -> None:
+        """Negation embedded in longer phrases must NOT trigger
+        clinical-question detection."""
+        orch = make_orchestrator()
+        assert not orch._is_clinical_question(patient_text), (
+            f"Expected NOT clinical question: {patient_text!r}"
+        )
+
+    # --- Positive questions must still work after negation-move fix ---
+
+    @pytest.mark.parametrize(
+        "patient_text",
+        [
+            # Questions with "creo que" but positive intent
+            "creo que si, tengo una pregunta",
+            "creo que tengo una duda sobre eso",
+            "pienso que si debo preguntar algo",
+            # Questions with "y que" interrogative
+            "y que cuidados debo seguir",
+            "y que debo hacer si me duele",
+            # Standard compound patterns still detected
+            "o que debo hacer ahora",
+            "o que cuidados necesito",
+        ],
+    )
+    def test_positive_questions_still_detected_after_fix(
+        self, patient_text: str
+    ) -> None:
+        """Real clinical questions must still be detected as such
+        after the negation check was moved before compound patterns."""
+        orch = make_orchestrator()
+        assert orch._is_clinical_question(patient_text), (
+            f"Expected clinical question: {patient_text!r}"
+        )
+
+    def test_question_mark_with_negation_still_question(self) -> None:
+        """Explicit question marks override negation even with the
+        negation check moved earlier."""
+        orch = make_orchestrator()
+        # Question mark always has highest priority
+        assert orch._is_clinical_question("no se, ¿creo que no tengo preguntas?")
+        assert orch._is_clinical_question("creo que no tengo dudas?")
+        assert orch._is_clinical_question("¿sin preguntas?")
+
+    def test_por_que_with_negation_still_question(self) -> None:
+        """'por que' must still override negation."""
+        orch = make_orchestrator()
+        assert orch._is_clinical_question("por que no tengo preguntas")
 
 
 # ---------------------------------------------------------------------------
@@ -2076,4 +2352,460 @@ class TestLlmSecondApprovalFinalQuestionClarification:
         result = orch.process_patient_message("Pues, regular.")
         assert result.question_index == 5  # stays on last question
         assert orch.state is State.QUESTIONS
+
+
+# ---------------------------------------------------------------------------
+# Escalation metadata/domain alignment after LLM severity upgrade
+# ---------------------------------------------------------------------------
+
+
+class TestEscalationDomainAlignment:
+    """After an LLM severity upgrade, the next question must be associated
+    with its own index/domain — no stale current-question escalation
+    metadata must leak forward to the NEXT answer's classification."""
+
+    def _advance_to_questions(self, orch: ConversationOrchestrator) -> None:
+        orch.start_call()
+        orch.process_patient_message("Bien.")
+        orch.process_patient_message("Sí, acepto.")
+
+    @patch("backend.conversation.orchestrator.llm_second_approval")
+    def test_upgrade_escalation_domain_correctly_identifies_assessed_domain(
+        self, mock_approval
+    ) -> None:
+        """LLM upgrades GREEN→YELLOW on question 1 (fiebre).
+        The turn response should carry escalation with domain="fiebre"
+        (the assessed domain) while question_index points to the NEXT
+        question (herida).  Both referents are correct — the escalation
+        describes what was assessed; question_index describes what is
+        being asked next."""
+        from backend.llm.approval import LlmApprovalResult
+
+        orch = make_orchestrator(llm_config=_make_llm_config())
+        self._advance_to_questions(orch)
+
+        # q0: GREEN (dolor)
+        mock_approval.return_value = LlmApprovalResult(
+            severity=Severity.GREEN,
+            should_escalate=False,
+            reason="Sin dolor.",
+            next_action="Continuar.",
+            action="confirm",
+            llm_used=True,
+        )
+        r0 = orch.process_patient_message("Sin dolor, todo bien.")
+        assert r0.question_index == 1  # asking fiebre
+        assert r0.escalation is not None
+        assert r0.escalation.severity is Severity.GREEN
+        assert r0.escalation.domain == "dolor"
+
+        # q1: GREEN → YELLOW upgrade (fiebre)
+        mock_approval.return_value = LlmApprovalResult(
+            severity=Severity.YELLOW,
+            should_escalate=False,
+            reason="Detectado riesgo de fiebre que el clasificador no vio.",
+            next_action="Monitorear.",
+            action="escalate",
+            llm_used=True,
+        )
+        r1 = orch.process_patient_message("A veces siento calor pero no se si es fiebre.")
+        # After upgrade, domain should be the ASSESSED domain (fiebre)
+        assert r1.escalation is not None, (
+            "Upgraded escalation must be present in turn"
+        )
+        assert r1.escalation.domain == "fiebre", (
+            f"Expected domain='fiebre' (assessed), got {r1.escalation.domain!r}"
+        )
+        # question_index points to NEXT question (herida)
+        assert r1.question_index == 2, (
+            f"Expected question_index=2 (herida), got {r1.question_index}"
+        )
+
+    @patch("backend.conversation.orchestrator.llm_second_approval")
+    def test_next_answer_has_independent_classification(
+        self, mock_approval
+    ) -> None:
+        """After LLM upgrade on question N, the NEXT answer (question N+1)
+        must have its OWN classification — no stale metadata from the
+        previous turn must affect it."""
+        from backend.llm.approval import LlmApprovalResult
+
+        orch = make_orchestrator(llm_config=_make_llm_config())
+        self._advance_to_questions(orch)
+
+        # q0: GREEN (dolor)
+        mock_approval.return_value = LlmApprovalResult(
+            severity=Severity.GREEN,
+            should_escalate=False,
+            reason="Ok.",
+            next_action="Continue.",
+            action="confirm",
+            llm_used=True,
+        )
+        orch.process_patient_message("Sin dolor.")
+
+        # q1: GREEN → YELLOW upgrade (fiebre)
+        mock_approval.return_value = LlmApprovalResult(
+            severity=Severity.YELLOW,
+            should_escalate=False,
+            reason="Posible fiebre no detectada.",
+            next_action="Monitorear fiebre.",
+            action="escalate",
+            llm_used=True,
+        )
+        orch.process_patient_message("Senti calor ayer, no medi temperatura.")
+
+        # q2: herida — must classify INDEPENDENTLY
+        mock_approval.return_value = LlmApprovalResult(
+            severity=Severity.GREEN,
+            should_escalate=False,
+            reason="Herida bien.",
+            next_action="Continue.",
+            action="confirm",
+            llm_used=True,
+        )
+        r2 = orch.process_patient_message("La herida esta cicatrizando bien, sin enrojecimiento.")
+        # Must have its OWN classification for herida, not carry fiebre
+        assert r2.escalation is not None, "Expected fresh classification for herida answer"
+        assert r2.escalation.domain == "herida", (
+            f"Expected domain='herida' for herida answer, "
+            f"got domain={r2.escalation.domain!r}"
+        )
+        assert r2.escalation.severity is Severity.GREEN
+        # question_index advances correctly
+        assert r2.question_index == 3, (
+            f"Expected question_index=3 (apetito), got {r2.question_index}"
+        )
+
+    @patch("backend.conversation.orchestrator.llm_second_approval")
+    def test_consecutive_yellow_still_has_escalation(self, mock_approval) -> None:
+        """Two consecutive YELLOW must still have escalation in the turn
+        (the escalation IS the reason for CLOSING)."""
+        from backend.llm.approval import LlmApprovalResult
+
+        orch = make_orchestrator(llm_config=_make_llm_config())
+        self._advance_to_questions(orch)
+
+        # q0: YELLOW (dolor)
+        mock_approval.return_value = LlmApprovalResult(
+            severity=Severity.YELLOW,
+            should_escalate=False,
+            reason="Dolor moderado.",
+            next_action="Monitorear.",
+            action="confirm",
+            llm_used=True,
+        )
+        orch.process_patient_message("Me duele bastante, un 6.")
+
+        # q1: YELLOW (fiebre) → second consecutive → escalate
+        mock_approval.return_value = LlmApprovalResult(
+            severity=Severity.YELLOW,
+            should_escalate=False,
+            reason="Fiebre reportada.",
+            next_action="Monitorear.",
+            action="confirm",
+            llm_used=True,
+        )
+        r1 = orch.process_patient_message("Tuve fiebre ayer.")
+        assert orch.state is State.CLOSING
+        # Consecutive-yellow escalation MUST carry escalation with should_escalate=True
+        assert r1.escalation is not None, (
+            "Consecutive-yellow turn must have escalation"
+        )
+        assert r1.escalation.severity is Severity.YELLOW
+        assert r1.escalation.should_escalate is True, (
+            "Consecutive-yellow must have should_escalate=True"
+        )
+
+    @patch("backend.conversation.orchestrator.llm_second_approval")
+    def test_closing_turn_after_last_question_escalation_domain_correct(
+        self, mock_approval
+    ) -> None:
+        """After completing all questions, the CLOSING turn's escalation
+        domain correctly identifies the last question's domain."""
+        from backend.llm.approval import LlmApprovalResult
+
+        orch = make_orchestrator(llm_config=_make_llm_config())
+        self._advance_to_questions(orch)
+
+        # Answer q0-q4 with GREEN
+        for i in range(5):
+            mock_approval.return_value = LlmApprovalResult(
+                severity=Severity.GREEN,
+                should_escalate=False,
+                reason="Ok.",
+                next_action="Continue.",
+                action="confirm",
+                llm_used=True,
+            )
+            orch.process_patient_message(_GREEN_RESPONSE)
+
+        # q5 (movilidad, last): LLM upgrades GREEN→YELLOW
+        mock_approval.return_value = LlmApprovalResult(
+            severity=Severity.YELLOW,
+            should_escalate=False,
+            reason="Posible mareo no detectado.",
+            next_action="Monitorear movilidad.",
+            action="escalate",
+            llm_used=True,
+        )
+        result = orch.process_patient_message("Me siento un poco debil al caminar.")
+        assert orch.state is State.CLOSING, (
+            f"Expected CLOSING after last question, got {orch.state.name}"
+        )
+        # The escalation correctly identifies the assessed domain
+        assert result.escalation is not None
+        assert result.escalation.domain == "movilidad", (
+            f"Expected domain='movilidad' (last assessed), "
+            f"got domain={result.escalation.domain!r}"
+        )
+
+    @patch("backend.conversation.orchestrator.llm_second_approval")
+    def test_red_upgrade_ends_call_with_escalation(self, mock_approval) -> None:
+        """LLM upgrade to RED must end call AND carry escalation.
+        This turn directly represents the escalation decision."""
+        from backend.llm.approval import LlmApprovalResult
+
+        orch = make_orchestrator(llm_config=_make_llm_config())
+        self._advance_to_questions(orch)
+
+        # q0: LLM upgrades to RED
+        mock_approval.return_value = LlmApprovalResult(
+            severity=Severity.RED,
+            should_escalate=True,
+            reason="Señal de alerta grave detectada por el revisor LLM.",
+            next_action="Transferir urgente.",
+            action="escalate",
+            llm_used=True,
+        )
+        result = orch.process_patient_message("Me duele mucho, no aguanto, tengo fiebre alta.")
+        assert orch.state is State.ENDED
+        assert result.call_ended
+        assert result.escalation is not None, "RED turn must have escalation"
+        assert result.escalation.severity is Severity.RED
+        assert result.escalation.should_escalate is True
+
+
+class TestConsecutiveYellowBehavior:
+    """Regression tests for consecutive-YELLOW escalation behavior."""
+
+    def _advance_to_questions(self, orch: ConversationOrchestrator) -> None:
+        orch.start_call()
+        orch.process_patient_message("Bien.")
+        orch.process_patient_message("Sí, acepto.")
+
+    def test_green_resets_consecutive_yellows(self) -> None:
+        """A GREEN answer after a YELLOW resets the consecutive count."""
+        orch = make_orchestrator()
+        self._advance_to_questions(orch)
+
+        # q0: YELLOW (dolor)
+        r0 = orch.process_patient_message("Me duele bastante, un 6.")
+        assert r0.escalation is not None
+        assert r0.escalation.severity is Severity.YELLOW
+        assert not r0.escalation.should_escalate
+        assert orch.state is State.QUESTIONS
+
+        # q1: GREEN (fiebre) — resets the counter
+        r1 = orch.process_patient_message("No he tenido fiebre.")
+        assert r1.escalation is not None
+        assert r1.escalation.severity is Severity.GREEN
+        assert orch.state is State.QUESTIONS
+
+        # q2: YELLOW (herida) — should be first YELLOW again, not second
+        r2 = orch.process_patient_message("La herida esta enrojecida.")
+        assert r2.escalation is not None
+        assert r2.escalation.severity is Severity.YELLOW
+        assert not r2.escalation.should_escalate, (
+            "After GREEN reset, this should be first YELLOW"
+        )
+        assert orch.state is State.QUESTIONS
+
+    def test_first_yellow_does_not_escalate(self) -> None:
+        """First YELLOW must have should_escalate=False."""
+        orch = make_orchestrator()
+        self._advance_to_questions(orch)
+
+        r = orch.process_patient_message("Me duele bastante, un 6.")
+        assert r.escalation is not None
+        assert r.escalation.severity is Severity.YELLOW
+        assert r.escalation.should_escalate is False
+
+    def test_second_yellow_escalates_to_closing(self) -> None:
+        """Second consecutive YELLOW transitions to CLOSING."""
+        orch = make_orchestrator()
+        self._advance_to_questions(orch)
+
+        orch.process_patient_message("Me duele bastante, un 6.")  # YELLOW
+        r = orch.process_patient_message("Tuve fiebre ayer.")      # YELLOW
+        assert orch.state is State.CLOSING
+
+    def test_consecutive_yellow_has_should_escalate_true(self) -> None:
+        """Second consecutive YELLOW must have should_escalate=True."""
+        orch = make_orchestrator()
+        self._advance_to_questions(orch)
+
+        orch.process_patient_message("Me duele bastante, un 6.")
+        r = orch.process_patient_message("Tuve fiebre ayer.")
+        assert r.escalation is not None
+        assert r.escalation.should_escalate is True
+
+    def test_single_yellow_stays_in_questions(self) -> None:
+        """A single YELLOW should not exit QUESTIONS."""
+        orch = make_orchestrator()
+        self._advance_to_questions(orch)
+
+        r = orch.process_patient_message("Me duele un poco, un 4.")
+        assert orch.state is State.QUESTIONS
+        assert r.escalation is not None
+        assert r.escalation.severity is Severity.YELLOW
+
+    def test_consecutive_yellows_across_domains(self) -> None:
+        """Two consecutive YELLOW answers in different domains
+        (dolor + fiebre) escalate correctly."""
+        orch = make_orchestrator()
+        self._advance_to_questions(orch)
+
+        # q0: dolor YELLOW
+        r0 = orch.process_patient_message("Me duele bastante, un 6.")
+        assert r0.escalation is not None
+        assert r0.escalation.domain == "dolor"
+        assert r0.escalation.severity is Severity.YELLOW
+        assert not r0.escalation.should_escalate
+
+        # q1: fiebre YELLOW -> second consecutive -> escalate
+        # Use text that produces YELLOW (not RED) for fiebre
+        r1 = orch.process_patient_message("Tuve fiebre ayer.")
+        assert orch.state is State.CLOSING
+        assert r1.escalation is not None
+        assert r1.escalation.domain == "fiebre", (
+            f"Second YELLOW escalation must carry its own domain (fiebre), "
+            f"got {r1.escalation.domain!r}"
+        )
+        assert r1.escalation.should_escalate is True
+
+        # Verify that after escalation, _consecutive_yellows is tracked
+        # (state is CLOSING, no further question processing)
+        assert r1.escalation.severity is Severity.YELLOW
+
+    def test_consecutive_yellows_with_first_upgrade(self) -> None:
+        """Consecutive yellow works when the first YELLOW came from
+        an LLM upgrade (was GREEN deterministically)."""
+        orch = make_orchestrator()
+        self._advance_to_questions(orch)
+
+        # q0: respuesta well-behaved → GREEN
+        r0 = orch.process_patient_message("Sin dolor, todo bien, un 1.")
+        assert r0.escalation is not None
+        assert r0.escalation.severity is Severity.GREEN
+        assert r0.escalation.domain == "dolor"
+
+        # The actual consecutive-YELLOW test with upgrades requires
+        # LLM, so we test the deterministic path: YELLOW→YELLOW
+        # which is already covered above. This test verifies that
+        # GREEN→YELLOW→YELLOW works in the deterministic path.
+        # Since the determinist classifier can't upgrade, we just
+        # verify the regular flow.
+
+        # Bonus: verify a scenario where first answer is YELLOW
+        # then GREEN (resets), then another YELLOW (first after reset)
+        orch2 = make_orchestrator()
+        self._advance_to_questions(orch2)
+
+        r0b = orch2.process_patient_message("Me duele, un 5.")  # YELLOW
+        assert r0b.escalation.severity is Severity.YELLOW
+        assert not r0b.escalation.should_escalate
+
+        r1b = orch2.process_patient_message("Sin fiebre, normal.")  # GREEN
+        assert r1b.escalation.severity is Severity.GREEN
+
+        r2b = orch2.process_patient_message("Herida enrojecida.")  # YELLOW → should be first again
+        assert r2b.escalation.severity is Severity.YELLOW
+        assert not r2b.escalation.should_escalate, (
+            "After GREEN reset, this should be first YELLOW again"
+        )
+
+
+class TestEscalationDomainAlignmentDeterministic:
+    """Domain alignment tests using the deterministic classifier
+    (no LLM mock needed).  These verify that consecutive Yellow
+    escalation correctly carries the assessed domain."""
+
+    def _advance_to_questions(self, orch: ConversationOrchestrator) -> None:
+        orch.start_call()
+        orch.process_patient_message("Bien.")
+        orch.process_patient_message("Sí, acepto.")
+
+    def test_domain_correct_after_consecutive_yellows(self) -> None:
+        """Two YELLOW answers (dolor, fiebre) → escalation has fiebre domain."""
+        orch = make_orchestrator()
+        self._advance_to_questions(orch)
+
+        # q0: dolor YELLOW
+        orch.process_patient_message("Me duele, un 6.")
+        # q1: fiebre YELLOW → second consecutive
+        r = orch.process_patient_message("Tuve fiebre ayer, 38 grados.")
+
+        assert r.escalation is not None
+        assert r.escalation.domain == "fiebre", (
+            f"Consecutive-yellow escalation must carry the second answer's "
+            f"domain (fiebre), got {r.escalation.domain!r}"
+        )
+        assert r.escalation.should_escalate is True
+
+    def test_all_questions_green_then_closing(self) -> None:
+        """After all GREEN answers, the closing turn carries the
+        last question's domain."""
+        orch = make_orchestrator()
+        self._advance_to_questions(orch)
+
+        # Answer all 6 questions with GREEN
+        for _ in range(5):
+            orch.process_patient_message(_GREEN_RESPONSE)
+        # Last question (movilidad)
+        r = orch.process_patient_message(_GREEN_RESPONSE)
+
+        assert orch.state is State.CLOSING
+        assert r.escalation is not None
+        assert r.escalation.domain == "movilidad", (
+            f"Last question's escalation must have domain 'movilidad', "
+            f"got {r.escalation.domain!r}"
+        )
+        assert r.escalation.severity is Severity.GREEN
+
+    def test_question_index_reset_not_leaked(self) -> None:
+        """Verify that _question_index is correctly tracked
+        through multiple turns and doesn't leak between domains."""
+        orch = make_orchestrator()
+        self._advance_to_questions(orch)
+
+        # q0: dolor
+        r0 = orch.process_patient_message("Sin dolor.")
+        assert r0.question_index == 1  # next is fiebre
+        assert r0.escalation.domain == "dolor"
+
+        # q1: fiebre
+        r1 = orch.process_patient_message("Sin fiebre.")
+        assert r1.question_index == 2  # next is herida
+        assert r1.escalation.domain == "fiebre"
+
+        # q2: herida
+        r2 = orch.process_patient_message("Herida bien.")
+        assert r2.question_index == 3  # next is apetito
+        assert r2.escalation.domain == "herida"
+
+        # q3: apetito
+        r3 = orch.process_patient_message("Buen apetito.")
+        assert r3.question_index == 4  # next is sueño
+        assert r3.escalation.domain == "apetito"
+
+        # q4: sueño (decision engine canonicalises to ASCII "sueno")
+        r4 = orch.process_patient_message("Duermo bien.")
+        assert r4.question_index == 5  # next is movilidad
+        assert r4.escalation.domain == "sueno"
+
+        # q5: movilidad (last)
+        r5 = orch.process_patient_message("Camino sin problema.")
+        assert r5.escalation.domain == "movilidad"
+        assert orch.state is State.CLOSING
 

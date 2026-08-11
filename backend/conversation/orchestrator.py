@@ -716,6 +716,94 @@ class ConversationOrchestrator:
         else:
             return self._end_call()
 
+    def _is_closing_negation(self, normalized: str) -> bool:
+        """Detect phrases that express having no questions or doubts.
+
+        In the CLOSING state the agent asks ``"¿Tiene alguna pregunta
+        antes de finalizar la llamada?"``.  Patients may respond with
+        negation phrases such as ``"no tengo preguntas"``,
+        ``"sin dudas"``, or ``"ninguna pregunta"``.  These must end the
+        call, not be treated as clinical questions.
+
+        Parameters
+        ----------
+        normalized : str
+            Diacritic-stripped, lower-cased Spanish text (already
+            produced by ``_normalize_spanish_text``).
+
+        Returns
+        -------
+        bool
+            ``True`` when the text expresses "no questions/doubts".
+        """
+        # -- Direct negation templates ------------------------------------
+        # Order matters: longer patterns first so "ninguna pregunta"
+        # matches before the bare "pregunta" keyword (handled by the
+        # caller, not here).
+        negation_templates = (
+            # "no tengo preguntas", "no tengo dudas"
+            "no tengo preguntas", "no tengo dudas",
+            # "no, no tengo preguntas"
+            "no tengo ninguna pregunta", "no tengo ninguna duda",
+            # "sin preguntas", "sin dudas"
+            "sin preguntas", "sin dudas",
+            # "sin ninguna pregunta", "sin ninguna duda"
+            "sin ninguna pregunta", "sin ninguna duda",
+            # "ninguna pregunta", "ninguna duda"
+            "ninguna pregunta", "ninguna duda",
+            # "no tengo inquietudes"
+            "no tengo inquietudes", "sin inquietudes",
+            "ninguna inquietud",
+            # "no tengo consultas"
+            "no tengo consultas", "sin consultas",
+            # "no gracias" alone (common polite ending)
+            "no, nada mas", "no nada mas",
+            "nada mas", "nada, gracias", "nada gracias",
+            "no, gracias", "no gracias",
+            "no senor", "no senora", "no doctor", "no doctora",
+            "todo claro", "todo bien",
+            "estoy bien", "estamos bien",
+            "asi esta bien", "asi estamos bien",
+            "no necesito nada",
+            "por ahora no", "por el momento no",
+        )
+        for tpl in negation_templates:
+            if tpl in normalized:
+                return True
+
+        # -- "no ..." + keyword within the same short span ---------------
+        # Handles variations like "no, creo que no tengo preguntas"
+        negated_keyword_patterns = (
+            ("no", "pregunta"),
+            ("no", "preguntas"),
+            ("no", "duda"),
+            ("no", "dudas"),
+            ("no", "inquietud"),
+            ("no", "inquietudes"),
+            ("no", "consulta"),
+            ("no", "consultas"),
+        )
+        for neg_word, kw in negated_keyword_patterns:
+            neg_idx = normalized.find(neg_word)
+            if neg_idx < 0:
+                continue
+            kw_idx = normalized.find(kw, neg_idx)
+            if kw_idx < 0:
+                continue
+            # Require the keyword to appear within 30 chars of the
+            # negation word so we don't catch completely unrelated
+            # uses of "no" in long inputs.
+            if kw_idx - neg_idx <= 30:
+                # Also check there's no "tengo una" or "tengo un"
+                # immediately before the keyword — that would be a
+                # positive question, not a closing negation.
+                prefix = normalized[max(0, kw_idx - 20):kw_idx]
+                if "tengo una " in prefix or "tengo un " in prefix:
+                    continue
+                return True
+
+        return False
+
     def _is_clinical_question(self, text: str) -> bool:
         """Detect whether the patient is asking a clinical question.
 
@@ -724,6 +812,13 @@ class ConversationOrchestrator:
         (e.g. ``"que cuidados"`` rather than bare ``"que "``) to avoid
         false positives from relative-pronoun uses like
         ``"la herida que tengo"``.
+
+        Negation phrases such as ``"no tengo preguntas"``, ``"sin dudas"``
+        are detected **before** compound question patterns (``que``,
+        ``como``, ``cual``, etc.) so they correctly end the call instead
+        of being treated as clinical questions.  Only explicit question
+        marks and ``"por que"`` receive higher priority than negation
+        detection.
         """
         lowered = text.lower().strip()
 
@@ -740,6 +835,17 @@ class ConversationOrchestrator:
         for w in explicit_q_words:
             if w in normalized:
                 return True
+
+        # -- Closing negation: detect phrases that express "no questions"
+        #    BEFORE any compound question pattern matching.  Compound
+        #    patterns such as ``"o que"`` (which appears as a substring
+        #    in ``"creo que"``) and ``"y que"`` must not trump an
+        #    explicit negation like ``"no tengo preguntas"``.
+        #    Examples: "no tengo preguntas", "sin dudas", "ninguna duda",
+        #    "no tengo ninguna pregunta", "no, no tengo preguntas".
+        #    "creo que no tengo preguntas".
+        if self._is_closing_negation(normalized):
+            return False
 
         # -- Compound "que" patterns (interrogative, avoids relative
         #    pronoun false positives like "la herida que tengo") ---------
@@ -840,7 +946,9 @@ class ConversationOrchestrator:
                 return True
 
         # -- General question/inquiry keywords (broad but low-risk in
-        #    CLOSING context where patient is explicitly invited to ask) --
+        #    CLOSING context where patient is explicitly invited to ask).
+        #    Negation was already checked above — anything reaching here
+        #    with these keywords is treated as a real question.  ---------
         general_q_keywords = (
             "pregunta", "duda", "inquietud", "consultar",
             "consulta",
