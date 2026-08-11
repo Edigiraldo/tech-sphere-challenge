@@ -78,8 +78,8 @@ trabajo futuro.
 |--------|----------------|-------------|
 | `api/` | Superficie HTTP REST. Valida entradas, delega a módulos de dominio. Incluye routers de llamadas, documentos, RAG, métricas y resúmenes. Los endpoints WebSocket aún no están implementados. | Única capa que el navegador toca. Sin lógica de negocio. |
 | `voice/` | Adaptadores STT y TTS tras una interfaz común. | Adaptador de E/S puro. No posee estado, datos de pacientes ni conocimiento clínico. |
-| `conversation/` | Máquina de estados de llamada: saludo → consentimiento → preguntas estructuradas → cierre. Clasifica cada respuesta de seguimiento antes del procesamiento posterior. Usa respuestas deterministas para GREEN/primer-YELLOW, termina RED inmediatamente y llama a RAG + `llm/` solo para preguntas clínicas durante CLOSING. | Posee el estado de turno y el ensamblaje de prompts. Nunca llama a `documents/` ni toca directamente persistencia/embeddings. |
-| `llm/` | Adaptador para **Llama 3.3 70B Versatile** vía Groq Cloud con JSON estructurado validado, controles de fundamentación, detección de inyección de prompts y fallbacks seguros. | No sabe nada de voz, documentos, RAG o escalamiento. Texto puro de entrada/salida. |
+| `conversation/` | Máquina de estados de llamada: saludo → consentimiento → preguntas estructuradas → cierre. Clasifica cada respuesta de seguimiento antes del procesamiento posterior. Invoca LLM second-approval para cada respuesta no-RED. Usa respuestas deterministas para GREEN/primer-YELLOW, termina RED inmediatamente y llama a RAG + `llm/` solo para preguntas clínicas durante CLOSING y dudas RAG solicitadas por la aprobación LLM. | Posee el estado de turno y el ensamblaje de prompts. Nunca llama a `documents/` ni toca directamente persistencia/embeddings. |
+| `llm/` | Adaptador para **Llama 3.3 70B Versatile** vía Groq Cloud con JSON estructurado validado, controles de fundamentación, detección de inyección de prompts, fallbacks seguros, y **aprobación secundaria de seguridad** de clasificaciones deterministas (``backend/llm/approval.py``). | No sabe nada de voz, documentos, RAG o escalamiento. Texto puro de entrada/salida. |
 | `rag/` | Ingestión (extraer → chunking → embedding BGE-M3 → almacenar en ChromaDB) y recuperación (embedding de consulta → búsqueda por similitud → devolver chunks + metadatos). | Posee el modelo de embedding, la colección ChromaDB, el chunking y la recuperación. No posee el ciclo de vida de documentos ni conoce pacientes/conversaciones. |
 | `documents/` | Ciclo de vida de documentos: cargar, listar, estado, eliminar. Orquesta metadatos en SQLite y dispara la ingestión/eliminación de RAG. | Llama a `rag/` para ingestión y purgado. No llama a `rag/` para recuperación. |
 | `decision/` | Clasificador de escalamiento (Green / Yellow / Red). Se ejecuta sobre las respuestas del paciente antes de cualquier llamada RAG/LLM durante QUESTIONS, usando reglas explícitas de síntomas, umbrales, manejo de negaciones y detección de ambigüedad. | Aislado de RAG, voz, documentos y salida del LLM. Produce un veredicto consumido por `conversation/`. Conservador: los falsos negativos son catastróficos. |
@@ -99,11 +99,26 @@ futuro.
 
 El orquestador implementa un **flujo que prioriza la seguridad**: cada respuesta del
 paciente es clasificada por el módulo ``decision/`` antes de cualquier llamada
-RAG/LLM. Las clasificaciones GREEN y primer YELLOW reciben acuses deterministas en
-español sin RAG/LLM. Las respuestas RED derivan inmediatamente a ENDED con un mensaje
-urgente de seguridad y ``call_ended=True`` (no se permiten más turnos). Dos resultados
-YELLOW consecutivos disparan el escalamiento. Las preguntas clínicas durante CLOSING se
-responden mediante RAG+LLM con citas; las no-preguntas finalizan la llamada.
+RAG/LLM. Las respuestas RED derivan inmediatamente a ENDED con un mensaje urgente de
+seguridad y ``call_ended=True`` (no se permiten más turnos) sin pasar por aprobación
+LLM. Cada respuesta no-RED durante QUESTIONS pasa por una **aprobación secundaria por
+LLM** (``backend/llm/approval.py``) como revisor conservador de seguridad: el LLM puede
+confirmar la clasificación determinista, subir la severidad (nunca degradarla),
+solicitar una aclaración (máximo una por pregunta) o solicitar RAG por duda clínica.
+Fallos, timeouts, salida inválida o intentos de degradación caen automáticamente a la
+clasificación determinista. GREEN y primer YELLOW confirmados reciben acuses
+deterministas en español sin generación RAG+LLM. Dos resultados YELLOW consecutivos
+disparan el escalamiento. Las preguntas clínicas durante CLOSING se responden mediante
+RAG+LLM con citas; las no-preguntas finalizan la llamada.
+
+**LLM second-approval (aprobación secundaria por LLM):** Después de la clasificación
+determinista en cada respuesta no-RED durante QUESTIONS, se invoca al LLM como revisor
+conservador de seguridad (``backend/llm/approval.py``). El LLM puede confirmar la
+clasificación, subir la severidad (nunca bajarla), solicitar una aclaración al paciente
+(máximo una por pregunta), o solicitar RAG por duda clínica. RED nunca pasa por
+aprobación LLM — deriva directamente a ENDED. Fallos, timeouts, salida inválida o
+intentos de degradación de severidad caen automáticamente a la clasificación
+determinista.
 
 ```
 Navegador (WAV base64 vía HTTP POST) → voice/STT → conversation/ orquestador:
@@ -111,8 +126,12 @@ Navegador (WAV base64 vía HTTP POST) → voice/STT → conversation/ orquestado
   2. **Clasificar** respuesta del paciente contra el dominio de síntomas (decision/classify)
   3a. Si RED → derivación inmediata: sin RAG/LLM, mensaje urgente de seguridad,
        transición directa a ENDED, ``call_ended=True``
-  3b. Si GREEN / primer YELLOW → acuse determinista, siguiente
-       pregunta (sin RAG/LLM)
+  3b. Si GREEN / YELLOW (no-RED) → **LLM second-approval** (``backend/llm/approval.py``)
+       - Confirmar clasificación determinista
+       - Subir severidad (nunca bajarla; YELLOW no puede bajar a GREEN)
+       - Solicitar aclaración (máximo 1 por pregunta; no avanza índice)
+       - Solicitar RAG por duda (ejecutar RAG en QUESTIONS, continuar después)
+       - Fallos/timeout salida inválida → caer a clasificación determinista
   3c. Si segundo YELLOW consecutivo → escalar a CLOSING
   4. (Solo CLOSING) Si pregunta clínica → llamar rag/retrieve + llm/generate
       con citas, permanecer en CLOSING

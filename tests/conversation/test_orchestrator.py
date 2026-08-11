@@ -1503,3 +1503,577 @@ class TestRedTerminatesCall:
         assert "médico" in msg or "medico" in msg
         assert "finaliza" in msg  # call is ending
         assert "?" not in result.agent_message  # no question to patient
+
+
+# ---------------------------------------------------------------------------
+# LLM second-approval integration tests
+# ---------------------------------------------------------------------------
+
+
+def _make_llm_config() -> LlmConfig:
+    """Build a test LlmConfig that will pass validation."""
+    return LlmConfig(
+        provider="groq",
+        model_name="llama-3.1-70b-versatile",
+        api_key="test-key",
+        temperature=0.2,
+        max_output_tokens=512,
+    )
+
+
+class TestLlmSecondApprovalGreenConfirmation:
+    """LLM confirms GREEN → proceed normally."""
+
+    def _advance_to_questions(self, orch):
+        orch.start_call()
+        orch.process_patient_message("Bien.")
+        orch.process_patient_message("Sí, acepto.")
+
+    @patch("backend.conversation.orchestrator.llm_second_approval")
+    def test_green_confirmed_by_llm(self, mock_approval):
+        """LLM confirms GREEN → continue with GREEN ack."""
+        from backend.llm.approval import LlmApprovalResult
+        mock_approval.return_value = LlmApprovalResult(
+            severity=Severity.GREEN,
+            should_escalate=False,
+            reason="Concuerdo, evolución favorable.",
+            next_action="Continuar seguimiento.",
+            action="confirm",
+            llm_used=True,
+            llm_duration_ms=100.0,
+            prompt_tokens=80,
+            completion_tokens=40,
+        )
+        orch = make_orchestrator(llm_config=_make_llm_config())
+        self._advance_to_questions(orch)
+
+        # Answer question 0 (dolor)
+        result = orch.process_patient_message("Todo bien, sin dolor.")
+        assert orch.state is State.QUESTIONS
+        assert result.question_index == 1  # moved to question 1
+        assert result.escalation is not None
+        assert result.escalation.severity is Severity.GREEN
+        mock_approval.assert_called_once()
+
+    @patch("backend.conversation.orchestrator.llm_second_approval")
+    def test_green_upgraded_to_yellow_by_llm(self, mock_approval):
+        """LLM upgrades GREEN → YELLOW."""
+        from backend.llm.approval import LlmApprovalResult
+        mock_approval.return_value = LlmApprovalResult(
+            severity=Severity.YELLOW,
+            should_escalate=False,
+            reason="Aunque parece bien, el dolor moderado es preocupante.",
+            next_action="Monitorear de cerca.",
+            action="escalate",
+            llm_used=True,
+            llm_duration_ms=120.0,
+            prompt_tokens=90,
+            completion_tokens=45,
+        )
+        orch = make_orchestrator(llm_config=_make_llm_config())
+        self._advance_to_questions(orch)
+
+        result = orch.process_patient_message("Me duele un poquito, no mucho.")
+        assert result.escalation is not None
+        assert result.escalation.severity is Severity.YELLOW
+        mock_approval.assert_called_once()
+
+    @patch("backend.conversation.orchestrator.llm_second_approval")
+    def test_green_upgraded_to_red_by_llm(self, mock_approval):
+        """LLM upgrades GREEN → RED → ENDED."""
+        from backend.llm.approval import LlmApprovalResult
+        mock_approval.return_value = LlmApprovalResult(
+            severity=Severity.RED,
+            should_escalate=True,
+            reason="El paciente reporta señales de alarma que requieren atención inmediata.",
+            next_action="Transferir urgente.",
+            action="escalate",
+            llm_used=True,
+            llm_duration_ms=130.0,
+            prompt_tokens=95,
+            completion_tokens=50,
+        )
+        orch = make_orchestrator(llm_config=_make_llm_config())
+        self._advance_to_questions(orch)
+
+        result = orch.process_patient_message("Me duele un poco.")
+        assert orch.state is State.ENDED
+        assert result.call_ended
+        assert result.escalation is not None
+        assert result.escalation.severity is Severity.RED
+
+    @patch("backend.conversation.orchestrator.llm_second_approval")
+    def test_no_llm_config_skips_approval(self, mock_approval):
+        """Without LlmConfig, approval is skipped entirely."""
+        orch = make_orchestrator()  # no llm_config
+        self._advance_to_questions(orch)
+
+        result = orch.process_patient_message(_GREEN_RESPONSE)
+        assert result.escalation is not None
+        assert result.escalation.severity is Severity.GREEN
+        mock_approval.assert_not_called()
+
+
+class TestLlmSecondApprovalYellowNoDowngrade:
+    """LLM must never downgrade YELLOW to GREEN."""
+
+    def _advance_to_questions(self, orch):
+        orch.start_call()
+        orch.process_patient_message("Bien.")
+        orch.process_patient_message("Sí, acepto.")
+
+    @patch("backend.conversation.orchestrator.llm_second_approval")
+    def test_yellow_confirmed_by_llm(self, mock_approval):
+        """LLM confirms YELLOW."""
+        from backend.llm.approval import LlmApprovalResult
+        mock_approval.return_value = LlmApprovalResult(
+            severity=Severity.YELLOW,
+            should_escalate=False,
+            reason="Concuerdo, enrojecimiento requiere monitoreo.",
+            next_action="Monitorear.",
+            action="confirm",
+            llm_used=True,
+            llm_duration_ms=100.0,
+            prompt_tokens=80,
+            completion_tokens=40,
+        )
+        orch = make_orchestrator(llm_config=_make_llm_config())
+        self._advance_to_questions(orch)
+
+        # Answer question 0 (dolor), normal first
+        orch.process_patient_message(_GREEN_RESPONSE)
+
+        # Answer question 1 (fiebre) - YELLOW
+        result = orch.process_patient_message(
+            "Tuve un poco de fiebre ayer, pero ya estoy mejor."
+        )
+        assert result.escalation is not None
+        assert result.escalation.severity is Severity.YELLOW
+
+    @patch("backend.conversation.orchestrator.llm_second_approval")
+    def test_yellow_upgraded_to_red_by_llm(self, mock_approval):
+        """LLM may upgrade YELLOW → RED."""
+        from backend.llm.approval import LlmApprovalResult
+
+        # First two calls return GREEN, third returns RED upgrade
+        mock_approval.side_effect = [
+            LlmApprovalResult(
+                severity=Severity.GREEN,
+                should_escalate=False,
+                reason="Ok.",
+                next_action="Continue.",
+                action="confirm",
+                llm_used=True,
+            ),
+            LlmApprovalResult(
+                severity=Severity.GREEN,
+                should_escalate=False,
+                reason="Ok.",
+                next_action="Continue.",
+                action="confirm",
+                llm_used=True,
+            ),
+            LlmApprovalResult(
+                severity=Severity.RED,
+                should_escalate=True,
+                reason="Enrojecimiento con calor indica infección grave.",
+                next_action="Transferir urgente.",
+                action="escalate",
+                llm_used=True,
+                llm_duration_ms=110.0,
+                prompt_tokens=85,
+                completion_tokens=45,
+            ),
+        ]
+        orch = make_orchestrator(llm_config=_make_llm_config())
+        self._advance_to_questions(orch)
+
+        # Answer question 0 (dolor) first
+        orch.process_patient_message(_GREEN_RESPONSE)
+
+        # Answer question 1 (fiebre)
+        orch.process_patient_message("Sin fiebre.")
+
+        # Answer question 2 (herida) - YELLOW triggers RED via LLM
+        result = orch.process_patient_message(
+            "La herida está enrojecida y caliente."
+        )
+        assert orch.state is State.ENDED
+        assert result.call_ended
+        assert result.escalation is not None
+        assert result.escalation.severity is Severity.RED
+
+
+class TestLlmSecondApprovalClarification:
+    """LLM requests clarification → stay on same question."""
+
+    def _advance_to_questions(self, orch):
+        orch.start_call()
+        orch.process_patient_message("Bien.")
+        orch.process_patient_message("Sí, acepto.")
+
+    @patch("backend.conversation.orchestrator.llm_second_approval")
+    def test_clarification_stays_on_same_question(self, mock_approval):
+        """Clarification must not advance question_index."""
+        from backend.llm.approval import LlmApprovalResult
+        mock_approval.return_value = LlmApprovalResult(
+            severity=Severity.YELLOW,
+            should_escalate=False,
+            reason="Respuesta ambigua.",
+            next_action="Solicitar aclaración.",
+            action="request_clarification",
+            clarification_question="¿Podría describir mejor su nivel de dolor en una escala de 0 a 10?",
+            llm_used=True,
+            llm_duration_ms=110.0,
+            prompt_tokens=80,
+            completion_tokens=50,
+        )
+        orch = make_orchestrator(llm_config=_make_llm_config())
+        self._advance_to_questions(orch)
+
+        # First answer (dolor, q=0) → clarification
+        result = orch.process_patient_message("Pues, más o menos.")
+        assert result.question_index == 0  # still on question 0!
+        assert orch.state is State.QUESTIONS
+        assert "?" in result.agent_message  # clarification is a question
+
+    @patch("backend.conversation.orchestrator.llm_second_approval")
+    def test_clarification_then_answer_advances(self, mock_approval):
+        """After one clarification, next answer advances normally."""
+        from backend.llm.approval import LlmApprovalResult
+
+        # First call → clarification
+        # Second call → confirm
+        mock_approval.side_effect = [
+            LlmApprovalResult(
+                severity=Severity.YELLOW,
+                should_escalate=False,
+                reason="Ambiguous.",
+                next_action="Clarify.",
+                action="request_clarification",
+                clarification_question="¿Qué tan fuerte es su dolor?",
+                llm_used=True,
+            ),
+            LlmApprovalResult(
+                severity=Severity.GREEN,
+                should_escalate=False,
+                reason="Now clear, it's mild.",
+                next_action="Continue.",
+                action="confirm",
+                llm_used=True,
+            ),
+        ]
+        orch = make_orchestrator(llm_config=_make_llm_config())
+        self._advance_to_questions(orch)
+
+        # First answer → clarification (stays on q=0)
+        r1 = orch.process_patient_message("Pues, más o menos.")
+        assert r1.question_index == 0
+
+        # Second answer → advances (q=0 → q=1)
+        r2 = orch.process_patient_message("No mucho, un 2 de 10.")
+        assert r2.question_index == 1
+
+    @patch("backend.conversation.orchestrator.llm_second_approval")
+    def test_clarification_limit_one_per_question(self, mock_approval):
+        """Only one clarification is allowed per question."""
+        from backend.llm.approval import LlmApprovalResult
+
+        mock_approval.return_value = LlmApprovalResult(
+            severity=Severity.YELLOW,
+            should_escalate=False,
+            reason="Ambiguous.",
+            next_action="Clarify.",
+            action="request_clarification",
+            clarification_question="¿Podría ser más específico?",
+            llm_used=True,
+        )
+        orch = make_orchestrator(llm_config=_make_llm_config())
+        self._advance_to_questions(orch)
+
+        # First attempt → clarification (stays)
+        r1 = orch.process_patient_message("Pues, más o menos.")
+        assert r1.question_index == 0
+
+        # Second attempt on same question → limit reached, proceeds as YELLOW
+        r2 = orch.process_patient_message("No sé, regular.")
+        # Should advance now
+        assert r2.question_index == 1
+        assert r2.escalation is not None
+        assert r2.escalation.severity is Severity.YELLOW
+
+
+class TestLlmSecondApprovalRag:
+    """LLM requests RAG for doubt → run RAG in QUESTIONS."""
+
+    def _advance_to_questions(self, orch):
+        orch.start_call()
+        orch.process_patient_message("Bien.")
+        orch.process_patient_message("Sí, acepto.")
+
+    @patch("backend.conversation.orchestrator.retrieve")
+    @patch("backend.conversation.orchestrator.generate_rag_answer")
+    @patch("backend.conversation.orchestrator.llm_second_approval")
+    def test_rag_request_runs_retrieval_and_continues(
+        self, mock_approval, mock_generate, mock_retrieve
+    ):
+        """RAG doubt → run retrieval, generate answer, continue."""
+        from backend.llm.approval import LlmApprovalResult
+        from backend.rag.retrieval import RetrievalResult, RetrievedChunk
+
+        # Approval requests RAG
+        mock_approval.return_value = LlmApprovalResult(
+            severity=Severity.YELLOW,
+            should_escalate=False,
+            reason="Duda sobre enrojecimiento.",
+            next_action="Consultar fuentes.",
+            action="request_rag",
+            rag_query="¿Es normal enrojecimiento post-apendicectomía día 3?",
+            llm_used=True,
+            llm_duration_ms=120.0,
+            prompt_tokens=90,
+            completion_tokens=50,
+        )
+
+        # RAG returns chunks
+        mock_retrieve.return_value = RetrievalResult(
+            chunks=[
+                RetrievedChunk(
+                    chunk_id="rag-chunk-1",
+                    document_id="doc-1",
+                    source_filename="guia_postop.pdf",
+                    chunk_index=0,
+                    page_number=3,
+                    text="El enrojecimiento leve es normal en los primeros días.",
+                    similarity=0.72,
+                ),
+            ],
+            query="test",
+            sufficient=True,
+        )
+
+        # LLM RAG answer
+        mock_generate.return_value = RagAnswer(
+            answer="El enrojecimiento leve es normal en los primeros días postoperatorios.",
+            citations=[
+                RagCitation(
+                    chunk_id="rag-chunk-1",
+                    document_id="doc-1",
+                    source_filename="guia_postop.pdf",
+                    page_number=3,
+                    excerpt="El enrojecimiento leve es normal...",
+                )
+            ],
+            insufficient_knowledge=False,
+            model="llama-3.1-70b-versatile",
+            llm_duration_ms=200.0,
+            prompt_tokens=100,
+            completion_tokens=60,
+        )
+
+        orch = make_orchestrator(
+            rag_config=make_rag_config(),
+            llm_config=_make_llm_config(),
+        )
+        self._advance_to_questions(orch)
+
+        # First answer → RAG doubt, run retrieval
+        result = orch.process_patient_message(
+            "La herida está un poco roja."
+        )
+        # Should have advanced
+        assert result.question_index == 1
+        mock_retrieve.assert_called_once()
+        mock_generate.assert_called_once()
+
+        # Citations should be included
+        assert len(result.citations) > 0
+
+    @patch("backend.conversation.orchestrator.retrieve")
+    @patch("backend.conversation.orchestrator.generate_rag_answer")
+    @patch("backend.conversation.orchestrator.llm_second_approval")
+    def test_rag_on_last_question_proceeds_to_closing(
+        self, mock_approval, mock_generate, mock_retrieve
+    ):
+        """RAG on question 6 (last) proceeds to CLOSING after retrieval."""
+        from backend.llm.approval import LlmApprovalResult
+        from backend.rag.retrieval import RetrievalResult, RetrievedChunk
+
+        orch = make_orchestrator(
+            rag_config=make_rag_config(),
+            llm_config=_make_llm_config(),
+        )
+        self._advance_to_questions(orch)
+
+        # Answer questions 0-4 with GREEN
+        for _ in range(5):
+            mock_approval.return_value = LlmApprovalResult(
+                severity=Severity.GREEN,
+                should_escalate=False,
+                reason="Ok.",
+                next_action="Continue.",
+                action="confirm",
+                llm_used=True,
+            )
+            orch.process_patient_message(_GREEN_RESPONSE)
+
+        # Now on question 5 (movilidad, last one)
+        # This time: RAG doubt
+        mock_approval.return_value = LlmApprovalResult(
+            severity=Severity.YELLOW,
+            should_escalate=False,
+            reason="Duda sobre mareo postoperatorio.",
+            next_action="Consultar fuentes.",
+            action="request_rag",
+            rag_query="¿Es normal mareo al caminar después de apendicectomía?",
+            llm_used=True,
+        )
+        mock_retrieve.return_value = RetrievalResult(
+            chunks=[
+                RetrievedChunk(
+                    chunk_id="rag-chunk-final",
+                    document_id="doc-final",
+                    source_filename="movilidad.pdf",
+                    chunk_index=0,
+                    page_number=1,
+                    text="El mareo leve es común los primeros días.",
+                    similarity=0.68,
+                ),
+            ],
+            query="test",
+            sufficient=True,
+        )
+        mock_generate.return_value = RagAnswer(
+            answer="El mareo leve al movilizarse es común en los primeros días postoperatorios.",
+            citations=[
+                RagCitation(
+                    chunk_id="rag-chunk-final",
+                    document_id="doc-final",
+                    source_filename="movilidad.pdf",
+                    page_number=1,
+                )
+            ],
+            insufficient_knowledge=False,
+            model="llama-3.1-70b-versatile",
+        )
+
+        result = orch.process_patient_message("Me mareo un poco al caminar.")
+        # Last question → CLOSING
+        assert orch.state is State.CLOSING
+        assert result.state is State.CLOSING
+
+
+class TestLlmSecondApprovalFallback:
+    """LLM approval failures fall back to deterministic."""
+
+    def _advance_to_questions(self, orch):
+        orch.start_call()
+        orch.process_patient_message("Bien.")
+        orch.process_patient_message("Sí, acepto.")
+
+    @patch("backend.conversation.orchestrator.llm_second_approval")
+    def test_approval_crash_falls_back(self, mock_approval):
+        """If llm_second_approval crashes, use deterministic result."""
+        mock_approval.side_effect = RuntimeError("Boom")
+        orch = make_orchestrator(llm_config=_make_llm_config())
+        self._advance_to_questions(orch)
+
+        result = orch.process_patient_message(_GREEN_RESPONSE)
+        assert result.escalation is not None
+        assert result.escalation.severity is Severity.GREEN
+        assert not result.call_ended
+
+    @patch("backend.conversation.orchestrator.llm_second_approval")
+    def test_approval_returns_empty_llm_used(self, mock_approval):
+        """llm_used=False means fallback to deterministic."""
+        from backend.llm.approval import LlmApprovalResult
+        mock_approval.return_value = LlmApprovalResult(
+            severity=Severity.GREEN,
+            should_escalate=False,
+            reason="Deterministic fallback.",
+            next_action="Continue.",
+            action="confirm",
+            llm_used=False,  # fallback
+        )
+        orch = make_orchestrator(llm_config=_make_llm_config())
+        self._advance_to_questions(orch)
+
+        result = orch.process_patient_message(_GREEN_RESPONSE)
+        assert result.escalation is not None
+        assert result.escalation.severity is Severity.GREEN
+
+
+class TestLlmSecondApprovalMetrics:
+    """LLM approval metrics propagate to turn."""
+
+    def _advance_to_questions(self, orch):
+        orch.start_call()
+        orch.process_patient_message("Bien.")
+        orch.process_patient_message("Sí, acepto.")
+
+    @patch("backend.conversation.orchestrator.llm_second_approval")
+    def test_llm_metrics_in_turn(self, mock_approval):
+        """LLM duration and token counts propagate to OrchestratorTurn."""
+        from backend.llm.approval import LlmApprovalResult
+        mock_approval.return_value = LlmApprovalResult(
+            severity=Severity.GREEN,
+            should_escalate=False,
+            reason="Confirmed.",
+            next_action="Continue.",
+            action="confirm",
+            llm_used=True,
+            llm_duration_ms=156.7,
+            prompt_tokens=95,
+            completion_tokens=42,
+        )
+        orch = make_orchestrator(llm_config=_make_llm_config())
+        self._advance_to_questions(orch)
+
+        result = orch.process_patient_message(_GREEN_RESPONSE)
+        assert result.llm_duration_ms == 156.7
+        assert result.prompt_tokens == 95
+        assert result.completion_tokens == 42
+
+
+class TestLlmSecondApprovalFinalQuestionClarification:
+    """Clarification on question 6 (last) stays on question 6."""
+
+    def _advance_to_questions(self, orch):
+        orch.start_call()
+        orch.process_patient_message("Bien.")
+        orch.process_patient_message("Sí, acepto.")
+
+    @patch("backend.conversation.orchestrator.llm_second_approval")
+    def test_clarification_on_final_question_stays(self, mock_approval):
+        """Clarification on question 6 stays on index 5."""
+        from backend.llm.approval import LlmApprovalResult
+
+        orch = make_orchestrator(llm_config=_make_llm_config())
+        self._advance_to_questions(orch)
+
+        # Answer questions 0-4 with GREEN
+        for i in range(5):
+            mock_approval.return_value = LlmApprovalResult(
+                severity=Severity.GREEN,
+                should_escalate=False,
+                reason="Ok.",
+                next_action="Continue.",
+                action="confirm",
+                llm_used=True,
+            )
+            orch.process_patient_message(_GREEN_RESPONSE)
+
+        # Question 5 (last) → clarification
+        mock_approval.return_value = LlmApprovalResult(
+            severity=Severity.YELLOW,
+            should_escalate=False,
+            reason="Ambiguous answer.",
+            next_action="Clarify.",
+            action="request_clarification",
+            clarification_question="¿Puede describir mejor cómo se siente al caminar?",
+            llm_used=True,
+        )
+        result = orch.process_patient_message("Pues, regular.")
+        assert result.question_index == 5  # stays on last question
+        assert orch.state is State.QUESTIONS
+
