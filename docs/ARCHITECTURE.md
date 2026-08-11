@@ -187,9 +187,10 @@ collection: clinical_knowledge
   correspondiente y hacer borrado suave de la fila SQLite (``status = 'deleted'``). La
   fila de metadatos se conserva para auditabilidad. Sin chunks huérfanos en ChromaDB.
 - Las cargas duplicadas se detectan mediante hash SHA-256 del contenido: si existe un
-  registro activo (no eliminado) con el mismo hash, el servicio devuelve el registro
-  existente sin crear uno nuevo. Si el original fue eliminado, se crea un nuevo
-  registro.
+  registro activo (estados READY o PROCESSING) con el mismo hash, el servicio devuelve
+  el registro existente sin crear uno nuevo. Los registros FAILED también permiten la
+  creación de un nuevo registro de ingesta, sin bloquear la recarga. Si el original fue
+  eliminado, se crea un nuevo registro.
 - La recuperación excluye automáticamente los chunks cuyo ``document_id`` no esté en
   el registro SQLite o cuyo estado en el registro sea ``DELETED``, asegurando que solo
   documentos activos y registrados contribuyan a los resultados de búsqueda.

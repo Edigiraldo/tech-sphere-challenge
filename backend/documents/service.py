@@ -5,9 +5,9 @@ class is the single entry point for upload, list, and delete operations.
 
 Duplicate uploads are detected via SHA-256 content hashing: when a file with
 the same content is uploaded again and the existing registry record is active
-(not ``DELETED``), the service returns the existing record without creating a
-new one.  If the existing record has already been deleted, a new record is
-created, preserving the audit trail of the previous record.
+(``READY`` or ``PROCESSING``), the service returns the existing record without
+creating a new one.  If the existing record is ``FAILED`` or ``DELETED``, a
+new record is created, preserving the audit trail of the previous record.
 """
 
 from __future__ import annotations
@@ -67,19 +67,20 @@ class DocumentService:
         """Upload and process a clinical document.
 
         1. Compute SHA-256 content hash for duplicate detection.
-        2. If an active (non-deleted) record with the same hash exists,
-           return it immediately — no new record or re-ingestion.
+        2. If an active record (``READY`` or ``PROCESSING``) with the
+           same hash exists, return it immediately — no new record
+           or re-ingestion.
         3. Save the file to the upload directory.
         4. Insert metadata with ``PROCESSING`` status (including content_hash).
         5. Ingest into the RAG vector store via ``rag.ingestion``.
         6. Update status to ``READY`` (success) or ``FAILED`` (error).
 
         Duplicate policy: two uploads with identical content (matching
-        SHA-256) that are both active share the same logical identity.
-        The first non-deleted record is returned for all subsequent
-        identical uploads.  If the original was deleted, a new record
-        is created — deletion is unambiguous because the deleted record's
-        ``document_id`` no longer matches any active duplicate query.
+        SHA-256) that are both active (``READY`` or ``PROCESSING``) share
+        the same logical identity.  The first active record is returned
+        for all subsequent identical uploads.  If the original was deleted
+        or failed ingestion, a new record is created — the previous
+        record's ``document_id`` is excluded from the duplicate query.
 
         Args:
             content: Raw file bytes.
