@@ -501,16 +501,23 @@ def get_document_by_id(document_id: str) -> Document | None:
 
 
 def get_document_by_content_hash(content_hash: str) -> Document | None:
-    """Return the first non-deleted document matching *content_hash*.
+    """Return an active, successfully-ingested document matching *content_hash*.
 
-    Only considers documents whose status is not ``DELETED``.  Returns
-    ``None`` when no active match exists, allowing a new upload to proceed.
+    Only considers documents whose status is ``READY`` or ``PROCESSING``
+    (i.e. ingestion has completed or is in progress).  ``FAILED`` and
+    ``DELETED`` documents are excluded so that re-uploading the same
+    content creates a fresh ingestion record when the previous attempt
+    failed or the document was explicitly removed.
     """
+    active_statuses = (
+        DocumentStatus.READY.value,
+        DocumentStatus.PROCESSING.value,
+    )
     conn = _get_conn()
     try:
         row = conn.execute(
-            "SELECT * FROM documents WHERE content_hash = ? AND status != ?",
-            (content_hash, DocumentStatus.DELETED.value),
+            "SELECT * FROM documents WHERE content_hash = ? AND status IN (?, ?)",
+            (content_hash, *active_statuses),
         ).fetchone()
         return _row_to_document(row) if row is not None else None
     finally:

@@ -209,7 +209,7 @@ proyecto.
 pytest
 ```
 
-Estas pruebas (967) validan dataset, salud del servidor, chunking y extracción de
+Estas pruebas (969) validan dataset, salud del servidor, chunking y extracción de
 PDF (con error paths), el adaptador LLM (Llama 3.3 70B Versatile vía Groq con
 fallback extractivo, validación,
 respuestas estructuradas, detección de inyección de prompts y
@@ -290,7 +290,7 @@ primer uso.
 │   ├── test_frontend_integration.py  Pruebas de integración del contrato frontend-backend (26)
 │   ├── test_llm.py        Pruebas del adaptador LLM — Groq (63)
 │   ├── test_rag_api.py    Pruebas del endpoint /rag/query (14)
-│   ├── test_documents.py  Pruebas del ciclo de vida de documentos (42)
+│   ├── test_documents.py  Pruebas del ciclo de vida de documentos (44)
 │   ├── test_calls_api.py  Pruebas de endpoints de turnos de voz (71)
 │   ├── test_persistence_extended.py  Pruebas de capa SQLite extendida (41)
 │   ├── test_sqlite_migrations.py  Pruebas de migraciones SQLite (1)

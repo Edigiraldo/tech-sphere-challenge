@@ -1034,6 +1034,40 @@ class TestContentHashDuplicateDetection:
             "get_document_by_content_hash should not return deleted documents"
         )
 
+    def test_get_by_content_hash_ignores_failed(self, temp_db_path):
+        """get_document_by_content_hash must NOT return a failed document.
+        
+        FAILED documents have no ingested chunks, so re-uploading the same
+        content must create a new ingestion record instead of blocking on
+        the stale failed entry.
+        """
+        from backend.documents.models import Document, DocumentStatus
+        from backend.persistence.sqlite import (
+            get_document_by_content_hash,
+            init_sqlite,
+            insert_document,
+            update_document_status,
+        )
+        from datetime import datetime, timezone
+
+        init_sqlite(temp_db_path)
+
+        doc = Document(
+            document_id="ch-failed",
+            filename="failed.pdf",
+            status=DocumentStatus.READY,
+            uploaded_at=datetime.now(timezone.utc),
+            size_bytes=10,
+            content_hash="hash-failed",
+        )
+        insert_document(doc)
+        update_document_status("ch-failed", DocumentStatus.FAILED)
+
+        found = get_document_by_content_hash("hash-failed")
+        assert found is None, (
+            "get_document_by_content_hash should not return failed documents"
+        )
+
     def test_get_by_content_hash_nonexistent(self, temp_db_path):
         """get_document_by_content_hash returns None for unknown hash."""
         from backend.persistence.sqlite import (
@@ -1049,18 +1083,39 @@ class TestContentHashDuplicateDetection:
         self, temp_upload_dir, temp_db_path, rag_config
     ):
         """Uploading the same content twice must return the first document
-        on the second attempt (idempotent upload)."""
+        on the second attempt (idempotent upload).
+
+        Uses a valid minimal PDF so ingestion succeeds (READY), which is
+        the prerequisite for content-hash duplicate detection — FAILED
+        documents are intentionally excluded from the duplicate lookup.
+        """
         from backend.documents.service import DocumentService
 
         service = DocumentService(
             upload_dir=temp_upload_dir, db_path=temp_db_path,
         )
 
-        content = b"%PDF-1.4\nfake pdf content for hashing\n%%EOF"
+        # Create a minimal valid PDF that pdfplumber can actually extract text from
+        content = (
+            b"%PDF-1.4\n"
+            b"1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n"
+            b"2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n"
+            b"3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]"
+            b"/Contents 4 0 R/Resources<</Font<</F1 5 0 R>>>>>>endobj\n"
+            b"4 0 obj<</Length 24>>stream\n"
+            b"BT /F1 12 Tf 72 720 Td (Hello) Tj ET\n"
+            b"endstream\nendobj\n"
+            b"5 0 obj<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>endobj\n"
+            b"xref\n0 6\n0000000000 65535 f \n0000000009 00000 n \n"
+            b"0000000058 00000 n \n0000000115 00000 n \n"
+            b"0000000266 00000 n \n0000000360 00000 n \n"
+            b"trailer<</Size 6/Root 1 0 R>>\nstartxref\n433\n%%EOF"
+        )
 
         doc1 = service.upload(content, "manual.pdf", rag_config)
-        assert doc1.status.value in ("ready", "failed"), (
-            f"Unexpected status: {doc1.status.value}"
+        assert doc1.status.value == "ready", (
+            f"Expected READY for valid PDF, got {doc1.status.value}: "
+            f"{doc1.error_message}"
         )
         assert doc1.content_hash is not None
 
@@ -1071,6 +1126,67 @@ class TestContentHashDuplicateDetection:
             f"got {doc2.document_id}"
         )
         assert doc2.content_hash == doc1.content_hash
+
+    def test_service_upload_new_after_failed(
+        self, temp_upload_dir, temp_db_path, rag_config
+    ):
+        """After a document fails ingestion, re-uploading the same content
+        must create a new record (the failed record is ignored by
+        content-hash lookup, allowing retry)."""
+        from backend.documents.service import DocumentService
+        from backend.persistence.sqlite import (
+            get_document_by_content_hash,
+            get_document_by_id,
+            update_document_status,
+        )
+        from backend.documents.models import DocumentStatus
+
+        service = DocumentService(
+            upload_dir=temp_upload_dir, db_path=temp_db_path,
+        )
+
+        # Use content that will fail extraction (not a real PDF)
+        content = b"this is not a pdf at all"
+        import hashlib
+
+        content_hash = hashlib.sha256(content).hexdigest()
+
+        doc1 = service.upload(content, "bad.pdf", rag_config)
+        assert doc1.status == DocumentStatus.FAILED, (
+            f"Expected FAILED, got {doc1.status.value}"
+        )
+        assert doc1.content_hash == content_hash
+
+        # Verify content-hash lookup excludes the failed record
+        found = get_document_by_content_hash(content_hash)
+        assert found is None, (
+            "get_document_by_content_hash must not return a FAILED document"
+        )
+
+        # Re-upload same content — must create a NEW record
+        doc2 = service.upload(content, "bad.pdf", rag_config)
+        assert doc2.document_id != doc1.document_id, (
+            "Re-upload after FAILED must create a new document_id"
+        )
+        assert doc2.content_hash == content_hash
+        assert doc2.status == DocumentStatus.FAILED, (
+            f"Still expected FAILED for bad content, got {doc2.status.value}"
+        )
+
+        # Verify the old record is still FAILED (audit trail preserved)
+        old_doc = get_document_by_id(doc1.document_id)
+        assert old_doc is not None
+        assert old_doc.status == DocumentStatus.FAILED
+
+        # Verify list_all has both records
+        all_docs = service.list_all()
+        doc_ids = {d.document_id for d in all_docs}
+        assert doc1.document_id in doc_ids
+        assert doc2.document_id in doc_ids
+        # Both have the same hash — content-hash lookup returns None
+        # because they're both FAILED, confirming re-upload always
+        # produces a fresh record for failed content
+        assert get_document_by_content_hash(content_hash) is None
 
     def test_service_upload_new_after_delete(
         self, temp_upload_dir, temp_db_path, rag_config

@@ -106,13 +106,15 @@ fases están documentados en `docs/ARCHITECTURE.md`.
 - Ciclo de vida de documentos: ``backend/documents/`` — ``Document`` /
   ``DocumentStatus``, ``DocumentService`` (cargar/listar/eliminar).
   ``backend/api/documents.py`` — POST/GET/DELETE /documents,
-  ``POST /documents/reconcile``. 32 pruebas rápidas + 10 lentas pasan, incluyendo
+  ``POST /documents/reconcile``. 34 pruebas rápidas + 10 lentas pasan, incluyendo
   aislamiento de documentos duplicados (eliminar un documento no afecta los chunks de
   otro documento). La detección de duplicados por hash de contenido (SHA-256) hace la
-  carga idempotente: contenido idéntico devuelve el registro activo existente. La
-  reconciliación detecta y puede limpiar chunks huérfanos en ChromaDB. La recuperación
-  filtrada por registro excluye IDs de documentos eliminados o no registrados de los
-  resultados de búsqueda.
+  carga idempotente: contenido idéntico devuelve el registro activo existente (estados
+  ``READY`` o ``PROCESSING``). Documentos ``FAILED`` no bloquean la recarga — la
+  búsqueda por hash de contenido excluye registros fallidos para permitir
+  reintentos de ingesta. La reconciliación detecta y puede limpiar chunks huérfanos
+  en ChromaDB. La recuperación filtrada por registro excluye IDs de documentos
+  eliminados o no registrados de los resultados de búsqueda.
 - Orquestador de conversación: ``backend/conversation/orchestrator.py`` — flujo
   determinista solo texto a través de IDLE → GREETING → CONSENT → QUESTIONS (6
   preguntas estructuradas de seguimiento en español: dolor, fiebre, herida, apetito,
@@ -230,7 +232,7 @@ fases están documentados en `docs/ARCHITECTURE.md`.
   declaradas como dependencias base explícitas en ``pyproject.toml``; ``numpy`` eliminado
   del extra ``voice``; ``kokoro>=0.7.0`` copiado al extra ``dev``.
 
-Totales de pruebas: 967 pruebas rápidas (pytest), 27 pruebas lentas (`pytest -m slow`), 994 pruebas en total.
+Totales de pruebas: 969 pruebas rápidas (pytest), 27 pruebas lentas (`pytest -m slow`), 996 pruebas en total.
 
 ## En progreso
 
