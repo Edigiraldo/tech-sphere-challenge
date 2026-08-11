@@ -30,11 +30,16 @@ implementación por fases) están completas. La aplicación implementa:
   QUESTIONS → CLOSING → ENDED; 6 preguntas estructuradas de seguimiento en español;
   **flujo que prioriza la seguridad**: clasifica las respuestas del paciente antes de
   cualquier llamada a RAG/LLM — RED deriva directamente a ENDED con un mensaje urgente
-  de seguridad, ``call_ended=True`` y sin procesamiento adicional; GREEN y primer
-  YELLOW usan acuses deterministas sin RAG/LLM; dos resultados YELLOW consecutivos
-  disparan escalamiento con ``should_escalate=True``; las preguntas clínicas durante
-  CLOSING se responden con RAG+LLM (con citas) mientras que las no-preguntas finalizan
-  la llamada; fallbacks seguros).
+  de seguridad, ``call_ended=True`` y sin procesamiento adicional; cada respuesta
+  no-RED durante QUESTIONS pasa por una **aprobación secundaria por LLM**
+  (``backend/llm/approval.py``) que actúa como revisor conservador — puede confirmar la
+  clasificación, subir la severidad (nunca degradarla), solicitar una aclaración (máximo
+  una por pregunta) o solicitar RAG por duda clínica; fallos, timeouts o salida inválida
+  del LLM caen automáticamente a la clasificación determinista; GREEN y primer YELLOW
+  confirmados reciben acuses deterministas sin generación RAG+LLM; dos resultados
+  YELLOW consecutivos disparan escalamiento con ``should_escalate=True``; las preguntas
+  clínicas durante CLOSING se responden con RAG+LLM (con citas) mientras que las
+  no-preguntas finalizan la llamada; fallbacks seguros).
 - Motor de escalamiento (clasificador GREEN/YELLOW/RED con lexicones de señales de
   alarma en español, umbrales numéricos, manejo de negaciones; conectado a los endpoints
   de turnos de voz mediante ``EscalationInfo`` en ``TurnResponse``).
@@ -119,11 +124,16 @@ fases están documentados en `docs/ARCHITECTURE.md`.
   determinista solo texto a través de IDLE → GREETING → CONSENT → QUESTIONS (6
   preguntas estructuradas de seguimiento en español: dolor, fiebre, herida, apetito,
   sueño, movilidad) → CLOSING → ENDED. Integra recuperación RAG + LLM con controles
-  de suficiencia de recuperación y fallbacks seguros. 212 pruebas pasan.
+  de suficiencia de recuperación y fallbacks seguros. **LLM second-approval** integrado
+  para cada respuesta no-RED durante QUESTIONS (``backend/llm/approval.py``). 228
+  pruebas pasan.
 - Motor de decisión de escalamiento: ``backend/decision/`` — ``classify()`` devuelve
   ``EscalationResult`` tipado (GREEN/YELLOW/RED) con lexicones deterministas de señales
   de alarma en español, umbrales numéricos, manejo de negaciones, detección de
-  ambigüedad. 125 pruebas pasan. Solo stdlib, solo texto.
+  ambigüedad. 178 pruebas pasan. Solo stdlib, solo texto. Las pruebas de aprobación
+  secundaria por LLM (53, en ``backend/llm/approval.py``) y las pruebas de integración
+  del orquestador con la aprobación (16) se contabilizan por separado
+  (ver sección LLM second-approval más abajo).
 - Adaptador STT: ``backend/voice/`` — Protocolo ``SttProvider``,
   ``GroqWhisperProvider`` (modelo fijado a ``whisper-large-v3``, idioma ``"es"``),
   asíncrono vía ``groq.AsyncGroq``, mapeo robusto de errores. 56 pruebas pasan.
@@ -243,7 +253,21 @@ fases están documentados en `docs/ARCHITECTURE.md`.
   declaradas como dependencias base explícitas en ``pyproject.toml``; ``numpy`` eliminado
   del extra ``voice``; ``kokoro>=0.7.0`` copiado al extra ``dev``.
 
-Totales de pruebas: 987 pruebas rápidas (pytest), 27 pruebas lentas (`pytest -m slow`), 1014 pruebas en total.
+- **LLM second-approval (aprobación secundaria por LLM):** ``backend/llm/approval.py`` —
+  ``llm_second_approval()`` actúa como revisor conservador de seguridad después de la
+  clasificación determinista para cada respuesta no-RED en QUESTIONS. El LLM puede
+  confirmar la clasificación, subir la severidad (GREEN→YELLOW, GREEN→RED, YELLOW→RED;
+  nunca degradar), solicitar una aclaración (máximo una por pregunta, se queda en la misma
+  pregunta), o solicitar RAG por duda clínica (ejecuta RAG en QUESTIONS y continúa).
+  RED nunca pasa por aprobación LLM — el orquestador deriva directamente a ENDED. Fallos,
+  timeouts, salida inválida, intentos de degradación e inyección de prompts caen
+  automáticamente a la clasificación determinista. La pregunta final (movilidad) procede
+  a CLOSING después de respuesta/RAG; la aclaración se queda en la pregunta 6. Los
+  controles de inyección de prompts y la política conservadora de escalamiento se
+  preservan en todos los caminos. 68 pruebas nuevas pasan (53 de aprobación/decisión +
+  16 de integración con el orquestador).
+
+Totales de pruebas: 1 055 pruebas rapidas (pytest), 27 pruebas lentas (`pytest -m slow`), 1 082 pruebas en total.
 
 ## En progreso
 

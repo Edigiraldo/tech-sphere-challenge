@@ -2,17 +2,32 @@
 
 ``ConversationOrchestrator`` connects the existing domain primitives —
 ``PatientContext``, ``CallContext``, ``State`` / ``Event`` state machine,
-``History`` / ``Message``, RAG retrieval, and LLM answer generation — into
-a single coordinated dialogue flow for postoperative follow-up.
+``History`` / ``Message``, RAG retrieval, LLM answer generation, and
+**LLM second-approval** (``backend/llm/approval.py``) — into a single
+coordinated dialogue flow for postoperative follow-up.
 
 The orchestrator is text-only and deterministic: it uses a fixed sequence of
 structured questions (in Spanish), drives state transitions safely, records
 every turn in the history, and classifies patient answers **before** any
 RAG/LLM call.  RED answers short-circuit immediately to ENDED with an urgent
-safety message, ``call_ended=True``, and no further processing.  GREEN and
-first-YELLOW answers receive deterministic acknowledgments without RAG/LLM.
-Two consecutive YELLOW classifications trigger escalation with
-``should_escalate=True``.
+safety message, ``call_ended=True``, and no further processing — RED never
+passes through LLM approval.
+
+Every non-RED answer during QUESTIONS goes through **LLM second-approval**
+(``llm_second_approval()``), a conservative safety reviewer that may:
+* **confirm** the deterministic classification,
+* **escalate** severity (upgrade GREEN→YELLOW, GREEN→RED, or YELLOW→RED;
+  downgrades are rejected),
+* **request clarification** from the patient (at most one per question;
+  stays on the same question), or
+* **request RAG** for clinical doubt (runs RAG retrieval in QUESTIONS, then
+  continues).
+
+LLM failures, timeouts, invalid output, or severity-downgrade attempts fall
+back automatically to the deterministic classification.  GREEN and
+first-YELLOW answers confirmed by approval receive deterministic
+acknowledgments without RAG+LLM answer generation.  Two consecutive YELLOW
+classifications trigger escalation with ``should_escalate=True``.
 
 Clinical questions during CLOSING are answered with RAG+LLM (with citations)
 and the call remains in CLOSING; non-questions end the call.
@@ -20,7 +35,11 @@ and the call remains in CLOSING; non-questions end the call.
 Fallback behaviour:
 * Consent refused → polite closing, call ends.
 * RED classification → short-circuit to ENDED with urgent safety message
-  and ``call_ended=True``.  No RAG/LLM call; no further questions.
+  and ``call_ended=True``.  No RAG/LLM call; no LLM approval; no further
+  questions.
+* LLM second-approval failure → deterministic classification used as-is
+  (safe fallback; the approval is conservative — it only downgrades to the
+  original deterministic result, never below it).
 * Two consecutive YELLOW → escalation to CLOSING.
 * No RAG chunks retrieved → the agent states it lacks information and
   advises consulting the treating physician.
@@ -43,6 +62,7 @@ from backend.conversation.transitions import InvalidTransitionError, next_state
 from backend.decision import classify as _decision_classify
 from backend.decision import EscalationResult, Severity
 from backend.llm.adapter import RagAnswer, generate_rag_answer
+from backend.llm.approval import llm_second_approval, LlmApprovalResult
 from backend.llm.config import LlmConfig
 from backend.rag.config import RagConfig
 from backend.rag.retrieval import RetrievalResult, retrieve
@@ -246,6 +266,8 @@ class ConversationOrchestrator:
         # Internal per-call tracking
         self._question_index: int = 0
         self._consecutive_yellows: int = 0
+        self._llm_doubt_clarification_attempts: dict[int, int] = {}
+        """Per-question index count of LLM clarification requests (max 1)."""
 
     # -- public read-only properties -----------------------------------------
 
@@ -421,11 +443,20 @@ class ConversationOrchestrator:
         1. Classify the patient's answer against the symptom domain.
         2. **RED** → short-circuit: no RAG/LLM, urgent safety message,
            transition directly to ENDED, ``call_ended=True``.
-        3. **YELLOW (first)** → deterministic acknowledgment, no RAG/LLM,
-           ask next question.
-        4. **YELLOW (second consecutive)** → escalate to CLOSING.
-        5. **GREEN** → deterministic acknowledgment, no RAG/LLM,
-           ask next question.
+        3. **LLM second-approval** for every non-RED answer:
+           a. Call ``llm_second_approval()`` — it may confirm, upgrade severity,
+              request RAG for a doubt, or request one clarification.
+           b. Failures/timeouts/invalid/low-confidence output fall back to
+              deterministic classification.
+        4. Process the approval result:
+           - **confirm** → proceed normally with final severity.
+           - **escalate** → apply upgraded severity.
+           - **request_clarification** → stay on same question, ask one
+             clarification question (max 1 per question).
+           - **request_rag** → run RAG retrieval in QUESTIONS, get clinical
+             context, then continue/finish normally.
+        5. Final question (index 5, movilidad) proceeds to CLOSING after
+           answer/RAG; clarification stays on question 6.
         """
         answered_idx = self._question_index
         domain = _QUESTION_DOMAINS[answered_idx]
@@ -452,7 +483,7 @@ class ConversationOrchestrator:
 
         severity = classification.severity
 
-        # --- RED: short-circuit immediately → ENDED ---
+        # --- RED: short-circuit immediately → ENDED (no LLM approval) ---
         if severity is Severity.RED:
             self._consecutive_yellows = 0
             self._transition(Event.EMERGENCY_TERMINATE)
@@ -467,22 +498,165 @@ class ConversationOrchestrator:
                 escalation=classification,
             )
 
-        # --- YELLOW: accumulate or escalate ---
-        if severity is Severity.YELLOW:
+        # --- LLM second-approval for every non-RED answer ---
+        final_classification = classification
+        approval_result: LlmApprovalResult | None = None
+        approval_meta: dict[str, Any] = {}
+
+        if self._llm_config is not None:
+            try:
+                approval_result = llm_second_approval(
+                    patient_text=patient_text,
+                    domain=domain,
+                    deterministic_classification=classification,
+                    dia_postop=pc.dia_postop,
+                    procedimiento=pc.procedimiento,
+                    config=self._llm_config,
+                )
+            except Exception:
+                logger.exception(
+                    "LLM second-approval crashed — falling back to deterministic"
+                )
+                approval_result = None
+
+            if approval_result is not None and approval_result.llm_used:
+                approval_meta["llm_duration_ms"] = approval_result.llm_duration_ms
+                approval_meta["prompt_tokens"] = approval_result.prompt_tokens
+                approval_meta["completion_tokens"] = approval_result.completion_tokens
+        else:
+            # No LLM config — skip approval, use deterministic only
+            approval_result = None
+
+        # --- Determine effective classification after approval ---
+        if approval_result is not None and approval_result.llm_used:
+            final_severity = approval_result.severity
+            final_classification = EscalationResult(
+                severity=final_severity,
+                should_escalate=approval_result.should_escalate,
+                reason=approval_result.reason,
+                next_action=approval_result.next_action,
+                domain=domain,
+                source=classification.source,
+            )
+        else:
+            # Fallback: use deterministic classification as-is
+            final_severity = severity
+
+        # --- Process by action type ---
+
+        # --- RED (upgraded from approval) → ENDED ---
+        if final_severity is Severity.RED:
+            self._consecutive_yellows = 0
+            self._transition(Event.EMERGENCY_TERMINATE)
+            urgent_msg = self._build_red_message(final_classification)
+            self._record_agent(urgent_msg)
+            self._question_index += 1
+            return self._make_turn(
+                urgent_msg,
+                requires_response=False,
+                call_ended=True,
+                question_index=answered_idx,
+                escalation=final_classification,
+                llm_meta=approval_meta if approval_meta else None,
+            )
+
+        # --- Request clarification → stay on same question ---
+        if (
+            approval_result is not None
+            and approval_result.llm_used
+            and approval_result.action == "request_clarification"
+        ):
+            # Limit to 1 clarification per question
+            attempts = self._llm_doubt_clarification_attempts.get(answered_idx, 0)
+            if attempts >= 1:
+                logger.info(
+                    "Clarification limit reached for question %d — "
+                    "proceeding with deterministic YELLOW.",
+                    answered_idx,
+                )
+            else:
+                self._llm_doubt_clarification_attempts[answered_idx] = attempts + 1
+                clarification_q = approval_result.clarification_question
+                full_msg = (
+                    f"{clarification_q}"
+                )
+                self._record_agent(full_msg)
+                # Do NOT advance _question_index — patient answers same domain again
+                return self._make_turn(
+                    full_msg,
+                    requires_response=True,
+                    question_index=answered_idx,
+                    escalation=final_classification,
+                    llm_meta=approval_meta if approval_meta else None,
+                )
+
+        # --- Request RAG for doubt → run RAG, then continue ---
+        if (
+            approval_result is not None
+            and approval_result.llm_used
+            and approval_result.action == "request_rag"
+        ):
+            rag_response, rag_citations, rag_meta = self._run_doubt_rag(
+                patient_text=patient_text,
+                rag_query=approval_result.rag_query,
+                domain=domain,
+            )
+            # Merge approval LLM metrics with RAG response metrics
+            merged_meta = dict(approval_meta)
+            if rag_meta.get("rag_queries", 0) > 0:
+                merged_meta["rag_queries"] = rag_meta.get("rag_queries", 0)
+            if rag_meta.get("llm_duration_ms") is not None:
+                merged_meta["llm_duration_ms"] = rag_meta.get("llm_duration_ms")
+            if rag_meta.get("prompt_tokens") is not None:
+                merged_meta["prompt_tokens"] = rag_meta.get("prompt_tokens")
+            if rag_meta.get("completion_tokens") is not None:
+                merged_meta["completion_tokens"] = rag_meta.get("completion_tokens")
+
+            # Advance the question index
+            self._question_index += 1
+
+            # Reset/accumulate yellows
+            self._consecutive_yellows = 0  # RAG resolved the doubt
+
+            # After RAG: if this was the last question → CLOSING
+            if self._question_index >= _NUM_QUESTIONS:
+                # Build closing message with RAG response as prefix
+                closing_prefix = rag_response if rag_response else ""
+                return self._close_questions(
+                    final_message=closing_prefix if closing_prefix else None,
+                    citations=rag_citations,
+                    question_index=self._question_index,
+                    llm_meta=merged_meta if merged_meta else None,
+                    escalation=final_classification,
+                )
+            else:
+                return self._ask_next_question(
+                    after_message=rag_response if rag_response else None,
+                    citations=rag_citations,
+                    question_index=self._question_index,
+                    llm_meta=merged_meta if merged_meta else None,
+                    escalation=final_classification,
+                )
+
+        # --- Normal flow (confirm / escalate without RED) ---
+        # Reset clarification attempts for this question (successfully answered)
+        self._llm_doubt_clarification_attempts.pop(answered_idx, None)
+
+        if final_severity is Severity.YELLOW:
             self._consecutive_yellows += 1
 
             if self._consecutive_yellows >= 2:
                 # Two consecutive YELLOW → escalate with should_escalate=True
                 escalated_classification = EscalationResult(
-                    severity=classification.severity,
+                    severity=final_classification.severity,
                     should_escalate=True,
-                    reason=classification.reason,
-                    next_action=classification.next_action,
-                    domain=classification.domain,
-                    source=classification.source,
+                    reason=final_classification.reason,
+                    next_action=final_classification.next_action,
+                    domain=final_classification.domain,
+                    source=final_classification.source,
                 )
                 self._transition(Event.ESCALATION_TRIGGER)
-                escalate_msg = self._build_consecutive_yellow_message(classification)
+                escalate_msg = self._build_consecutive_yellow_message(final_classification)
                 self._record_agent(escalate_msg)
                 self._question_index += 1
                 return self._make_turn(
@@ -490,22 +664,25 @@ class ConversationOrchestrator:
                     requires_response=True,
                     question_index=answered_idx,
                     escalation=escalated_classification,
+                    llm_meta=approval_meta if approval_meta else None,
                 )
             else:
                 # First YELLOW: deterministic ack
-                ack = self._build_yellow_ack(domain, classification)
+                ack = self._build_yellow_ack(domain, final_classification)
                 self._question_index += 1
                 if self._question_index >= _NUM_QUESTIONS:
                     return self._close_questions(
                         ack,
                         question_index=self._question_index,
-                        escalation=classification,
+                        escalation=final_classification,
+                        llm_meta=approval_meta if approval_meta else None,
                     )
                 else:
                     return self._ask_next_question(
                         after_message=ack,
                         question_index=self._question_index,
-                        escalation=classification,
+                        escalation=final_classification,
+                        llm_meta=approval_meta if approval_meta else None,
                     )
 
         # --- GREEN: deterministic ack ---
@@ -516,13 +693,15 @@ class ConversationOrchestrator:
             return self._close_questions(
                 ack,
                 question_index=self._question_index,
-                escalation=classification,
+                escalation=final_classification,
+                llm_meta=approval_meta if approval_meta else None,
             )
         else:
             return self._ask_next_question(
                 after_message=ack,
                 question_index=self._question_index,
-                escalation=classification,
+                escalation=final_classification,
+                llm_meta=approval_meta if approval_meta else None,
             )
 
     def _handle_closing_response(self, patient_text: str) -> OrchestratorTurn:
@@ -1126,6 +1305,124 @@ class ConversationOrchestrator:
             )
 
         # Build response with citations
+        response = f"{answer.answer}"
+
+        if answer.citations:
+            cited = ", ".join(
+                f"{c.source_filename} (p. {c.page_number})"
+                for c in answer.citations
+            )
+            response += f"\n\n(Fuentes consultadas: {cited})"
+
+        citations_list: list[dict[str, Any]] = [
+            {
+                "chunk_id": c.chunk_id,
+                "document_id": c.document_id,
+                "source_filename": c.source_filename,
+                "page_number": c.page_number,
+            }
+            for c in answer.citations
+        ]
+
+        return response, citations_list, meta
+
+    def _run_doubt_rag(
+        self,
+        patient_text: str,
+        rag_query: str,
+        domain: str,
+    ) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
+        """Run RAG retrieval in response to an LLM approval 'request_rag' action.
+
+        The LLM is uncertain about the patient's answer and wants clinical
+        context before continuing.  We run RAG with the LLM-provided query,
+        then call the LLM again to get guidance on the patient's condition.
+
+        Returns a ``(response_text, citations, metadata)`` tuple.
+        """
+        meta: dict[str, Any] = {
+            "rag_queries": 0,
+            "llm_duration_ms": None,
+            "prompt_tokens": None,
+            "completion_tokens": None,
+        }
+
+        pc = self._call_context.patient_context
+        query = (
+            f"Procedimiento: {pc.procedimiento}. "
+            f"Día postoperatorio: {pc.dia_postop}. "
+            f"Dominio: {domain}. "
+            f"Respuesta del paciente: {patient_text}. "
+            f"Consulta clínica: {rag_query}"
+        )
+
+        # --- Retrieve ---
+        retrieval_result = self._retrieve(patient_text, rag_query)
+        if retrieval_result is not None:
+            meta["rag_queries"] = 1
+
+        if not retrieval_result or not retrieval_result.has_results or not retrieval_result.sufficient:
+            # No RAG results — return a warning but continue
+            return (
+                "He consultado la información disponible pero no encuentro "
+                "detalles adicionales sobre este aspecto. Le sugiero "
+                "consultar con su médico tratante si tiene dudas.",
+                [],
+                meta,
+            )
+
+        # --- Generate ---
+        if self._llm_config is None:
+            return (
+                "Gracias por compartir esta información. Le recuerdo que "
+                "cualquier síntoma que le preocupe debe ser consultado "
+                "con su médico tratante.",
+                [],
+                meta,
+            )
+
+        context_chunks: list[dict[str, Any]] = [
+            {
+                "chunk_id": c.chunk_id,
+                "document_id": c.document_id,
+                "source_filename": c.source_filename,
+                "page_number": c.page_number,
+                "text": c.text,
+                "similarity": c.similarity,
+            }
+            for c in retrieval_result.chunks
+        ]
+
+        try:
+            answer: RagAnswer = generate_rag_answer(
+                query=query,
+                context_chunks=context_chunks,
+                config=self._llm_config,
+                debug=False,
+            )
+        except Exception:
+            logger.exception("LLM call failed during doubt RAG")
+            return (
+                "He consultado la información disponible. Le recomiendo "
+                "consultar con su médico tratante si tiene dudas sobre "
+                "este aspecto de su recuperación.",
+                [],
+                meta,
+            )
+
+        meta["llm_duration_ms"] = answer.llm_duration_ms
+        meta["prompt_tokens"] = answer.prompt_tokens
+        meta["completion_tokens"] = answer.completion_tokens
+
+        if answer.insufficient_knowledge:
+            return (
+                "He consultado la información clínica disponible. Basado en "
+                "ella, no encuentro detalles adicionales. Le sugiero "
+                "consultar a su médico tratante.",
+                [],
+                meta,
+            )
+
         response = f"{answer.answer}"
 
         if answer.citations:
