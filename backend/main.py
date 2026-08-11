@@ -35,6 +35,7 @@ from backend.api.calls import calls_router
 from backend.api.documents import documents_router
 from backend.api.metrics import metrics_router
 from backend.api.rag import rag_router
+from backend.api.summaries import summaries_router
 
 logger = logging.getLogger(__name__)
 
@@ -112,6 +113,7 @@ def create_app() -> FastAPI:
     app.include_router(metrics_router)
     app.include_router(rag_router)
     app.include_router(documents_router)
+    app.include_router(summaries_router)
 
     # -----------------------------------------------------------------------
     # Frontend static assets (served from the sibling frontend/ directory)
@@ -135,6 +137,10 @@ def create_app() -> FastAPI:
         @app.get("/metrics")
         async def _serve_metrics() -> FileResponse:
             return FileResponse(_frontend_dir / "metrics.html")
+
+        @app.get("/summary")
+        async def _serve_summary() -> FileResponse:
+            return FileResponse(_frontend_dir / "summary.html")
 
         app.mount(
             "/static",

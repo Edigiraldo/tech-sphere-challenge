@@ -209,14 +209,15 @@ proyecto.
 pytest
 ```
 
-Estas pruebas (969) validan dataset, salud del servidor, chunking y extracción de
+Estas pruebas (987) validan dataset, salud del servidor, chunking y extracción de
 PDF (con error paths), el adaptador LLM (Llama 3.3 70B Versatile vía Groq con
 fallback extractivo, validación,
 respuestas estructuradas, detección de inyección de prompts y
 validación de fundamentación), el endpoint RAG `/rag/query` con controles de
 suficiencia, la capa de persistencia, los módulos de voz (STT/TTS), el motor de
 conversación, el clasificador de escalamiento, los endpoints de turnos de voz,
-el módulo de resúmenes, el colector de métricas y el frontal del navegador.
+el módulo de resúmenes, el colector de métricas, el endpoint de resumen de solo
+lectura (`GET /calls/{call_id}/summary`), y el frontal del navegador.
 Las llamadas a la API de Groq están mockeadas. No descargan el modelo
 de embeddings ni procesan PDFs reales.
 
@@ -244,6 +245,7 @@ primer uso.
 │   │   ├── rag.py         POST /rag/query (consulta clínica con RAG)
 │   │   ├── documents.py   POST/GET/DELETE /documents
 │   │   ├── calls.py       POST /calls, POST /calls/{id}/turn (voz)
+│   │   ├── summaries.py   GET /calls/{id}/summary (resumen de solo lectura)
 │   │   └── call_store.py  Almacenamiento en memoria de llamadas
 │   ├── llm/               Adaptador de modelo de lenguaje Groq Llama 3.3
 │   │   ├── __init__.py
@@ -273,12 +275,14 @@ primer uso.
 ├── frontend/              Frontal de navegador (HTML/CSS/JS vanilla)
 │   ├── index.html         Página de selección de paciente
 │   ├── call.html          Interfaz de llamada con MediaRecorder e integración API de voz
+│   ├── summary.html       Página independiente de resumen de llamada
 │   ├── admin.html         Consola de administración de documentos
 │   ├── metrics.html       Vista frontal de métricas
 │   ├── styles.css         Estilos compartidos
 │   ├── data.js            Catálogo compartido de pacientes sintéticos
 │   ├── app.js             Lógica de selección de paciente
 │   ├── call.js            Lógica de UI de llamada con captura de micrófono y API
+│   ├── summary.js         Lógica de visualización de resumen de llamada
 │   ├── admin.js           Lógica de administración con sondeo de estado
 │   └── metrics.js         Lógica de visualización de métricas
 ├── tests/                 Pruebas automatizadas
@@ -286,8 +290,8 @@ primer uso.
 │   ├── conftest.py
 │   ├── test_health.py     Prueba del endpoint /health (1)
 │   ├── test_env_loading.py  Pruebas de carga de .env (8)
-│   ├── test_frontend.py   Pruebas de servido de archivos estáticos (8)
-│   ├── test_frontend_integration.py  Pruebas de integración del contrato frontend-backend (26)
+│   ├── test_frontend.py   Pruebas de servido de archivos estáticos (10)
+│   ├── test_frontend_integration.py  Pruebas de integración del contrato frontend-backend (30)
 │   ├── test_llm.py        Pruebas del adaptador LLM — Groq (63)
 │   ├── test_rag_api.py    Pruebas del endpoint /rag/query (14)
 │   ├── test_documents.py  Pruebas del ciclo de vida de documentos (44)
@@ -295,6 +299,7 @@ primer uso.
 │   ├── test_persistence_extended.py  Pruebas de capa SQLite extendida (41)
 │   ├── test_sqlite_migrations.py  Pruebas de migraciones SQLite (1)
 │   ├── test_summaries.py  Pruebas del generador de resúmenes (44)
+│   ├── test_summary_api.py  Pruebas del endpoint de resumen de solo lectura (12)
 │   ├── test_voice.py      Pruebas del adaptador STT (56)
 │   ├── test_voice_initialization.py  Pruebas de inicialización de voz (13)
 │   ├── test_metrics_api.py  Pruebas de endpoints de métricas (19)
@@ -380,7 +385,9 @@ La aplicación expone:
   de pacientes, integración de micrófono real (MediaRecorder), envío de audio
   a los endpoints ``POST /calls`` y ``POST /calls/{call_id}/turn``, historial
   de conversación, visualización de transcripciones, citas trazables e
-  información de escalamiento, y reproducción de audio WAV.
+  información de escalamiento, y reproducción de audio WAV. Al finalizar la
+  llamada, un resumen estructurado se muestra en línea en la misma página y
+  está disponible en la vista independiente ``/summary?call_id=...``.
 - Una consola de administración gráfica en ``/admin`` para subir, listar con
   sondeo de estado, refrescar y eliminar documentos del conocimiento con
   purgado de chunks indexados. El ciclo de vida de documentos en el backend
@@ -393,6 +400,12 @@ La aplicación expone:
   ``GET /metrics/calls`` y ``GET /metrics/calls/{call_id}``) y una
   vista frontal de métricas. El colector de métricas (``InMemoryMetricsCollector``)
   es un módulo independiente del endpoint de reporte.
+- Un endpoint de resumen de solo lectura (``GET /calls/{call_id}/summary``) que
+  devuelve el resumen estructurado generado y persistido al finalizar cada
+  llamada, con datos del paciente, procedimiento, síntomas, decisión de
+  escalamiento, fuentes citadas y próximos pasos. Una página independiente
+  ``/summary?call_id=...`` y una sección en línea al finalizar la llamada en
+  ``/call`` permiten consultar el resumen de manera trazable.
 
 El flujo esperado es:
 

@@ -58,6 +58,9 @@ document.addEventListener("DOMContentLoaded", () => {
     const loadingOverlay = document.getElementById("loading-overlay");
     const loadingText = document.getElementById("loading-text");
     const callCompletedBanner = document.getElementById("call-completed-banner");
+    const inlineSummarySection = document.getElementById("inline-summary-section");
+    const inlineSummaryContent = document.getElementById("inline-summary-content");
+    const viewFullSummaryLink = document.getElementById("view-full-summary-link");
 
     // -----------------------------------------------------------------------
     // Read call data from sessionStorage
@@ -114,6 +117,97 @@ document.addEventListener("DOMContentLoaded", () => {
             callCompletedBanner.classList.remove("hidden");
         }
         setLoading(false);
+        // Fetch and render the inline summary once the call completes.
+        fetchInlineSummary();
+    }
+
+    /** Fetch the call summary from the API and render it inline. */
+    async function fetchInlineSummary() {
+        if (!callId || !inlineSummarySection || !inlineSummaryContent) return;
+
+        try {
+            const response = await fetch(`/calls/${encodeURIComponent(callId)}/summary`);
+
+            if (!response.ok) {
+                // Summary may not be available yet — retry once after a short delay.
+                setTimeout(async () => {
+                    try {
+                        const retryResp = await fetch(`/calls/${encodeURIComponent(callId)}/summary`);
+                        if (retryResp.ok) {
+                            const data = await retryResp.json();
+                            renderInlineSummary(data);
+                        }
+                    } catch (_) { /* silently skip */ }
+                }, 800);
+                return;
+            }
+
+            const data = await response.json();
+            renderInlineSummary(data);
+        } catch (_) {
+            // Summary fetch is best-effort on the call page.
+        }
+    }
+
+    /**
+     * Render a compact summary inline on the call page.
+     * @param {object} data - SummaryResponse from the API
+     */
+    function renderInlineSummary(data) {
+        if (!inlineSummarySection || !inlineSummaryContent) return;
+
+        // Update the "View full summary" link
+        if (viewFullSummaryLink) {
+            viewFullSummaryLink.href = `/summary?call_id=${encodeURIComponent(data.call_id)}`;
+        }
+
+        let html = "";
+
+        // Patient + procedure (compact)
+        html += '<div class="summary-section">';
+        html += `<p class="summary-section-content">${escapeHtml(data.patient_summary)}</p>`;
+        html += '</div>';
+
+        html += '<div class="summary-section">';
+        html += `<p class="summary-section-content">${escapeHtml(data.procedure_summary)}</p>`;
+        html += '</div>';
+
+        // Decision with severity colouring
+        const sevClass = getInlineSeverityClass(data.decision_summary);
+        html += '<div class="summary-section' + (sevClass ? ' ' + sevClass : '') + '">';
+        html += '<h3 class="summary-section-heading">&#x26A0; Decisión</h3>';
+        html += `<p class="summary-section-content">${escapeHtml(data.decision_summary)}</p>`;
+        html += '</div>';
+
+        // Next steps
+        html += '<div class="summary-section">';
+        html += '<h3 class="summary-section-heading">&#x27A1; Próximos Pasos</h3>';
+        html += `<p class="summary-section-content">${escapeHtml(data.next_steps)}</p>`;
+        html += '</div>';
+
+        // Sources count
+        if (data.sources && data.sources.length > 0) {
+            html += '<div class="summary-section">';
+            html += `<p class="summary-section-content">${data.sources.length} fuente(s) citada(s) — disponible en el resumen completo.</p>`;
+            html += '</div>';
+        }
+
+        inlineSummaryContent.innerHTML = html;
+        inlineSummarySection.classList.remove("hidden");
+    }
+
+    /**
+     * Derive a severity CSS class from decision text for inline rendering.
+     * @param {string} text
+     * @returns {string}
+     */
+    function getInlineSeverityClass(text) {
+        if (!text) return "";
+        const lower = text.toLowerCase();
+        if (lower.includes("rojo") || lower.includes("inmediato")) return "summary-severity-red";
+        if (lower.includes("amarillo") || lower.includes("precaucion") || lower.includes("precaución")) return "summary-severity-yellow";
+        if (lower.includes("verde") || lower.includes("normal")) return "summary-severity-green";
+        return "";
     }
 
     /** Show an error in the transcript area and disable controls. */
