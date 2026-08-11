@@ -70,7 +70,7 @@ fases están documentados en `docs/ARCHITECTURE.md`.
 - Documentación del reto revisada: stack-tecnico, requerimientos, rubrica-evaluacion,
   flujo-de-conocimiento, habeas-data, terminos-y-condiciones.
 - Dataset sintético inventariado: 4 archivos XLSX (40 pacientes, 160 días de
-  trayectoria, 3 991 turnos de conversación), 102 PDFs clínicos en 5 procedimientos.
+  trayectoria, 3 991 turnos de conversación), 107 PDFs clínicos en 5 procedimientos.
 - Configuración de OpenCode planner, coder y auditor preparada.
 - README inicial del repositorio creado.
 - Arquitectura definida: catálogo de módulos, flujos de datos, límites de persistencia,
@@ -89,7 +89,7 @@ fases están documentados en `docs/ARCHITECTURE.md`.
 - Pipeline RAG: ``backend/rag/`` — extraer (pdfplumber), chunking (tamaño fijo con
   solapamiento, 800/150 caracteres), embedding (BGE-M3 vía sentence-transformers),
   almacenar (ChromaDB coseno), ingestión, recuperación (``RetrievalResult`` con citas).
-  14 pruebas rápidas + 10 lentas pasan. D6 (estrategia de chunking) resuelta.
+  35 pruebas pasan. D6 (estrategia de chunking) resuelta.
 - Adaptador LLM: ``backend/llm/`` — **Groq Llama 3.3 70B Versatile** con salida JSON
   estructurada, prompts en español, validación de seguridad en múltiples capas
   incluyendo detección de inyección de prompts a nivel de entrada (escaneo de patrones
@@ -117,7 +117,7 @@ fases están documentados en `docs/ARCHITECTURE.md`.
   determinista solo texto a través de IDLE → GREETING → CONSENT → QUESTIONS (6
   preguntas estructuradas de seguimiento en español: dolor, fiebre, herida, apetito,
   sueño, movilidad) → CLOSING → ENDED. Integra recuperación RAG + LLM con controles
-  de suficiencia de recuperación y fallbacks seguros. 193 pruebas pasan.
+  de suficiencia de recuperación y fallbacks seguros. 212 pruebas pasan.
 - Motor de decisión de escalamiento: ``backend/decision/`` — ``classify()`` devuelve
   ``EscalationResult`` tipado (GREEN/YELLOW/RED) con lexicones deterministas de señales
   de alarma en español, umbrales numéricos, manejo de negaciones, detección de
@@ -147,8 +147,8 @@ fases están documentados en `docs/ARCHITECTURE.md`.
   de la transcripción del agente en cada turno y progresión del estado de llamada con
   orden monótono.
 - Instrumentación de métricas: ``backend/metrics/`` — ``InMemoryMetricsCollector``
-  (thread-safe, ``asyncio.Lock``), ``TurnMetrics`` / ``CallMetrics`` /
-  ``MetricsSummary``, estimación de costos, percentiles P50/P95. 82 pruebas pasan.
+  (thread-safe, ``threading.Lock``), ``TurnMetrics`` / ``CallMetrics`` /
+  ``MetricsSummary``, estimación de costos, percentiles P50/P95. 94 pruebas pasan.
   Solo stdlib.
 - Módulo de resúmenes: ``backend/summaries/`` — generador determinista de resúmenes en
   español (datos demográficos del paciente, procedimiento, seis dominios de síntomas,
@@ -172,7 +172,7 @@ fases están documentados en `docs/ARCHITECTURE.md`.
   incompletas se rastrean con ``ended_at=None``. SQLite se inicializa al arrancar la
   aplicación en ``backend/main.py``. Las llamadas, turnos, resúmenes y alertas son
   seguros ante reinicios: sobreviven a reinicios del proceso porque los datos están en
-  SQLite, no solo en memoria. 63 pruebas pasan (9 enfocadas en persistencia).
+  SQLite, no solo en memoria. 71 pruebas pasan (9 enfocadas en persistencia).
 - Clasificación de escalamiento conectada en los endpoints de turnos de voz: prefiere
   la clasificación del orquestador cuando está disponible (``turn.escalation``), con
   fallback al clasificador a nivel de endpoint con acumulación de YELLOW consecutivos
@@ -230,7 +230,7 @@ fases están documentados en `docs/ARCHITECTURE.md`.
   declaradas como dependencias base explícitas en ``pyproject.toml``; ``numpy`` eliminado
   del extra ``voice``; ``kokoro>=0.7.0`` copiado al extra ``dev``.
 
-Totales de pruebas: 948 pruebas rápidas (pytest), 27 pruebas lentas (`pytest -m slow`), 975 pruebas en total.
+Totales de pruebas: 967 pruebas rápidas (pytest), 27 pruebas lentas (`pytest -m slow`), 994 pruebas en total.
 
 ## En progreso
 

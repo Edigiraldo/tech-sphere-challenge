@@ -72,7 +72,6 @@ flowchart TB
     Persistence --> SQLite
     Persistence --> Chroma
     Summary --> SQLite
-    Metrics --> SQLite
 ```
 
 ## Flujo de turno de voz
@@ -116,7 +115,7 @@ sequenceDiagram
 
     API->>T: Sintetizar texto de respuesta
     T-->>API: Audio WAV
-    API->>DB: Persistir turno, alerta y métricas
+    API->>DB: Persistir turno y alerta
     opt Llamada finalizada
         API->>DB: Generar y persistir resumen estructurado
     end
