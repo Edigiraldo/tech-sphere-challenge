@@ -144,3 +144,40 @@ async def test_nonexistent_static_returns_404():
         response = await client.get("/static/nonexistent.file")
 
     assert response.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Summary page
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_summary_html_returns_200():
+    """GET /summary should return the summary.html page."""
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/summary")
+
+    assert response.status_code == 200
+    content_type = response.headers.get("content-type", "")
+    assert "text/html" in content_type
+    body = response.text
+    assert "Resumen de Llamada" in body
+    assert "summary-container" in body
+    assert "sources-section" in body
+    assert "summary.js" in body  # references the JS file
+
+
+@pytest.mark.asyncio
+async def test_summary_js_served():
+    """GET /static/summary.js should return JavaScript."""
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/static/summary.js")
+
+    assert response.status_code == 200
+    content_type = response.headers.get("content-type", "")
+    assert "javascript" in content_type or "text/javascript" in content_type
+    body = response.text
+    assert "fetchSummary" in body
+    assert "renderSummary" in body
+    assert "escapeHtml" in body

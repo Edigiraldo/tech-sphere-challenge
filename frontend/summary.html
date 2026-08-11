@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Resumen de Llamada — Tech Sphere Challenge</title>
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+
+<header class="app-header">
+    <h1>Tech Sphere Challenge</h1>
+    <div class="header-right">
+        <span id="summary-badge" class="state-badge state-idle">Resumen</span>
+    </div>
+</header>
+
+<main class="main-content summary-layout">
+
+    <section class="card">
+        <h2>Resumen de Llamada</h2>
+        <div id="summary-container" class="summary-container">
+            <p class="placeholder-text summary-loading">Cargando resumen...</p>
+        </div>
+        <div id="summary-error" class="error-message hidden"></div>
+    </section>
+
+    <section id="sources-section" class="card summary-sources-card hidden">
+        <h2>Fuentes Citadas</h2>
+        <div id="sources-list" class="summary-sources-list"></div>
+    </section>
+
+</main>
+
+<footer class="app-footer">
+    <p>Datos sintéticos — Sin fines clínicos reales</p>
+</footer>
+
+<script src="/static/summary.js"></script>
+</body>
+</html>

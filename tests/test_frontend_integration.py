@@ -137,13 +137,14 @@ def setup_voice_mocks(mock_stt, mock_tts):
     to return an empty dict so tests do not trigger model downloads,
     XLSX reads, or external API connections.
     """
-    from backend.api.calls import _call_escalations, _call_turn_index, _call_citations
+    from backend.api.calls import _call_escalations, _call_turn_index, _call_citations, _call_consecutive_yellows
     from backend.api.metrics import metrics_collector
 
     metrics_collector.reset()
     _call_turn_index.clear()
     _call_escalations.clear()
     _call_citations.clear()
+    _call_consecutive_yellows.clear()
 
     with patch("backend.api.calls._stt", mock_stt), patch(
         "backend.api.calls._tts", mock_tts
@@ -163,6 +164,7 @@ def setup_voice_mocks(mock_stt, mock_tts):
     _call_turn_index.clear()
     _call_escalations.clear()
     _call_citations.clear()
+    _call_consecutive_yellows.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -1439,5 +1441,226 @@ class TestCallStateProgressionContract:
                     assert data["state"] != State.ENDED.value, (
                         "call_ended=False but state is already ENDED"
                     )
+
+            await global_store.remove(call_id)
+
+
+# ---------------------------------------------------------------------------
+# Summary API contract
+# ---------------------------------------------------------------------------
+
+
+class TestSummaryFrontendContract:
+    """Verify the summary endpoint returns the shape the frontend expects.
+
+    summary.js fetches ``GET /calls/{call_id}/summary`` and renders:
+    - patient_summary, procedure_summary, symptoms_summary
+    - decision_summary (with severity-derived CSS)
+    - sources (array of {document_id, source_filename, page_number})
+    - next_steps
+    """
+
+    @pytest.fixture(autouse=True)
+    def _persistence_setup(self, tmp_path):
+        """Initialise SQLite so summary persistence and retrieval work."""
+        from backend.persistence.sqlite import _reset_sqlite, init_sqlite
+        _reset_sqlite()
+        db_path = tmp_path / "test_frontend_summary.db"
+        init_sqlite(db_path)
+        yield
+        _reset_sqlite()
+
+    @pytest.mark.asyncio
+    async def test_summary_endpoint_returns_expected_shape(self):
+        """After a full call, the summary endpoint returns the shape that
+        summary.js and call.js's inline renderer expect."""
+        transport = ASGITransport(app=app)
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            # Create and walk through a full call
+            resp = await client.post(
+                "/calls",
+                json={
+                    "patient_id": "P001",
+                    "dia_postop": 3,
+                    "procedimiento": "Apendicectomía laparoscópica",
+                    "nombre_completo": "Paciente 001",
+                    "eps": "EPS",
+                },
+            )
+            assert resp.status_code == 201
+            call_id = resp.json()["call_id"]
+
+            for _ in range(10):
+                r = await client.post(
+                    f"/calls/{call_id}/turn",
+                    json={"audio_base64": _MOCK_AUDIO_B64},
+                )
+                if r.status_code != 200:
+                    break
+                if r.json().get("call_ended"):
+                    break
+
+            # Small delay for summary persistence
+            import asyncio
+            await asyncio.sleep(0.1)
+
+            # Fetch the summary
+            summary_resp = await client.get(f"/calls/{call_id}/summary")
+            assert summary_resp.status_code == 200
+            data = summary_resp.json()
+
+            # Fields consumed by summary.js
+            assert "call_id" in data
+            assert data["call_id"] == call_id
+            assert "summary_id" in data
+            assert "created_at" in data
+
+            assert "patient_summary" in data
+            assert isinstance(data["patient_summary"], str)
+            assert len(data["patient_summary"]) > 0
+
+            assert "procedure_summary" in data
+            assert isinstance(data["procedure_summary"], str)
+            assert len(data["procedure_summary"]) > 0
+
+            assert "symptoms_summary" in data
+            assert isinstance(data["symptoms_summary"], str)
+            assert len(data["symptoms_summary"]) > 0
+
+            assert "decision_summary" in data
+            assert isinstance(data["decision_summary"], str)
+            assert len(data["decision_summary"]) > 0
+
+            assert "next_steps" in data
+            assert isinstance(data["next_steps"], str)
+            assert len(data["next_steps"]) > 0
+
+            # Sources — always a list (even if empty)
+            assert "sources" in data
+            assert isinstance(data["sources"], list)
+
+            # Clean up orchestrator
+            await global_store.remove(call_id)
+
+    @pytest.mark.asyncio
+    async def test_summary_sources_have_required_fields(self):
+        """Each source in the sources array has document_id, source_filename,
+        and page_number — the fields summary.js renders."""
+        transport = ASGITransport(app=app)
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            resp = await client.post(
+                "/calls",
+                json={
+                    "patient_id": "P002",
+                    "dia_postop": 5,
+                    "procedimiento": "Colecistectomía",
+                    "nombre_completo": "Paciente 002",
+                    "eps": "EPS",
+                },
+            )
+            assert resp.status_code == 201
+            call_id = resp.json()["call_id"]
+
+            for _ in range(10):
+                r = await client.post(
+                    f"/calls/{call_id}/turn",
+                    json={"audio_base64": _MOCK_AUDIO_B64},
+                )
+                if r.status_code != 200:
+                    break
+                if r.json().get("call_ended"):
+                    break
+
+            import asyncio
+            await asyncio.sleep(0.1)
+
+            summary_resp = await client.get(f"/calls/{call_id}/summary")
+            assert summary_resp.status_code == 200
+            data = summary_resp.json()
+
+            for source in data["sources"]:
+                assert "document_id" in source
+                assert "source_filename" in source
+                assert "page_number" in source
+                assert isinstance(source["page_number"], int)
+                assert source["page_number"] >= 0
+
+            await global_store.remove(call_id)
+
+    @pytest.mark.asyncio
+    async def test_summary_404_when_call_not_completed(self):
+        """The summary endpoint returns 404 when the call hasn't ended."""
+        transport = ASGITransport(app=app)
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            resp = await client.post(
+                "/calls",
+                json={
+                    "patient_id": "P003",
+                    "dia_postop": 2,
+                    "procedimiento": "Hernioplastia inguinal",
+                    "nombre_completo": "Paciente 003",
+                    "eps": "EPS",
+                },
+            )
+            assert resp.status_code == 201
+            call_id = resp.json()["call_id"]
+
+            # Call is created but not ended — summary should not exist
+            summary_resp = await client.get(f"/calls/{call_id}/summary")
+            assert summary_resp.status_code == 404
+
+            await global_store.remove(call_id)
+
+    @pytest.mark.asyncio
+    async def test_summary_decision_text_present_for_severity_css(self):
+        """The decision_summary field must contain severity-signalling text
+        (green/yellow/red indicators) so that summary.js can derive CSS."""
+        transport = ASGITransport(app=app)
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            resp = await client.post(
+                "/calls",
+                json={
+                    "patient_id": "P004",
+                    "dia_postop": 4,
+                    "procedimiento": "Cesárea",
+                    "nombre_completo": "Paciente 004",
+                    "eps": "EPS",
+                },
+            )
+            assert resp.status_code == 201
+            call_id = resp.json()["call_id"]
+
+            for _ in range(10):
+                r = await client.post(
+                    f"/calls/{call_id}/turn",
+                    json={"audio_base64": _MOCK_AUDIO_B64},
+                )
+                if r.status_code != 200:
+                    break
+                if r.json().get("call_ended"):
+                    break
+
+            import asyncio
+            await asyncio.sleep(0.1)
+
+            summary_resp = await client.get(f"/calls/{call_id}/summary")
+            assert summary_resp.status_code == 200
+            data = summary_resp.json()
+
+            decision = data["decision_summary"]
+            # Must contain at least one severity indicator for CSS derivation
+            assert any(
+                kw in decision.lower()
+                for kw in ["verde", "amarillo", "rojo", "precaucion", "precaución",
+                           "normal", "inmediato", "escalamiento"]
+            ), f"decision_summary contains no severity indicator: {decision!r}"
 
             await global_store.remove(call_id)

@@ -135,12 +135,14 @@ fases están documentados en `docs/ARCHITECTURE.md`.
 - Frontal: ``frontend/`` — HTML/CSS/JS vanilla. ``index.html`` (selección de paciente),
   ``call.html`` / ``call.js`` (interfaz de llamada con captura de micrófono
   MediaRecorder, insignia de estado, historial de conversación, área de transcripción,
-  visualización de citas y escalamiento, reproducción de audio WAV),
+  visualización de citas y escalamiento, reproducción de audio WAV, resumen en línea
+  al finalizar la llamada), ``summary.html`` / ``summary.js`` (página independiente de
+  resumen estructurado con citas trazables y severidad codificada por colores),
   ``admin.html`` / ``admin.js`` (consola de administración con carga, listado, sondeo
-  de estado, refresco, eliminación), vista frontal de métricas. 8 pruebas pasan.
+  de estado, refresco, eliminación), vista frontal de métricas. 10 pruebas pasan.
   ``backend/main.py`` sirve activos mediante ``FileResponse`` y ``StaticFiles``.
 - Pruebas de integración del contrato frontal-backend:
-  ``tests/test_frontend_integration.py`` — 26 pruebas rápidas que cubren el contrato
+  ``tests/test_frontend_integration.py`` — 30 pruebas rápidas que cubren el contrato
   HTTP consumido por ``call.js`` y ``app.js``: formas de respuesta de ``POST /calls``
   y ``POST /calls/{call_id}/turn``, ida y vuelta de audio base64, flujo completo de
   llamada desde GREETING hasta ENDED, forma y momento de la información de
@@ -190,8 +192,8 @@ fases están documentados en `docs/ARCHITECTURE.md`.
   ``should_escalate=True``, incluyendo ``EscalationAlertRecord`` persistido con
   ``severity=YELLOW`` y la bandera ``escalated=True`` a nivel de llamada.
 - ``backend/main.py`` registra todos los routers (``calls_router``, ``rag_router``,
-  ``documents_router``, ``metrics_router``) y sirve activos del frontal incluyendo
-  ``/``, ``/call``, ``/admin`` y vistas de métricas.
+  ``documents_router``, ``metrics_router``, ``summaries_router``) y sirve activos del
+  frontal incluyendo ``/``, ``/call``, ``/summary``, ``/admin`` y vistas de métricas.
 - Carga automática de ``.env`` mediante ``python-dotenv`` a nivel de módulo en
   ``backend/main.py`` antes de cualquier importación de configuración.
 - ``.gitignore`` actualizado con exclusiones estándar de caché/build de Python, caché
@@ -204,10 +206,19 @@ fases están documentados en `docs/ARCHITECTURE.md`.
   MediaRecorder, llamadas fetch a ``POST /calls`` y ``POST /calls/{call_id}/turn``,
   reproducción de audio WAV, renderizado de transcripciones, visualización de
   transcripción del paciente (desde el campo ``patient_transcription``), historial de
-  conversación con visualización de citas y escalamiento.
+  conversación con visualización de citas y escalamiento, y resumen en línea al
+  finalizar la llamada con enlace a la página independiente ``/summary``.
 - Consola de administración: página ``/admin`` con carga de documentos, listado con
   sondeo de estado, refresco y eliminación; respaldada por la API REST de ciclo de
   vida de documentos pero implementada como un módulo UI distinto.
+- Endpoint de resumen de solo lectura: ``backend/api/summaries.py`` —
+  ``GET /calls/{call_id}/summary`` devuelve el resumen estructurado persistido
+  (datos del paciente, procedimiento, síntomas, decisión, fuentes, próximos pasos)
+  desde SQLite. Es estrictamente de solo lectura; no genera resúmenes — esa
+  responsabilidad es de ``_persist_call_summary``. Páginas frontales
+  ``/summary?call_id=...`` (independiente) y sección en línea en ``/call``
+  (después de finalizar la llamada) renderizan el resumen con escape XSS y
+  citas trazables. 16 pruebas nuevas pasan (12 API + 4 contrato de integración).
 - API de métricas y frontal: endpoints tipados de solo lectura ``GET /metrics/summary``,
   ``GET /metrics/calls`` y ``GET /metrics/calls/{call_id}`` y vista frontal de
   métricas; el módulo colector de métricas es distinto de la API de reporte.
@@ -232,7 +243,7 @@ fases están documentados en `docs/ARCHITECTURE.md`.
   declaradas como dependencias base explícitas en ``pyproject.toml``; ``numpy`` eliminado
   del extra ``voice``; ``kokoro>=0.7.0`` copiado al extra ``dev``.
 
-Totales de pruebas: 969 pruebas rápidas (pytest), 27 pruebas lentas (`pytest -m slow`), 996 pruebas en total.
+Totales de pruebas: 987 pruebas rápidas (pytest), 27 pruebas lentas (`pytest -m slow`), 1014 pruebas en total.
 
 ## En progreso
 

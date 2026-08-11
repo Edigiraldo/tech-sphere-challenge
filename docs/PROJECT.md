@@ -48,7 +48,7 @@ decisiones abiertas.
 backend/               Backend de la aplicación (monolito modular Python)
   data/                Acceso tipado de solo lectura al dataset (pacientes, trayectorias,
                          conversaciones, resolvedor de PDFs)
-  api/                 Endpoints REST (llamadas, documentos, RAG, métricas); WebSocket aún no implementado
+  api/                 Endpoints REST (llamadas, documentos, RAG, métricas, resúmenes); WebSocket aún no implementado
   voice/               Adaptadores STT y TTS
   conversation/        Orquestación de diálogo y máquina de estados
   llm/                 Adaptador del modelo de lenguaje permitido

@@ -794,6 +794,167 @@ body {
     display: none !important;
 }
 
+/* ==========================================================================
+   Summary Page & Inline Summary
+   ========================================================================== */
+
+/* --- Summary Layout ------------------------------------------------------ */
+.summary-layout {
+    max-width: 800px;
+}
+
+.summary-container {
+    min-height: 120px;
+}
+
+.summary-loading {
+    padding: 2rem 0;
+}
+
+/* --- Summary Meta -------------------------------------------------------- */
+.summary-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1.5rem;
+    margin-bottom: 1.25rem;
+    padding-bottom: 0.75rem;
+    border-bottom: 1px solid #e2e8f0;
+    font-size: 0.85rem;
+    color: #64748b;
+}
+
+.summary-meta-item {
+    white-space: nowrap;
+}
+
+/* --- Summary Sections ---------------------------------------------------- */
+.summary-sections {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+}
+
+.summary-section {
+    background-color: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-radius: 6px;
+    padding: 1rem 1.25rem;
+}
+
+.summary-section-heading {
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: #1e3a5f;
+    margin-bottom: 0.4rem;
+}
+
+.summary-section-content {
+    font-size: 0.9rem;
+    color: #334155;
+    line-height: 1.6;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+}
+
+/* Severity colour borders */
+.summary-severity-green {
+    border-left: 4px solid #10b981;
+    background-color: #f0fdf4;
+}
+
+.summary-severity-yellow {
+    border-left: 4px solid #f59e0b;
+    background-color: #fffbeb;
+}
+
+.summary-severity-red {
+    border-left: 4px solid #ef4444;
+    background-color: #fef2f2;
+}
+
+/* --- Inline Summary (call page) ------------------------------------------ */
+.inline-summary {
+    grid-column: 1 / -1;
+}
+
+.inline-summary .summary-section {
+    margin-bottom: 0.5rem;
+}
+
+.inline-summary-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin-bottom: 0.75rem;
+}
+
+.inline-summary-link {
+    font-size: 0.85rem;
+    color: #2563eb;
+    text-decoration: none;
+    font-weight: 600;
+}
+
+.inline-summary-link:hover {
+    text-decoration: underline;
+}
+
+/* --- Sources Section ----------------------------------------------------- */
+.summary-sources-card {
+    /* inherits .card */
+}
+
+.sources-list-items {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+}
+
+.source-item {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.5rem 0.75rem;
+    background-color: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-radius: 6px;
+    margin-bottom: 0.4rem;
+    font-size: 0.85rem;
+}
+
+.source-icon {
+    font-size: 1rem;
+    flex-shrink: 0;
+}
+
+.source-filename {
+    font-weight: 600;
+    color: #334155;
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.source-page {
+    color: #64748b;
+    font-size: 0.8rem;
+    white-space: nowrap;
+}
+
+.source-id {
+    color: #94a3b8;
+    font-size: 0.7rem;
+    font-family: monospace;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 120px;
+}
+
 /* --- Responsive adjustments ---------------------------------------------- */
 @media (max-width: 480px) {
     .app-header {

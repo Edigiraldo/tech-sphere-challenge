@@ -76,7 +76,7 @@ trabajo futuro.
 
 | Módulo | Responsabilidad | Límite clave |
 |--------|----------------|-------------|
-| `api/` | Superficie HTTP REST. Valida entradas, delega a módulos de dominio. Incluye routers de llamadas, documentos, RAG y métricas. Los endpoints WebSocket aún no están implementados. | Única capa que el navegador toca. Sin lógica de negocio. |
+| `api/` | Superficie HTTP REST. Valida entradas, delega a módulos de dominio. Incluye routers de llamadas, documentos, RAG, métricas y resúmenes. Los endpoints WebSocket aún no están implementados. | Única capa que el navegador toca. Sin lógica de negocio. |
 | `voice/` | Adaptadores STT y TTS tras una interfaz común. | Adaptador de E/S puro. No posee estado, datos de pacientes ni conocimiento clínico. |
 | `conversation/` | Máquina de estados de llamada: saludo → consentimiento → preguntas estructuradas → cierre. Clasifica cada respuesta de seguimiento antes del procesamiento posterior. Usa respuestas deterministas para GREEN/primer-YELLOW, termina RED inmediatamente y llama a RAG + `llm/` solo para preguntas clínicas durante CLOSING. | Posee el estado de turno y el ensamblaje de prompts. Nunca llama a `documents/` ni toca directamente persistencia/embeddings. |
 | `llm/` | Adaptador para **Llama 3.3 70B Versatile** vía Groq Cloud con JSON estructurado validado, controles de fundamentación, detección de inyección de prompts y fallbacks seguros. | No sabe nada de voz, documentos, RAG o escalamiento. Texto puro de entrada/salida. |
