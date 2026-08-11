@@ -51,11 +51,12 @@ patient data. The important system boundaries are:
 - Escalation decision logic.
 - Structured call summaries and observable metrics.
 
-The agent-facing project documentation is English and must remain English. Read
-`docs/PROJECT.md` and `docs/STATUS.md` first. Read `docs/ARCHITECTURE.md` only when the
-task affects architecture or interfaces. Read the relevant `.challenge-docs` files only
-when the task requires their constraints; do not load the entire repository or dataset
-by default.
+This file (AGENTS.md) and the agent configuration under `.opencode/` are in English.
+Project documentation under `docs/` is primarily in Spanish for the challenge audience.
+Read `docs/PROJECT.md` and `docs/STATUS.md` first. Read `docs/ARCHITECTURE.md` only when
+the task affects architecture or interfaces. Read the relevant `.challenge-docs` files
+only when the task requires their constraints; do not load the entire repository or
+dataset by default.
 
 ## Worktrees and parallel work
 

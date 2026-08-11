@@ -209,7 +209,7 @@ proyecto.
 pytest
 ```
 
-Estas pruebas (948) validan dataset, salud del servidor, chunking y extracción de
+Estas pruebas (967) validan dataset, salud del servidor, chunking y extracción de
 PDF (con error paths), el adaptador LLM (Llama 3.3 70B Versatile vía Groq con
 fallback extractivo, validación,
 respuestas estructuradas, detección de inyección de prompts y
@@ -282,30 +282,37 @@ primer uso.
 │   ├── admin.js           Lógica de administración con sondeo de estado
 │   └── metrics.js         Lógica de visualización de métricas
 ├── tests/                 Pruebas automatizadas
-├── scripts/               Scripts de utilidad
-│   └── ingest_corpus.py   Ingestión explícita e idempotente del corpus clínico
 │   ├── __init__.py
-│   ├── test_frontend.py   Pruebas de servido de archivos estáticos (8)
+│   ├── conftest.py
 │   ├── test_health.py     Prueba del endpoint /health (1)
+│   ├── test_env_loading.py  Pruebas de carga de .env (8)
+│   ├── test_frontend.py   Pruebas de servido de archivos estáticos (8)
+│   ├── test_frontend_integration.py  Pruebas de integración del contrato frontend-backend (26)
 │   ├── test_llm.py        Pruebas del adaptador LLM — Groq (63)
 │   ├── test_rag_api.py    Pruebas del endpoint /rag/query (14)
 │   ├── test_documents.py  Pruebas del ciclo de vida de documentos (42)
-│   ├── test_calls_api.py  Pruebas de endpoints de turnos de voz (41)
+│   ├── test_calls_api.py  Pruebas de endpoints de turnos de voz (71)
 │   ├── test_persistence_extended.py  Pruebas de capa SQLite extendida (41)
+│   ├── test_sqlite_migrations.py  Pruebas de migraciones SQLite (1)
 │   ├── test_summaries.py  Pruebas del generador de resúmenes (44)
 │   ├── test_voice.py      Pruebas del adaptador STT (56)
-│   ├── test_env_loading.py  Pruebas de carga de .env (8)
-│   ├── test_dataset/      Pruebas de acceso a datos sintéticos (58)
+│   ├── test_voice_initialization.py  Pruebas de inicialización de voz (13)
+│   ├── test_metrics_api.py  Pruebas de endpoints de métricas (19)
+│   ├── test_admin_console.py  Pruebas de la consola de administración (12)
+│   ├── conversation/      Pruebas de orquestación (212)
+│   ├── decision/          Pruebas del motor de escalamiento (125)
+│   ├── metrics/           Pruebas del colector de métricas (94)
 │   ├── rag/               Pruebas del pipeline RAG (35)
 │   │   ├── conftest.py
 │   │   ├── test_chunking.py
 │   │   ├── test_extract.py
 │   │   └── test_ingestion_retrieval.py
-│   ├── decision/          Pruebas del motor de escalamiento (125)
-│   ├── conversation/      Pruebas de orquestación (193)
-│   ├── metrics/           Pruebas del colector de métricas (82)
+│   ├── test_dataset/      Pruebas de acceso a datos sintéticos (58)
 │   └── voice/             Pruebas del adaptador TTS (51)
+├── scripts/               Scripts de utilidad
+│   └── ingest_corpus.py   Ingestión explícita e idempotente del corpus clínico
 ├── docs/                  Documentación del proyecto
+│   ├── ARCHITECTURE-DIAGRAM.md
 │   ├── ARCHITECTURE.md
 │   ├── PROJECT.md
 │   └── STATUS.md
