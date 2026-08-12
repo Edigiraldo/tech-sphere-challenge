@@ -267,7 +267,7 @@ fases están documentados en `docs/ARCHITECTURE.md`.
   preservan en todos los caminos. 68 pruebas nuevas pasan (53 de aprobación/decisión +
   16 de integración con el orquestador).
 
-Totales de pruebas: 1 055 pruebas rapidas (pytest), 27 pruebas lentas (`pytest -m slow`), 1 082 pruebas en total.
+Totales de pruebas: 1 054 pruebas rapidas (pytest), 26 pruebas lentas (`pytest -m slow`), 1 080 pruebas en total.
 
 ## En progreso
 

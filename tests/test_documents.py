@@ -1846,27 +1846,3 @@ class TestCorpusIngestionIdempotency:
         )
         assert doc1_status == "deleted"
         assert doc2_status in ("ready", "failed")
-
-    @pytest.mark.slow
-    def test_corpus_script_is_importable(self):
-        """The corpus ingestion script must be importable."""
-        import importlib.util
-        import sys
-
-        spec = importlib.util.spec_from_file_location(
-            "ingest_corpus",
-            Path(__file__).parent.parent / "scripts" / "ingest_corpus.py",
-        )
-        assert spec is not None, "Could not find ingest_corpus.py"
-        mod = importlib.util.module_from_spec(spec)
-        # Just verify it loads without SyntaxError/ImportError
-        spec.loader.exec_module(mod)
-
-    def test_ingest_corpus_script_main_path_resolves(self):
-        """The script must be directly runnable (syntax check)."""
-        import py_compile
-        script_path = (
-            Path(__file__).parent.parent / "scripts" / "ingest_corpus.py"
-        )
-        # This raises SyntaxError on bad syntax
-        py_compile.compile(str(script_path), doraise=True)

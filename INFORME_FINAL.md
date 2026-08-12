@@ -180,13 +180,11 @@ PDF → extracción (pdfplumber) → chunking (800/150)
 - **Eliminación:** soft-delete en SQLite + purge de chunks en ChromaDB.
 - **Reconciliación:** `POST /documents/reconcile` detecta chunks huérfanos.
 
-### Ingestión del corpus
+### Ingestión de documentos
 
-```powershell
-python scripts/ingest_corpus.py
-```
-
-Ingestión idempotente: re-ejecutar es seguro, los duplicados se detectan por hash.
+La ingestión se realiza desde `/admin` cargando archivos individuales mediante
+`POST /documents`. Para la demostración se usa un PDF real del repositorio y se
+espera el estado `ready`; no se ejecuta una ingestión masiva del corpus.
 
 ## 7. Prompts y configuraciones
 

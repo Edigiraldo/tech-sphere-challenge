@@ -222,9 +222,10 @@ collection: clinical_knowledge
   documentos activos y registrados contribuyan a los resultados de búsqueda.
 - La reconciliación (``POST /documents/reconcile``) compara los IDs de documento de
   ChromaDB con el registro SQLite y puede limpiar chunks huérfanos bajo demanda.
-- La ingestión del corpus es explícita (``scripts/ingest_corpus.py``) y nunca se
-  ejecuta al inicio. Es idempotente: re-ejecutar es seguro ya que los duplicados se
-  detectan por hash de contenido.
+- La ingestión de conocimiento se realiza bajo demanda mediante la consola `/admin`
+  y ``POST /documents`` para archivos individuales. Nunca se ejecuta al inicio ni
+  existe una ingestión masiva automática; los duplicados se detectan por hash de
+  contenido.
 - Los datos de llamadas y resúmenes nunca se eliminan a través de la API de ciclo de
   vida de documentos.
 - El almacén vectorial se reconstruye solo en re-indexación explícita, nunca al

@@ -170,20 +170,14 @@ curl http://127.0.0.1:8000/health
 
 Documentación interactiva de la API (Swagger UI) en `http://127.0.0.1:8000/docs`.
 
-### Ingestión del corpus clínico
+### Ingestión de documentos clínicos
 
-El conocimiento clínico no se carga al iniciar la aplicación. Debe ingerirse
-explícitamente con el script de corpus. Ejecuta este comando desde otra terminal,
-también ubicada en la raíz del repositorio, mientras el backend está ejecutándose:
-
-```bash
-python scripts/ingest_corpus.py
-```
-
-El script recorre todos los PDFs en `dataset/textos/` y los ingiere mediante
-la API de `DocumentService`. La ingestión es **idempotente**: re-ejecutar el
-script es seguro — los archivos con contenido idéntico (mismo hash SHA-256)
-se reconocen y no crean registros duplicados.
+El conocimiento clínico se ingiere bajo demanda desde la consola `/admin`,
+seleccionando un PDF real y esperando el estado `ready`. Para una demo se puede
+usar `dataset/textos/Appendicitis/POST OPERATIVE INSTRUCTIONS FOR APPENDECTOMY .pdf`.
+La carga usa la API `POST /documents`, calcula SHA-256 y es idempotente para
+contenido que ya está en estado `READY` o `PROCESSING`. No se ejecuta ninguna
+ingestión masiva automática ni existe un script de corpus que deba ejecutarse.
 
 ## Variables de entorno
 
@@ -327,7 +321,7 @@ primer uso.
 │   ├── test_frontend_integration.py  Pruebas de integración del contrato frontend-backend (30)
 │   ├── test_llm.py        Pruebas del adaptador LLM — Groq (63)
 │   ├── test_rag_api.py    Pruebas del endpoint /rag/query (14)
-│   ├── test_documents.py  Pruebas del ciclo de vida de documentos (44)
+│   ├── test_documents.py  Pruebas del ciclo de vida de documentos (42)
 │   ├── test_calls_api.py  Pruebas de endpoints de turnos de voz (71)
 │   ├── test_persistence_extended.py  Pruebas de capa SQLite extendida (41)
 │   ├── test_sqlite_migrations.py  Pruebas de migraciones SQLite (1)
@@ -347,8 +341,6 @@ primer uso.
 │   │   └── test_ingestion_retrieval.py
 │   ├── test_dataset/      Pruebas de acceso a datos sintéticos (58)
 │   └── voice/             Pruebas del adaptador TTS (51)
-├── scripts/               Scripts de utilidad
-│   └── ingest_corpus.py   Ingestión explícita e idempotente del corpus clínico
 ├── docs/                  Documentación del proyecto
 │   ├── ARCHITECTURE-DIAGRAM.md
 │   ├── ARCHITECTURE.md
