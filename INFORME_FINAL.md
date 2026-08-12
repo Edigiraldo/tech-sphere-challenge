@@ -186,6 +186,25 @@ La ingestión se realiza desde `/admin` cargando archivos individuales mediante
 `POST /documents`. Para la demostración se usa un PDF real del repositorio y se
 espera el estado `ready`; no se ejecuta una ingestión masiva del corpus.
 
+## 6.1 Ejecución reproducible
+
+La ruta principal de despliegue es Docker Desktop o Docker Engine con Docker Compose:
+
+```bash
+docker compose up --build -d
+```
+
+La imagen ejecuta Uvicorn en `0.0.0.0:8000` sin reload y el puerto del host se configura
+con `APP_PORT` (por defecto `8000`). `GROQ_API_KEY` y cualquier otro secreto se cargan
+exclusivamente desde `.env`, que no se copia a la imagen. Los volúmenes nombrados
+`sqlite_data`, `chroma_data` y `uploads_data` conservan la base SQLite, el índice
+ChromaDB y los documentos cargados. La ejecución local con Python permanece como
+alternativa de desarrollo y pruebas.
+
+BGE-M3 se descarga y carga bajo demanda en la primera operación RAG. La inicialización
+puede mantener el servicio en estado no saludable mientras termina; la caché del modelo
+depende del entorno del contenedor y puede requerir otra descarga si se elimina.
+
 ## 7. Prompts y configuraciones
 
 ### Prompt del sistema (español)
