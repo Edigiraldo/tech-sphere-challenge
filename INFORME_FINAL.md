@@ -147,7 +147,7 @@ Backend (FastAPI)
 1. Cada respuesta del paciente se clasifica **antes** de cualquier llamada a RAG/LLM.
 2. `RED` termina inmediatamente sin consultar fuentes.
 3. `GREEN` y primer `YELLOW` usan respuestas deterministas.
-4. Solo preguntas clínicas en `CLOSING` activan RAG + LLM.
+4. Dudas confirmadas en `QUESTIONS` y preguntas clínicas en `CLOSING` activan RAG + LLM.
 
 ### Defensa contra inyección de prompts
 
@@ -359,7 +359,7 @@ debe conservarse como evidencia externa del informe y presentarse junto con la e
 ## 13. Limitaciones conocidas
 
 1. El cuestionario de seguimiento es fijo (6 preguntas hardcodeadas).
-2. Las preguntas clínicas con RAG solo funcionan durante `CLOSING`.
+2. Las preguntas clínicas con RAG funcionan durante `CLOSING` y también mediante la puerta de duda en `QUESTIONS`.
 3. El transporte es HTTP REST, no WebSocket.
 4. Los datos son sintéticos y no clínicamente validados.
 5. No hay autenticación ni control de acceso.

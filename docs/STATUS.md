@@ -182,7 +182,7 @@ fases están documentados en `docs/ARCHITECTURE.md`.
   automática al inicio para que los endpoints ``GET /metrics/summary``,
   ``GET /metrics/calls`` y ``GET /metrics/calls/{call_id}`` muestren llamadas
    completadas después de reiniciar el servidor. La validación live de reinicio se
-   ejecutó en el puerto alternativo ``18000`` y no modificó el frontend. 105 pruebas
+   ejecutó en el puerto alternativo ``18001`` y no modificó el frontend. 105 pruebas
    pasan.
   Solo stdlib.
 - Módulo de resúmenes: ``backend/summaries/`` — generador determinista de resúmenes en
@@ -318,14 +318,14 @@ fases están documentados en `docs/ARCHITECTURE.md`.
   enfocadas en el orquestador cubren apendicectomía, movilidad, RED dentro de duda,
   RED con forma de pregunta, fallo de LLM e intención ambigua.
 
-Totales de pruebas: 1 107 pruebas rapidas (pytest), 27 pruebas lentas (`pytest -m slow`),
-1 134 pruebas en total. 7 pruebas de servidor en vivo (alternate port 18000) en
-``tests/test_live_server.py``.
+Totales de pruebas: 1 228 pruebas rápidas (pytest), 26 pruebas lentas (`pytest -m slow`),
+1 254 pruebas en total. 12 escenarios de validación live secuencial (puerto alterno 18001)
+en ``tests/live_ten_call_validation.py``.
 
 Los conteos por módulo repartidos en esta sección «Completado» son
 instantáneas históricas del momento en que se completó cada módulo y pueden
 no reflejar adiciones, refactorizaciones o reorganizaciones posteriores.
-Los totales agregados arriba (1 107 rápidas + 27 lentas = 1 134 total)
+Los totales agregados arriba (1 228 rápidas + 26 lentas = 1 254 total)
 son el conteo autoritativo actual.
 
 - **Finalización manual de llamadas:** endpoint ``POST /calls/{call_id}/end`` que

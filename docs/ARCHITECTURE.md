@@ -47,8 +47,8 @@ trabajo futuro.
 │        │              │               │               │             │
 │  ┌─────┴──────┐  ┌────┴────────┐  ┌───┴──────────────┐              │
 │  │ decision/  │  │ summaries/ │  │ llm/ (condicional) │              │
-│  │ GREEN/     │  │ registro   │  │ Solo preguntas     │              │
-│  │ YELLOW/RED │  │ estructur. │  │ clínicas en CIERRE │              │
+│  │ GREEN/     │  │ registro   │  │ Generación RAG+LLM │              │
+│  │ YELLOW/RED │  │ estructur. │  │ + aprobación 2.ª   │              │
 │  └─────┬──────┘  └────┬────────┘  └───┬──────────────┘              │
 │        │              │               │                              │
 │        │   GREEN/YELLOW determinista; RED termina inmediatamente     │
@@ -78,7 +78,7 @@ trabajo futuro.
 |--------|----------------|-------------|
 | `api/` | Superficie HTTP REST. Valida entradas, delega a módulos de dominio. Incluye routers de llamadas, documentos, RAG, métricas y resúmenes. Los endpoints WebSocket aún no están implementados. | Única capa que el navegador toca. Sin lógica de negocio. |
 | `voice/` | Adaptadores STT y TTS tras una interfaz común. | Adaptador de E/S puro. No posee estado, datos de pacientes ni conocimiento clínico. |
-| `conversation/` | Máquina de estados de llamada: saludo → consentimiento → preguntas estructuradas → cierre. Clasifica cada respuesta de seguimiento antes del procesamiento posterior. Invoca LLM second-approval para cada respuesta no-RED. Usa respuestas deterministas para GREEN/primer-YELLOW, termina RED inmediatamente y llama a RAG + `llm/` solo para preguntas clínicas durante CLOSING y dudas RAG solicitadas por la aprobación LLM. | Posee el estado de turno y el ensamblaje de prompts. Nunca llama a `documents/` ni toca directamente persistencia/embeddings. |
+| `conversation/` | Máquina de estados de llamada: saludo → consentimiento → preguntas estructuradas → cierre. Flujo de QUESTIONS que prioriza la seguridad: clasifica determinísticamente cada respuesta **antes** de cualquier llamada RAG/LLM. RED cortocircuita inmediatamente a ENDED sin pasar por el gate de duda ni por aprobación LLM. Las respuestas no-RED pasan por el gate de duda (marcadores explícitos + confirmación LLM; dudas confirmadas ejecutan RAG inline y repiten la pregunta sin avanzar índice). Las respuestas no-RED y no-duda pasan por **aprobación secundaria LLM** (``backend/llm/approval.py``): confirmar, subir severidad, solicitar aclaración (máx. 1 por pregunta) o solicitar RAG. GREEN y primer YELLOW confirmados reciben acuses deterministas sin generación RAG+LLM. Preguntas clínicas durante CLOSING activan RAG+LLM con citas. | Posee el estado de turno y el ensamblaje de prompts. Nunca llama a `documents/` ni toca directamente persistencia/embeddings. |
 | `llm/` | Adaptador para **Llama 3.3 70B Versatile** vía Groq Cloud con JSON estructurado validado, controles de fundamentación, detección de inyección de prompts, fallbacks seguros, y **aprobación secundaria de seguridad** de clasificaciones deterministas (``backend/llm/approval.py``). | No sabe nada de voz, documentos, RAG o escalamiento. Texto puro de entrada/salida. |
 | `rag/` | Ingestión (extraer → chunking → embedding BGE-M3 → almacenar en ChromaDB) y recuperación (embedding de consulta → búsqueda por similitud → devolver chunks + metadatos). | Posee el modelo de embedding, la colección ChromaDB, el chunking y la recuperación. No posee el ciclo de vida de documentos ni conoce pacientes/conversaciones. |
 | `documents/` | Ciclo de vida de documentos: cargar, listar, estado, eliminar. Orquesta metadatos en SQLite y dispara la ingestión/eliminación de RAG. | Llama a `rag/` para ingestión y purgado. No llama a `rag/` para recuperación. |
@@ -106,51 +106,58 @@ futuro.
 
 El orquestador implementa un **flujo que prioriza la seguridad**: cada respuesta del
 paciente es clasificada por el módulo ``decision/`` antes de cualquier llamada
-RAG/LLM. Las respuestas RED derivan inmediatamente a ENDED con un mensaje urgente de
-seguridad y ``call_ended=True`` (no se permiten más turnos) sin pasar por aprobación
-LLM. Cada respuesta no-RED durante QUESTIONS pasa por una **aprobación secundaria por
-LLM** (``backend/llm/approval.py``) como revisor conservador de seguridad: el LLM puede
-confirmar la clasificación determinista, subir la severidad (nunca degradarla),
-solicitar una aclaración (máximo una por pregunta) o solicitar RAG por duda clínica.
-Fallos, timeouts, salida inválida o intentos de degradación caen automáticamente a la
-clasificación determinista. GREEN y primer YELLOW confirmados reciben acuses
-deterministas en español sin generación RAG+LLM. Dos resultados YELLOW consecutivos
-disparan el escalamiento. Las preguntas clínicas durante CLOSING se responden mediante
-RAG+LLM con citas; las no-preguntas finalizan la llamada.
+RAG/LLM. Las respuestas RED cortocircuitan inmediatamente a ENDED con un mensaje
+urgente de seguridad y ``call_ended=True`` (no se permiten más turnos) sin pasar por
+el gate de duda ni por aprobación LLM. Cada respuesta no-RED pasa primero por la
+**puerta de intención de duda**: marcadores explícitos más confirmación LLM
+(``llm_confirm_doubt()``); las dudas confirmadas disparan RAG inline con citas y
+repiten la misma pregunta sin avanzar el índice. Las respuestas no-RED y no-duda
+pasan por una **aprobación secundaria por LLM** (``backend/llm/approval.py``) como
+revisor conservador de seguridad: el LLM puede confirmar la clasificación
+determinista, subir la severidad (nunca degradarla), solicitar una aclaración (máximo
+una por pregunta) o solicitar RAG por duda clínica. Fallos, timeouts, salida inválida
+o intentos de degradación caen automáticamente a la clasificación determinista. GREEN
+y primer YELLOW confirmados reciben acuses deterministas en español sin generación
+RAG+LLM. Dos resultados YELLOW consecutivos disparan el escalamiento. Las preguntas
+clínicas durante CLOSING se responden mediante RAG+LLM con citas; las no-preguntas
+finalizan la llamada.
 
 **LLM second-approval (aprobación secundaria por LLM):** Después de la clasificación
-determinista en cada respuesta no-RED durante QUESTIONS, se invoca al LLM como revisor
-conservador de seguridad (``backend/llm/approval.py``). El LLM puede confirmar la
-clasificación, subir la severidad (nunca bajarla), solicitar una aclaración al paciente
-(máximo una por pregunta), o solicitar RAG por duda clínica. RED nunca pasa por
-aprobación LLM — deriva directamente a ENDED. Fallos, timeouts, salida inválida o
-intentos de degradación de severidad caen automáticamente a la clasificación
-determinista.
+determinista y la puerta de duda en cada respuesta no-RED durante QUESTIONS, se invoca
+al LLM como revisor conservador de seguridad (``backend/llm/approval.py``). El LLM
+puede confirmar la clasificación, subir la severidad (nunca bajarla), solicitar una
+aclaración al paciente (máximo una por pregunta), o solicitar RAG por duda clínica.
+RED nunca pasa por la puerta de duda ni por aprobación LLM — cortocircuita directamente
+a ENDED. Fallos, timeouts, salida inválida o intentos de degradación de severidad caen
+automáticamente a la clasificación determinista.
 
 ```
 Navegador (WAV base64 vía HTTP POST) → voice/STT → conversation/ orquestador:
   1. Cargar perfil del paciente + historial de turnos
-  2. **Puerta de intención de duda** (``_check_doubt_intent``): verificar si el
-     paciente pregunta en lugar de reportar síntomas
-     - Determinista: marcadores explícitos (?, ``"por que"``, ``"como debo"``,
-       ``"tengo una duda"``, …)
-     - Aprobación LLM: ``llm_confirm_doubt()`` confirma o rechaza
-     - Si DUDA → RAG inline con citas, repetir la misma pregunta (sin avanzar índice
-       ni acumular YELLOW)
-     - Si NO duda → continuar a clasificación
-  3. **Clasificar** respuesta del paciente contra el dominio de síntomas (decision/classify)
-  4a. Si RED → derivación inmediata: sin RAG/LLM, mensaje urgente de seguridad,
+  2. **Clasificar** respuesta del paciente contra el dominio de síntomas
+     (``decision/classify``) — la clasificación siempre ocurre primero
+  3a. Si RED → **cortocircuito inmediato**: sin gate de duda, sin RAG/LLM,
+       sin aprobación LLM; mensaje urgente de seguridad,
        transición directa a ENDED, ``call_ended=True``
-  4b. Si GREEN / YELLOW (no-RED) → **LLM second-approval** (``backend/llm/approval.py``)
+  3b. Si GREEN / YELLOW (no-RED) → **Puerta de intención de duda**
+       (``_check_doubt_intent``):
+       - Determinista: marcadores explícitos (?, ``"por que"``,
+         ``"como debo"``, ``"tengo una duda"``, …)
+       - Confirmación LLM: ``llm_confirm_doubt()`` confirma o rechaza
+       - Si DUDA confirmada → RAG inline con citas, repetir la misma
+         pregunta (sin avanzar índice ni acumular YELLOW)
+       - Si NO duda → continuar a aprobación LLM
+  3c. Si no-RED y no-duda → **LLM second-approval**
+       (``backend/llm/approval.py``)
        - Confirmar clasificación determinista
        - Subir severidad (nunca bajarla; YELLOW no puede bajar a GREEN)
        - Solicitar aclaración (máximo 1 por pregunta; no avanza índice)
        - Solicitar RAG por duda (ejecutar RAG en QUESTIONS, continuar después)
        - Fallos/timeout/salida inválida → caer a clasificación determinista
-  4c. Si segundo YELLOW consecutivo → escalar a CLOSING
-  5. (Solo CLOSING) Si pregunta clínica → llamar rag/retrieve + llm/generate
+  3d. Si segundo YELLOW consecutivo → escalar a CLOSING
+  4. (Solo CLOSING) Si pregunta clínica → llamar rag/retrieve + llm/generate
       con citas, permanecer en CLOSING
-  6. Si CLOSING no-pregunta → finalizar llamada
+  5. Si CLOSING no-pregunta → finalizar llamada
   → voice/TTS → Navegador (WAV base64 en respuesta HTTP)
 ```
 
@@ -181,6 +188,22 @@ conversation/ → rag/retrieve(query, valid_document_ids) → BGE-M3 embed → C
 conversation/ ensambla el prompt con los chunks recuperados y las citas de fuente
 ```
 
+### Finalización manual de llamada
+
+```
+POST /calls/{call_id}/end  (idempotente)
+  → Verificar que la llamada existe en SQLite (404 si no)
+  → Si ya finalizada: devolver 200 con el resumen existente
+  → Si activa: generar y persistir el resumen desde el historial del
+    orquestador (o desde turnos persistidos si el orquestador ya no está
+    en memoria), marcar el registro como ENDED, finalizar métricas,
+    limpiar estado transitorio
+  → Devolver EndCallResponse con el resumen completo (paciente,
+    procedimiento, síntomas, decisión, próximos pasos, fuentes)
+  → El frontal puede renderizar el resumen directamente sin una solicitud
+    GET /calls/{call_id}/summary adicional
+```
+
 ## Límites de persistencia
 
 ### Esquema SQLite (conceptual)
@@ -197,6 +220,11 @@ summaries            — summary_id, call_id, created_at, patient_summary,
 documents            — document_id, filename, status, uploaded_at, size_bytes,
                         content_hash, error_message
 escalation_alerts    — alert_id, call_id, created_at, severity, reason, domain
+calls_metrics        — call_id, patient_id, ended
+turn_metrics         — call_id, turn_index, total_latency_ms, model,
+                       rag_queries, timestamp, tts_duration_ms,
+                       stt_duration_ms, llm_duration_ms, input_tokens,
+                       output_tokens
 ```
 
 La eliminación de documentos usa **borrado suave**: eliminar un documento cambia su
@@ -214,6 +242,21 @@ collection: clinical_knowledge
   document: texto del chunk
   metadata: document_id, source_filename, chunk_index, page_number, ingested_at (UTC ISO-8601)
 ```
+
+### Persistencia y reconstrucción de métricas
+
+Cada turno de conversación persiste una fila en ``turn_metrics`` con latencia total,
+duración de componentes (TTS, STT, LLM), conteo de tokens y consultas RAG. La tabla
+``calls_metrics`` registra el ``call_id``, ``patient_id`` y una bandera ``ended``.
+
+La reconstrucción tras reinicio se realiza mediante ``load_metrics_from_sqlite()``
+(``backend/metrics/collector.py``): itera sobre todas las llamadas finalizadas en
+``calls_metrics``, carga sus filas de ``turn_metrics`` y reconstruye el estado del
+colector en memoria usando su API pública (``start_call``, ``record_turn``,
+``end_call``). El colector en memoria se usa para consultas activas; los datos
+históricos persisten en SQLite. Las llamadas activas (no finalizadas) no sobreviven
+al reinicio — sus datos de turnos y métricas no se reconstruyen porque la bandera
+``ended`` nunca se marcó como ``1``.
 
 ### Reglas clave
 
@@ -309,10 +352,10 @@ para el paciente.
 
 - **La clasificación ocurre antes de RAG/LLM.** Durante la fase QUESTIONS, la llamada a
   ``decision/classify`` controla todo el procesamiento posterior.
-- **La puerta de duda es anterior a la clasificación.** Antes de clasificar, el
-  orquestador verifica si el paciente está preguntando (marcadores deterministas +
-  aprobación LLM). Las dudas confirmadas ejecutan RAG y repiten la pregunta sin
-  acumular YELLOW ni generar alertas.
+- **La puerta de duda ocurre después de la clasificación determinista y el bypass
+  RED.** Tras clasificar como no-RED (GREEN/YELLOW), el orquestador verifica si el
+  paciente está preguntando (marcadores deterministas + aprobación LLM). Las dudas
+  confirmadas ejecutan RAG y repiten la pregunta sin acumular YELLOW ni generar alertas.
 - **Red siempre escala inmediatamente.** El orquestador deriva: sin llamada RAG/LLM, se
   devuelve un mensaje claro de seguridad urgente en español, el estado transita
   directamente a ENDED con ``call_ended=True``, y el frontal deshabilita la grabación
