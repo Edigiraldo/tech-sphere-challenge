@@ -14,8 +14,8 @@ flowchart TB
 
     subgraph App[Monolito modular FastAPI]
         API[Routers de API]
-        Calls[Endpoints de llamadas de voz<br/>POST /calls<br/>POST /calls/{id}/turn]
-        Documents[Ciclo de vida de documentos<br/>POST/GET/DELETE /documents]
+        Calls[Endpoints de llamadas de voz<br/>POST /calls<br/>POST /calls/{id}/turn<br/>POST /calls/{id}/end]
+        Documents[Ciclo de vida de documentos<br/>POST/GET/DELETE /documents<br/>POST /documents/reconcile]
         RAGAPI[Endpoint de consulta RAG<br/>POST /rag/query]
         MetricsAPI[API de reporte de métricas]
 
@@ -54,8 +54,11 @@ flowchart TB
     LLM --> Groq
 
     Calls --> Conversation
-    Conversation -->|QUESTIONS: clasificar primero| Decision
-    Conversation -->|CLOSING solo pregunta clínica| RAG
+    Conversation -->|QUESTIONS: clasificar → RED cortocircuito| Decision
+    Conversation -->|no-RED: gate de duda| LLM
+    Conversation -->|duda confirmada → RAG inline| RAG
+    Conversation -->|no-RED no-duda: aprobación 2.ª| LLM
+    Conversation -->|CLOSING: pregunta clínica| RAG
     RAG -->|solo contexto suficiente| LLM
     Calls --> Summary
     Calls --> Metrics
@@ -76,6 +79,10 @@ flowchart TB
 
 ## Flujo de turno de voz
 
+> **Nota:** La clasificación determinista de síntomas (GREEN / YELLOW / RED) ocurre
+> antes de cualquier gate de duda o invocación LLM. Una clasificación RED cortocircuita
+> directamente a escalamiento sin pasar por el gate de duda ni consultar modelos.
+
 ```mermaid
 sequenceDiagram
     participant P as Navegador del paciente
@@ -92,17 +99,43 @@ sequenceDiagram
     API->>STT: Transcribir audio en español
     STT-->>API: Transcripción del paciente
     API->>C: Procesar mensaje del paciente y estado actual
-    C->>D: Clasificar síntoma antes de generación clínica
+    C->>D: Clasificar síntoma antes de cualquier RAG/LLM
 
     alt Señal RED
         D-->>C: RED, should_escalate=true
-        C-->>API: Respuesta urgente, ENDED, sin RAG/LLM
-    else GREEN o primer YELLOW
-        D-->>C: Clasificación
-        C-->>API: Acuse determinista + siguiente pregunta
-    else Segundo YELLOW
-        D-->>C: Escalamiento, transición a CLOSING
-        C-->>API: Respuesta determinista de escalamiento
+        C-->>API: Respuesta urgente, ENDED, sin RAG/LLM, sin gate de duda
+        Note over C: Alerta RED persistida (should_escalate=True)
+    else No-RED → puerta de intención de duda (_check_doubt_intent)
+        D-->>C: No-RED
+        C->>L: ¿Es una duda clínica? (llm_confirm_doubt)
+        alt Duda confirmada
+            L-->>C: is_doubt=true, rag_query
+            C->>R: RAG inline con rag_query
+            R-->>C: Chunks y citas
+            C->>L: Generar respuesta con fuentes
+            L-->>C: Respuesta JSON validada
+            C-->>API: Respuesta RAG + repetir la pregunta pendiente (sin avanzar índice)
+            Note over C: Sin acumular YELLOW, sin alerta
+        else No es duda → aprobación 2.ª
+            L-->>C: is_doubt=false
+            C->>L: llm_second_approval (confirmar/escalar/aclarar/rag)
+            L-->>C: Acción de aprobación
+            alt Confirmar o escalar (sin RED)
+                C-->>API: Acuse determinista + siguiente pregunta
+            else Solicitar aclaración
+                C-->>API: Pregunta de aclaración (máx. 1), sin avanzar índice
+            else Solicitar RAG
+                C->>R: RAG en QUESTIONS
+                R-->>C: Chunks y citas
+                C->>L: Generar respuesta
+                L-->>C: Respuesta JSON
+                C-->>API: Respuesta + siguiente pregunta
+            end
+        end
+    else Segundo YELLOW consecutivo
+        D-->>C: should_escalate=true
+        C-->>API: Respuesta de escalamiento, transición a CLOSING
+        Note over C: Alerta YELLOW→RED o 2.º YELLOW persistida
     else CLOSING pregunta clínica
         C->>R: Recuperar chunks relevantes
         R-->>C: Chunks y citas trazables
@@ -115,7 +148,10 @@ sequenceDiagram
 
     API->>T: Sintetizar texto de respuesta
     T-->>API: Audio WAV
-    API->>DB: Persistir turno y alerta
+    API->>DB: Persistir turno
+    opt Escalamiento conclusivo (should_escalate=True)
+        API->>DB: Persistir alerta (INSERT OR IGNORE, idempotente)
+    end
     opt Llamada finalizada
         API->>DB: Generar y persistir resumen estructurado
     end
@@ -145,6 +181,43 @@ sequenceDiagram
     API->>C: Eliminar chunks por document_id
     API->>DB: Marcar documento como eliminado
     API-->>A: eliminado
+```
+
+## Finalización manual de llamada
+
+```mermaid
+sequenceDiagram
+    participant P as Navegador del paciente
+    participant API as FastAPI
+    participant CS as CallStore (memoria)
+    participant C as Orquestador (si disponible)
+    participant DB as SQLite
+
+    P->>API: POST /calls/{call_id}/end
+    API->>DB: Verificar existencia de la llamada
+    DB-->>API: CallRecord
+
+    alt Llamada ya finalizada
+        API->>DB: Obtener resumen existente
+        DB-->>API: SummaryRecord
+        API-->>P: 200 + resumen existente (idempotente)
+    else Llamada activa
+        API->>CS: Buscar orquestador en memoria
+        alt Orquestador disponible
+            CS-->>API: ConversationOrchestrator
+            API->>C: Generar resumen desde historial
+            C-->>API: SummaryRecord
+        else Orquestador ausente (reinicio)
+            CS-->>API: None
+            API->>DB: Cargar turnos persistidos
+            DB-->>API: ConversationTurnRecords
+            API->>API: Generar resumen desde turnos SQLite
+        end
+        API->>DB: Persistir resumen + marcar ENDED + finalizar métricas
+        API->>CS: Eliminar orquestador
+        API->>DB: update_call_metrics_ended
+        API-->>P: 200 + resumen completo
+    end
 ```
 
 ## Forma de despliegue

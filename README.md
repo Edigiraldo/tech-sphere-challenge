@@ -60,7 +60,7 @@ documentación interactiva también está disponible en `/docs`.
 | `GET` | `/health` | Verifica que el backend está disponible. |
 | `POST` | `/calls` | Crea una llamada y devuelve el saludo WAV base64. |
 | `POST` | `/calls/{call_id}/turn` | Recibe audio, ejecuta STT, orquestación, decisión, RAG/LLM y TTS. |
-| `POST` | `/calls/{call_id}/end` | Finaliza manualmente una llamada activa, genera el resumen y limpia el estado. |
+| `POST` | `/calls/{call_id}/end` | Finaliza manualmente una llamada activa, genera y persiste el resumen, limpia el estado transitorio y las métricas. Idempotente: una llamada ya finalizada devuelve 200 con el resumen existente. |
 | `POST` | `/rag/query` | Ejecuta una consulta RAG con citas trazables. |
 | `POST` | `/documents` | Carga e ingiere un documento. |
 | `GET` | `/documents` | Lista documentos, opcionalmente filtrados por estado. |
@@ -245,6 +245,13 @@ almacena las instancias del orquestador; al reiniciar el proceso, todas las llam
 en curso se pierden y deben reiniciarse desde ``POST /calls``. Los datos históricos
 (turnos completados, resúmenes, alertas) permanecen disponibles en SQLite.
 
+**Las métricas de llamadas finalizadas sí sobreviven.** Cada turno persiste una fila en
+``turn_metrics`` y cada llamada registra su ``call_id`` en ``calls_metrics`` con bandera
+``ended``. Al reiniciar, ``load_metrics_from_sqlite()`` reconstruye el estado del
+colector en memoria para todas las llamadas con ``ended=1``, restaurando agregados,
+percentiles y detalles por llamada. Las métricas de llamadas activas (no finalizadas) no
+se reconstruyen.
+
 Solo los escalamientos **conclusivos** (``should_escalate=True``) persisten alertas:
 - RED determinista
 - Segundo YELLOW consecutivo (acumulación)
@@ -258,18 +265,17 @@ persistentes ni activan el banner visual en el frontal.
 
 ### Pruebas en puerto alterno
 
-Para ejecutar pruebas de integración con un servidor en vivo sin interferir con
-la instancia de desarrollo en ``8000``, usar puertos ``8011`` (aplicación) y
-``18000`` (puerto de prueba):
+La validación live secuencial (10 escenarios + 2 verificaciones de persistencia)
+está en ``tests/live_ten_call_validation.py`` y corre contra el puerto ``18001``.
+El script inicia su propio servidor y no interfiere con la instancia de desarrollo
+en ``8000``:
 
 ```bash
-# Iniciar servidor de prueba en puerto alterno
-uvicorn backend.main:app --host 127.0.0.1 --port 8011
+# Ejecutar validación live (inicia y detiene el servidor automáticamente)
+python tests/live_ten_call_validation.py
 
-# Ejecutar pruebas live contra el puerto alterno
-python -m pytest tests/live_scenarios.py -v
-
-# Detener siempre el proceso del puerto alterno al finalizar
+# Alternativa con pytest runner
+python -m pytest tests/live_ten_call_validation.py -v
 ```
 
 ### Pruebas rápidas (sin modelo ni PDF)
@@ -278,7 +284,7 @@ python -m pytest tests/live_scenarios.py -v
 pytest
 ```
 
-Estas pruebas (aprox. 1 030) validan dataset, salud del servidor, chunking y extracción de
+Estas pruebas (1 228) validan dataset, salud del servidor, chunking y extracción de
 PDF (con error paths), el adaptador LLM (Llama 3.3 70B Versatile vía Groq con
 fallback extractivo, validación,
 respuestas estructuradas, detección de inyección de prompts y
@@ -296,7 +302,7 @@ de embeddings ni procesan PDFs reales.
 pytest -m slow
 ```
 
-Estas pruebas (27) validan el pipeline completo de RAG: ingestión de PDFs reales
+Estas pruebas (26) validan el pipeline completo de RAG: ingestión de PDFs reales
 (Apendicectomía en inglés y español), embedding con BGE-M3, recuperación por similitud,
 controles de suficiencia, eliminación de chunks, generación de citas trazables,
 verificación de nombres de archivo reales en disco, ingestión idempotente por
@@ -357,32 +363,51 @@ primer uso.
 ├── tests/                 Pruebas automatizadas
 │   ├── __init__.py
 │   ├── conftest.py
-│   ├── test_health.py     Prueba del endpoint /health (1)
-│   ├── test_env_loading.py  Pruebas de carga de .env (8)
-│   ├── test_frontend.py   Pruebas de servido de archivos estáticos (10)
-│   ├── test_frontend_integration.py  Pruebas de integración del contrato frontend-backend (30)
-│   ├── test_llm.py        Pruebas del adaptador LLM — Groq (63)
-│   ├── test_rag_api.py    Pruebas del endpoint /rag/query (14)
-│   ├── test_documents.py  Pruebas del ciclo de vida de documentos (42)
-│   ├── test_calls_api.py  Pruebas de endpoints de turnos de voz (71)
-│   ├── test_persistence_extended.py  Pruebas de capa SQLite extendida (41)
-│   ├── test_sqlite_migrations.py  Pruebas de migraciones SQLite (1)
-│   ├── test_summaries.py  Pruebas del generador de resúmenes (44)
-│   ├── test_summary_api.py  Pruebas del endpoint de resumen de solo lectura (12)
-│   ├── test_voice.py      Pruebas del adaptador STT (56)
-│   ├── test_voice_initialization.py  Pruebas de inicialización de voz (13)
-│   ├── test_metrics_api.py  Pruebas de endpoints de métricas (19)
-│   ├── test_admin_console.py  Pruebas de la consola de administración (12)
-│   ├── conversation/      Pruebas de orquestación (212)
-│   ├── decision/          Pruebas del motor de escalamiento (125)
-│   ├── metrics/           Pruebas del colector de métricas (94)
-│   ├── rag/               Pruebas del pipeline RAG (35)
+│   ├── test_health.py     Prueba del endpoint /health
+│   ├── test_env_loading.py  Pruebas de carga de .env
+│   ├── test_frontend.py   Pruebas de servido de archivos estáticos
+│   ├── test_frontend_integration.py  Pruebas de integración del contrato frontend-backend
+│   ├── test_llm.py        Pruebas del adaptador LLM — Groq
+│   ├── test_rag_api.py    Pruebas del endpoint /rag/query
+│   ├── test_documents.py  Pruebas del ciclo de vida de documentos
+│   ├── test_calls_api.py  Pruebas de endpoints de turnos de voz
+│   ├── test_persistence_extended.py  Pruebas de capa SQLite extendida
+│   ├── test_sqlite_migrations.py  Pruebas de migraciones SQLite
+│   ├── test_summaries.py  Pruebas del generador de resúmenes
+│   ├── test_summary_api.py  Pruebas del endpoint de resumen de solo lectura
+│   ├── test_voice.py      Pruebas del adaptador STT
+│   ├── test_voice_initialization.py  Pruebas de inicialización de voz
+│   ├── test_metrics_api.py  Pruebas de endpoints de métricas
+│   ├── test_admin_console.py  Pruebas de la consola de administración
+│   ├── test_live_server.py  Pruebas de integración live del servidor
+│   ├── conversation/      Pruebas de orquestación
+│   │   ├── test_context.py
+│   │   ├── test_messages.py
+│   │   ├── test_orchestrator.py
+│   │   ├── test_state.py
+│   │   └── test_transitions.py
+│   ├── decision/          Pruebas del motor de escalamiento
+│   │   ├── test_lexicon.py
+│   │   ├── test_llm_approval.py
+│   │   ├── test_models.py
+│   │   └── test_rules.py
+│   ├── metrics/           Pruebas del colector de métricas
+│   │   ├── test_collector.py
+│   │   ├── test_cost.py
+│   │   ├── test_models.py
+│   │   └── test_percentiles.py
+│   ├── rag/               Pruebas del pipeline RAG
 │   │   ├── conftest.py
 │   │   ├── test_chunking.py
 │   │   ├── test_extract.py
 │   │   └── test_ingestion_retrieval.py
-│   ├── test_dataset/      Pruebas de acceso a datos sintéticos (58)
-│   └── voice/             Pruebas del adaptador TTS (51)
+│   ├── test_dataset/      Pruebas de acceso a datos sintéticos
+│   │   ├── test_label_isolation.py
+│   │   ├── test_loader.py
+│   │   ├── test_models.py
+│   │   └── test_pdfs.py
+│   └── voice/             Pruebas del adaptador TTS
+│       └── test_tts.py
 ├── docs/                  Documentación del proyecto
 │   ├── ARCHITECTURE-DIAGRAM.md
 │   ├── ARCHITECTURE.md
