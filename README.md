@@ -471,6 +471,42 @@ El desarrollo sigue el plan de fases documentado en
 arquitectura es un monolito modular con backend Python (FastAPI), un frontal
 de navegador y una API REST de administración.
 
+### Historial de worktrees
+
+El desarrollo se organizó en worktrees independientes (`.worktrees/`) para aislar
+cada línea de trabajo. Las ramas de funcionalidad que llegaron a `main` fueron:
+
+| Worktree | Trabajo realizado |
+| --- | --- |
+| `task/dataset-exploration` | Inventario del dataset sintético y documentos clínicos. |
+| `task/architecture-docs` | Arquitectura modular, flujos y decisiones técnicas. |
+| `task/conversation-foundation` | Estados, mensajes, historial y contexto de llamada. |
+| `task/conversation-orchestrator` | Orquestación de preguntas y transiciones conversacionales. |
+| `task/rag-foundation` | Extracción, chunks, embeddings BGE-M3, ChromaDB y recuperación. |
+| `task/rag-safety-hardening` | Suficiencia RAG, grounding, citas y fallbacks seguros. |
+| `task/document-lifecycle` | Carga, listado, estados y eliminación de documentos. |
+| `task/document-index-reconciliation` | Reconciliación entre SQLite y ChromaDB. |
+| `task/document-lifecycle-reingestion` | Reingestión después de documentos `FAILED` o `DELETED`. |
+| `task/voice-stt` / `task/voice-tts` | Adaptadores Whisper STT y Kokoro TTS. |
+| `task/voice-integration-completion` | Integración de voz con el contexto clínico real. |
+| `task/voice-persistence-integration` | Persistencia de llamadas, turnos, alertas y resúmenes. |
+| `task/voice-metrics-integration` | Instrumentación inicial de métricas de voz. |
+| `task/frontend-voice-integration` | Captura de micrófono, reproducción WAV e interfaz de llamada. |
+| `task/admin-console` | Consola `/admin` para gestión de documentos. |
+| `task/frontend-summary-view` | API y vistas inline/standalone de resúmenes. |
+| `task/llm-question-approval` | Segunda aprobación LLM para respuestas no-RED. |
+| `task/llm-live-flow-fixes` | Correcciones de cierre y alineación de preguntas. |
+| `task/final-escalation-alert` | Alertas solo para decisiones concluyentes. |
+| `task/metrics-completeness` | Persistencia y reconstrucción de métricas después de reinicios. |
+| `task/manual-call-finalization` | `POST /calls/{call_id}/end` y resumen manual. |
+| `task/live-ten-call-validation` | Diez escenarios live secuenciales en puerto `18001`. |
+| `task/injection-defense-hardening` | Defensa centralizada y multicapa contra prompt injection. |
+| `task/documentation-five-pass-audit` | Reconciliación de documentación y diagramas. |
+
+Los worktrees restantes son ramas históricas, exploratorias o intermedias y no
+representan funcionalidades adicionales activas de `main`. El estado entregable
+siempre debe consultarse en la rama `main`.
+
 La aplicación expone:
 
 - Una interfaz de llamada desde el navegador en `/` y `/call` con selección

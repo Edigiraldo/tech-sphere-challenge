@@ -302,8 +302,13 @@ estimado porque no existe un valor validado para esta llamada.
 
 1. `@planner` inspecciona el repositorio y produce un plan de implementación.
 2. `@coder` implementa solo los archivos del plan.
-3. `@auditor` revisa, ejecuta pruebas y reporta hallazgos.
+3. `@auditor` revisa sin ejecutar ni escribir pruebas; verifica la implementación y
+   confía en la evidencia de pruebas reportada por `@coder`.
 4. Cada hallazgo se corrige antes de continuar.
+
+Cada línea de trabajo se aisló en un worktree `task/<slug>` y se integró mediante
+rebase y merge a `main`. El historial de worktrees y sus responsabilidades está
+documentado en `README.md` § Historial de worktrees.
 
 ### Iteraciones principales
 
