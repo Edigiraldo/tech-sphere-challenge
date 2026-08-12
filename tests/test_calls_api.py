@@ -2884,3 +2884,622 @@ class TestAlertIdempotency:
             )
         finally:
             _reset_sqlite()
+
+
+# ---------------------------------------------------------------------------
+# Manual call finalization endpoint — POST /calls/{call_id}/end
+# ---------------------------------------------------------------------------
+
+
+class TestManualEndCall:
+    """Tests for the manual call finalization endpoint."""
+
+    @pytest.fixture(autouse=True)
+    def _persistence_setup(self, tmp_path):
+        """Initialise SQLite with a temp database so persistence checks succeed."""
+        from backend.persistence.sqlite import _reset_sqlite, init_sqlite
+
+        _reset_sqlite()
+        db_path = tmp_path / "test_manual_end.db"
+        init_sqlite(db_path)
+        yield
+        _reset_sqlite()
+
+    # -- basic functionality -------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_end_call_returns_200_with_summary(self):
+        """Manual finalization of an active call returns 200 with EndCallResponse
+        containing summary_generated=True and populated summary fields."""
+        transport = ASGITransport(app=app)
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            # Create call
+            resp = await client.post(
+                "/calls",
+                json={
+                    "patient_id": "pac-manual-1",
+                    "dia_postop": 3,
+                    "procedimiento": "Apendicectomía",
+                    "nombre_completo": "Manual End Test",
+                    "eps": "EPS",
+                },
+            )
+            assert resp.status_code == 201
+            call_id = resp.json()["call_id"]
+
+            # Process one turn to get consent response recorded
+            await client.post(
+                f"/calls/{call_id}/turn",
+                json={"audio_base64": _MOCK_AUDIO_B64},
+            )
+
+            # Manually end the call
+            end_resp = await client.post(f"/calls/{call_id}/end")
+
+        assert end_resp.status_code == 200
+        data = end_resp.json()
+
+        # Verify EndCallResponse shape
+        assert data["call_id"] == call_id
+        assert data["state"] == "ENDED"
+        assert data["summary_generated"] is True
+        assert len(data["summary_id"]) > 0
+        assert len(data["patient_summary"]) > 0
+        assert len(data["procedure_summary"]) > 0
+        assert len(data["symptoms_summary"]) > 0
+        assert len(data["decision_summary"]) > 0
+        assert len(data["next_steps"]) > 0
+        assert isinstance(data["sources"], list)
+
+        # Verify no orphaned orchestrator in store
+        assert not await global_store.exists(call_id)
+
+    @pytest.mark.asyncio
+    async def test_end_call_unknown_returns_404(self):
+        """Manual finalization of a non-existent call returns 404."""
+        transport = ASGITransport(app=app)
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            resp = await client.post("/calls/nonexistent-call-id/end")
+
+        assert resp.status_code == 404
+        assert "not found" in resp.json()["detail"].lower()
+
+    # -- idempotency ---------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_end_call_idempotent_returns_200(self):
+        """Repeated POST /calls/{call_id}/end on an already-finalized call
+        returns 200 with the same summary data (not 409)."""
+        transport = ASGITransport(app=app)
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            # Create and advance one turn
+            resp = await client.post(
+                "/calls",
+                json={
+                    "patient_id": "pac-idemp-end",
+                    "dia_postop": 2,
+                    "procedimiento": "Colecistectomía",
+                    "nombre_completo": "Idemp End Test",
+                    "eps": "EPS",
+                },
+            )
+            call_id = resp.json()["call_id"]
+            await client.post(
+                f"/calls/{call_id}/turn",
+                json={"audio_base64": _MOCK_AUDIO_B64},
+            )
+
+            # First end call
+            resp1 = await client.post(f"/calls/{call_id}/end")
+            assert resp1.status_code == 200
+            data1 = resp1.json()
+            assert data1["summary_generated"] is True
+
+            # Second end call (idempotent)
+            resp2 = await client.post(f"/calls/{call_id}/end")
+            assert resp2.status_code == 200
+            data2 = resp2.json()
+            assert data2["summary_generated"] is True
+
+            # Both responses should have the same summary data
+            assert data2["summary_id"] == data1["summary_id"]
+            assert data2["patient_summary"] == data1["patient_summary"]
+            assert data2["decision_summary"] == data1["decision_summary"]
+
+    @pytest.mark.asyncio
+    async def test_end_call_idempotent_after_automatic_end(self):
+        """Manual finalization after automatic call-ended returns 200 with
+        the same summary (idempotent across both paths)."""
+        transport = ASGITransport(app=app)
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            # Create call
+            resp = await client.post(
+                "/calls",
+                json={
+                    "patient_id": "pac-auto-idem",
+                    "dia_postop": 3,
+                    "procedimiento": "Apendicectomía",
+                    "nombre_completo": "Auto+Manual Idemp",
+                    "eps": "EPS",
+                },
+            )
+            call_id = resp.json()["call_id"]
+
+            # Walk through all turns to reach automatic ENDED
+            for _ in range(9):
+                r = await client.post(
+                    f"/calls/{call_id}/turn",
+                    json={"audio_base64": _MOCK_AUDIO_B64},
+                )
+                if r.status_code != 200:
+                    break
+
+            assert r.json()["call_ended"] is True
+
+            # Now try manual end on the already automatically-ended call
+            resp2 = await client.post(f"/calls/{call_id}/end")
+            assert resp2.status_code == 200
+            data = resp2.json()
+            assert data["summary_generated"] is True
+            assert data["state"] == "ENDED"
+
+    # -- summary persistence -------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_end_call_persists_summary(self):
+        """Manual finalization persists a SummaryRecord in SQLite."""
+        from backend.persistence.sqlite import get_summary_for_call
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            resp = await client.post(
+                "/calls",
+                json={
+                    "patient_id": "pac-sum-persist",
+                    "dia_postop": 4,
+                    "procedimiento": "Cesárea",
+                    "nombre_completo": "Summary Persist",
+                    "eps": "EPS",
+                },
+            )
+            call_id = resp.json()["call_id"]
+
+            # Process one turn
+            await client.post(
+                f"/calls/{call_id}/turn",
+                json={"audio_base64": _MOCK_AUDIO_B64},
+            )
+
+            # Manually end
+            await client.post(f"/calls/{call_id}/end")
+
+        summary = get_summary_for_call(call_id)
+        assert summary is not None, "SummaryRecord must exist after manual end"
+        assert summary.call_id == call_id
+        assert len(summary.patient_summary) > 0
+        assert len(summary.next_steps) > 0
+
+    @pytest.mark.asyncio
+    async def test_end_call_mark_call_as_ended(self):
+        """Manual finalization updates the call record with ended_at and
+        state=ENDED."""
+        from backend.persistence.sqlite import get_call_by_id
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            resp = await client.post(
+                "/calls",
+                json={
+                    "patient_id": "pac-mark-ended",
+                    "dia_postop": 2,
+                    "procedimiento": "Hernioplastia inguinal",
+                    "nombre_completo": "Mark Ended",
+                    "eps": "EPS",
+                },
+            )
+            call_id = resp.json()["call_id"]
+            await client.post(
+                f"/calls/{call_id}/turn",
+                json={"audio_base64": _MOCK_AUDIO_B64},
+            )
+
+            # Verify not ended before manual end
+            before = get_call_by_id(call_id)
+            assert before.ended_at is None
+
+            # Manually end
+            await client.post(f"/calls/{call_id}/end")
+
+        after = get_call_by_id(call_id)
+        assert after is not None
+        assert after.ended_at is not None, "ended_at must be set after manual end"
+        assert after.state == "ENDED"
+
+    # -- metrics closure -----------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_end_call_closes_metrics(self):
+        """Manual finalization closes metrics collection so the call appears
+        in the metrics summary endpoint."""
+        transport = ASGITransport(app=app)
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            # Create call and process one turn
+            resp = await client.post(
+                "/calls",
+                json={
+                    "patient_id": "pac-metrics-end",
+                    "dia_postop": 3,
+                    "procedimiento": "Apendicectomía",
+                    "nombre_completo": "Metrics End",
+                    "eps": "EPS",
+                },
+            )
+            call_id = resp.json()["call_id"]
+            await client.post(
+                f"/calls/{call_id}/turn",
+                json={"audio_base64": _MOCK_AUDIO_B64},
+            )
+
+            # Manually end
+            await client.post(f"/calls/{call_id}/end")
+
+        # Verify call appears in metrics
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            metrics_resp = await client.get("/metrics/summary")
+
+        assert metrics_resp.status_code == 200
+        summary = metrics_resp.json()
+        assert summary["call_count"] >= 1, (
+            f"Ended call must appear in metrics, got call_count={summary['call_count']}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_end_call_metrics_detail_available(self):
+        """After manual finalization, the per-call metrics detail endpoint
+        returns turn data."""
+        transport = ASGITransport(app=app)
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            resp = await client.post(
+                "/calls",
+                json={
+                    "patient_id": "pac-metrics-detail",
+                    "dia_postop": 3,
+                    "procedimiento": "Apendicectomía",
+                    "nombre_completo": "Metrics Detail",
+                    "eps": "EPS",
+                },
+            )
+            call_id = resp.json()["call_id"]
+            await client.post(
+                f"/calls/{call_id}/turn",
+                json={"audio_base64": _MOCK_AUDIO_B64},
+            )
+
+            # Manually end
+            await client.post(f"/calls/{call_id}/end")
+
+            # Metrics detail endpoint
+            detail_resp = await client.get(f"/metrics/calls/{call_id}")
+
+        assert detail_resp.status_code == 200
+        detail = detail_resp.json()
+        assert detail["call_id"] == call_id
+        assert detail["turn_count"] >= 1
+
+    # -- automatic path preserved --------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_automatic_call_ended_still_works(self):
+        """The automatic call-ended path (through the orchestrator) still
+        generates summaries, persists alerts, closes metrics, and cleans up."""
+        from backend.persistence.sqlite import get_call_by_id, get_summary_for_call
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            resp = await client.post(
+                "/calls",
+                json={
+                    "patient_id": "pac-auto",
+                    "dia_postop": 3,
+                    "procedimiento": "Apendicectomía",
+                    "nombre_completo": "Auto Path",
+                    "eps": "EPS",
+                },
+            )
+            call_id = resp.json()["call_id"]
+
+            # Walk full call to automatic ENDED
+            for _ in range(9):
+                r = await client.post(
+                    f"/calls/{call_id}/turn",
+                    json={"audio_base64": _MOCK_AUDIO_B64},
+                )
+                if r.status_code != 200:
+                    break
+
+        assert r.status_code == 200
+        assert r.json()["call_ended"] is True
+
+        # Verify persistence
+        call_record = get_call_by_id(call_id)
+        assert call_record is not None
+        assert call_record.ended_at is not None
+        assert call_record.state == "ENDED"
+
+        summary = get_summary_for_call(call_id)
+        assert summary is not None
+
+        # Verify orchestrator cleaned up
+        assert not await global_store.exists(call_id)
+
+    # -- alert behavior ------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_end_call_persists_conclusive_alerts(self):
+        """When manually finalizing a call that has conclusive escalation
+        results, those alerts are persisted (idempotently)."""
+        from backend.persistence.sqlite import get_alerts_for_call
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            resp = await client.post(
+                "/calls",
+                json={
+                    "patient_id": "pac-alert-end",
+                    "dia_postop": 3,
+                    "procedimiento": "Apendicectomía",
+                    "nombre_completo": "Alert End",
+                    "eps": "EPS",
+                },
+            )
+            call_id = resp.json()["call_id"]
+
+            # Advance through greeting + consent → QUESTIONS
+            await client.post(
+                f"/calls/{call_id}/turn",
+                json={"audio_base64": _MOCK_AUDIO_B64},
+            )
+            await client.post(
+                f"/calls/{call_id}/turn",
+                json={"audio_base64": _MOCK_AUDIO_B64},
+            )
+
+            # Send RED response for pain → should persist alert during turn
+            async def _red_stt(audio_data):
+                return TranscriptionResult(
+                    text="Me duele muchísimo, un 9 de 10, no soporto.",
+                    language="es",
+                    duration_seconds=2.0,
+                    model="whisper-large-v3",
+                )
+
+            with patch("backend.api.calls._stt", _red_stt):
+                await client.post(
+                    f"/calls/{call_id}/turn",
+                    json={"audio_base64": _MOCK_AUDIO_B64},
+                )
+
+            # RED triggers call_ended — implicit cleanup via orchestrator
+            # But if not ended, manual end persists alerts too
+            # Let's test the non-RED path: YELLOW that becomes conclusive
+            # ... Actually with RED, the call is already ended.
+            # Test with a call that has YELLOW escalations but isn't ended yet.
+
+            # Create another call for the manual-end alert path
+            resp2 = await client.post(
+                "/calls",
+                json={
+                    "patient_id": "pac-alert-manual",
+                    "dia_postop": 3,
+                    "procedimiento": "Apendicectomía",
+                    "nombre_completo": "Alert Manual End",
+                    "eps": "EPS",
+                },
+            )
+            call_id2 = resp2.json()["call_id"]
+
+            # Advance to QUESTIONS
+            await client.post(
+                f"/calls/{call_id2}/turn",
+                json={"audio_base64": _MOCK_AUDIO_B64},
+            )
+            await client.post(
+                f"/calls/{call_id2}/turn",
+                json={"audio_base64": _MOCK_AUDIO_B64},
+            )
+
+            # Send YELLOW responses (pain=6, fever=YELLOW) manually managed
+            # Use the endpoint-level escalation data to inject conclusive alert
+            from backend.api.calls import (
+                _call_escalations,
+                EscalationInfo,
+            )
+
+            # Inject a conclusive YELLOW escalation result
+            conclusive_yellow = EscalationInfo(
+                severity="YELLOW",
+                should_escalate=True,
+                reason="Dos amarillos consecutivos.",
+                next_action="Escalar seguimiento.",
+                domain="fiebre",
+            )
+            _call_escalations.setdefault(call_id2, []).append(conclusive_yellow)
+
+            # Manually end
+            end_resp = await client.post(f"/calls/{call_id2}/end")
+            assert end_resp.status_code == 200
+
+        # Verify alert was persisted by manual end
+        alerts = get_alerts_for_call(call_id2)
+        yellow_alerts = [a for a in alerts if a.severity == "YELLOW"]
+        assert len(yellow_alerts) >= 1, (
+            f"Conclusive YELLOW alert must be persisted during manual end, "
+            f"got {len(alerts)} total alerts"
+        )
+
+    @pytest.mark.asyncio
+    async def test_end_call_alert_persistence_idempotent(self):
+        """Manual end does not duplicate alerts that were already persisted
+        during turn processing."""
+        from backend.persistence.sqlite import get_alerts_for_call
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            resp = await client.post(
+                "/calls",
+                json={
+                    "patient_id": "pac-alert-dup",
+                    "dia_postop": 3,
+                    "procedimiento": "Apendicectomía",
+                    "nombre_completo": "Alert Dup",
+                    "eps": "EPS",
+                },
+            )
+            call_id = resp.json()["call_id"]
+
+            # Advance to QUESTIONS
+            await client.post(
+                f"/calls/{call_id}/turn",
+                json={"audio_base64": _MOCK_AUDIO_B64},
+            )
+            await client.post(
+                f"/calls/{call_id}/turn",
+                json={"audio_base64": _MOCK_AUDIO_B64},
+            )
+
+            # Send RED pain → alert persisted by turn processing
+            async def _red_stt(audio_data):
+                return TranscriptionResult(
+                    text="Me duele un 9 de 10, es insoportable.",
+                    language="es",
+                    duration_seconds=2.0,
+                    model="whisper-large-v3",
+                )
+
+            with patch("backend.api.calls._stt", _red_stt):
+                turn_resp = await client.post(
+                    f"/calls/{call_id}/turn",
+                    json={"audio_base64": _MOCK_AUDIO_B64},
+                )
+
+            # RED may have ended the call — check
+            data = turn_resp.json()
+            if not data.get("call_ended"):
+                # If not ended (e.g., state machine handles RED differently),
+                # manually end and verify no duplicates
+                await client.post(f"/calls/{call_id}/end")
+
+        alerts = get_alerts_for_call(call_id)
+        red_alerts = [a for a in alerts if a.severity == "RED"]
+        # Should have exactly one RED alert (no duplicates)
+        assert len(red_alerts) == 1, (
+            f"Expected exactly 1 RED alert (idempotent), got {len(red_alerts)}. "
+            f"All alerts: {[(a.severity, a.domain) for a in alerts]}"
+        )
+
+    # -- no-summary response semantics ---------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_end_call_no_turns_returns_summary_generated_false(self):
+        """When a call has no turns recorded, manual end returns
+        summary_generated=False with human-readable fallback text."""
+        transport = ASGITransport(app=app)
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            resp = await client.post(
+                "/calls",
+                json={
+                    "patient_id": "pac-no-turns",
+                    "dia_postop": 1,
+                    "procedimiento": "Test",
+                    "nombre_completo": "No Turns",
+                    "eps": "EPS",
+                },
+            )
+            call_id = resp.json()["call_id"]
+
+            # Remove orchestrator from store (simulate missing orchestrator)
+            await global_store.remove(call_id)
+
+            # Manually end — no turns were recorded
+            end_resp = await client.post(f"/calls/{call_id}/end")
+
+        assert end_resp.status_code == 200
+        data = end_resp.json()
+        assert data["call_id"] == call_id
+        assert data["state"] == "ENDED"
+        assert data["summary_generated"] is False
+        assert data["summary_id"] == ""
+        # Fields contain descriptive fallback text
+        assert "sin resumen" in data["patient_summary"].lower()
+
+    # -- frontend contract (EndCallResponse) ---------------------------------
+
+    @pytest.mark.asyncio
+    async def test_end_call_response_model_validation(self):
+        """EndCallResponse passes Pydantic model validation with all fields."""
+        transport = ASGITransport(app=app)
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            resp = await client.post(
+                "/calls",
+                json={
+                    "patient_id": "pac-model",
+                    "dia_postop": 3,
+                    "procedimiento": "Apendicectomía",
+                    "nombre_completo": "Model Validation",
+                    "eps": "EPS",
+                },
+            )
+            call_id = resp.json()["call_id"]
+            await client.post(
+                f"/calls/{call_id}/turn",
+                json={"audio_base64": _MOCK_AUDIO_B64},
+            )
+
+            end_resp = await client.post(f"/calls/{call_id}/end")
+
+        assert end_resp.status_code == 200
+        data = end_resp.json()
+
+        # Validate against the known model fields
+        required_fields = (
+            "call_id", "state", "summary_generated", "summary_id",
+            "created_at", "patient_summary", "procedure_summary",
+            "symptoms_summary", "decision_summary", "next_steps",
+            "sources",
+        )
+        for field in required_fields:
+            assert field in data, f"EndCallResponse missing field: {field}"
+
+        assert data["state"] == "ENDED"
+        assert data["summary_generated"] is True
+        assert isinstance(data["sources"], list)
+        assert isinstance(data["created_at"], str)
+        assert len(data["created_at"]) > 0

@@ -111,14 +111,21 @@ document.addEventListener("DOMContentLoaded", () => {
         }
     }
 
-    /** Show the completed banner. */
-    function showCompleted() {
+    /** Show the completed banner.
+     * @param {boolean} [summaryAlreadyRendered=false] - When true, skip the
+     *   separate GET /calls/{call_id}/summary fetch because the summary was
+     *   already rendered from the end-call response.
+     */
+    function showCompleted(summaryAlreadyRendered) {
         if (callCompletedBanner) {
             callCompletedBanner.classList.remove("hidden");
         }
         setLoading(false);
-        // Fetch and render the inline summary once the call completes.
-        fetchInlineSummary();
+        // Fetch and render the inline summary once the call completes,
+        // unless it was already rendered from the end-call response.
+        if (!summaryAlreadyRendered) {
+            fetchInlineSummary();
+        }
     }
 
     /** Fetch the call summary from the API and render it inline. */
@@ -635,16 +642,124 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     /** End the call (user-initiated). */
-    function endCall() {
+    async function endCall() {
+        if (callEnded) return;
+
         stopRecording();
-        stopTimer();
-        callEnded = true;
-        setCallState("ENDED");
         recordToggleBtn.disabled = true;
         endCallBtn.disabled = true;
-        addMessage("system", "Llamada finalizada por el usuario.");
-        setTranscript("Llamada finalizada.");
-        showCompleted();
+        setLoading(true, "Finalizando llamada...");
+
+        try {
+            const response = await fetch(`/calls/${encodeURIComponent(callId)}/end`, {
+                method: "POST",
+            });
+
+            if (!response.ok) {
+                let detail = "Error al finalizar la llamada.";
+                try {
+                    const err = await response.json();
+                    detail = err.detail || detail;
+                } catch (_) { /* use default */ }
+
+                if (response.status === 409) {
+                    // 409: call already ended but no summary exists
+                    // (data inconsistency).  The response body contains
+                    // only a `detail` field — never summary fields.
+                    // Show a clear Spanish error without attempting
+                    // summary rendering.
+                    stopTimer();
+                    callEnded = true;
+                    setCallState("ENDED");
+                    addMessage("system", "Llamada finalizada.");
+                    setTranscript("Llamada completada.");
+                    showError(
+                        "La llamada ya fue finalizada pero no se encontr\u00f3 "
+                        + "el resumen. Consulte el historial o contacte al "
+                        + "administrador."
+                    );
+                    return;
+                }
+
+                // For 404, the call no longer exists — treat as ended.
+                // Skip the summary fetch (showCompleted(true)) to avoid
+                // a futile GET /calls/{id}/summary request.
+                if (response.status === 404) {
+                    stopTimer();
+                    callEnded = true;
+                    setCallState("ENDED");
+                    addMessage("system", "Llamada finalizada.");
+                    setTranscript("Llamada completada.");
+                    showCompleted(true);
+                    return;
+                }
+
+                showError(detail);
+                return;
+            }
+
+            const data = await response.json();
+
+            // Stop the timer and mark as ended
+            stopTimer();
+            callEnded = true;
+            setCallState("ENDED");
+            addMessage("system", "Llamada finalizada por el usuario.");
+            setTranscript("Llamada completada.");
+
+            // Render the summary from the end-call response
+            renderInlineSummaryFromEndResponse(data);
+            showCompleted(true);
+        } catch (err) {
+            // Network error — don't falsely claim completion
+            recordToggleBtn.disabled = false;
+            endCallBtn.disabled = false;
+            showError("Error de conexión al finalizar la llamada. Intente nuevamente.");
+            console.error("endCall error:", err);
+        }
+    }
+
+    /**
+     * Render the inline summary directly from the end-call response body.
+     * Avoids a second GET /calls/{call_id}/summary round-trip.
+     * @param {object} data - EndCallResponse from POST /calls/{call_id}/end
+     */
+    function renderInlineSummaryFromEndResponse(data) {
+        if (!inlineSummarySection || !inlineSummaryContent) return;
+
+        if (viewFullSummaryLink) {
+            viewFullSummaryLink.href = `/summary?call_id=${encodeURIComponent(data.call_id)}`;
+        }
+
+        let html = "";
+
+        html += '<div class="summary-section">';
+        html += `<p class="summary-section-content">${escapeHtml(data.patient_summary)}</p>`;
+        html += '</div>';
+
+        html += '<div class="summary-section">';
+        html += `<p class="summary-section-content">${escapeHtml(data.procedure_summary)}</p>`;
+        html += '</div>';
+
+        const sevClass = getInlineSeverityClass(data.decision_summary);
+        html += '<div class="summary-section' + (sevClass ? ' ' + sevClass : '') + '">';
+        html += '<h3 class="summary-section-heading">&#x26A0; Decisión</h3>';
+        html += `<p class="summary-section-content">${escapeHtml(data.decision_summary)}</p>`;
+        html += '</div>';
+
+        html += '<div class="summary-section">';
+        html += '<h3 class="summary-section-heading">&#x27A1; Próximos Pasos</h3>';
+        html += `<p class="summary-section-content">${escapeHtml(data.next_steps)}</p>`;
+        html += '</div>';
+
+        if (data.sources && data.sources.length > 0) {
+            html += '<div class="summary-section">';
+            html += `<p class="summary-section-content">${data.sources.length} fuente(s) citada(s) — disponible en el resumen completo.</p>`;
+            html += '</div>';
+        }
+
+        inlineSummaryContent.innerHTML = html;
+        inlineSummarySection.classList.remove("hidden");
     }
 
     // -----------------------------------------------------------------------

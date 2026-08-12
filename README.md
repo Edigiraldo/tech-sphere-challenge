@@ -60,6 +60,7 @@ documentación interactiva también está disponible en `/docs`.
 | `GET` | `/health` | Verifica que el backend está disponible. |
 | `POST` | `/calls` | Crea una llamada y devuelve el saludo WAV base64. |
 | `POST` | `/calls/{call_id}/turn` | Recibe audio, ejecuta STT, orquestación, decisión, RAG/LLM y TTS. |
+| `POST` | `/calls/{call_id}/end` | Finaliza manualmente una llamada activa, genera el resumen y limpia el estado. |
 | `POST` | `/rag/query` | Ejecuta una consulta RAG con citas trazables. |
 | `POST` | `/documents` | Carga e ingiere un documento. |
 | `GET` | `/documents` | Lista documentos, opcionalmente filtrados por estado. |
