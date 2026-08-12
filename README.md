@@ -98,23 +98,128 @@ STT. Python 3.11+ y pip son una alternativa para ejecución local, desarrollo y 
 ## Instalación y ejecución con Docker (ruta principal)
 
 Docker Compose es la ruta recomendada para ejecutar la aplicación. Requiere Docker
-Desktop (o Docker Engine con Compose) y una clave de Groq. Crea `.env` en la raíz sin
-versionarlo:
+Desktop (Windows/macOS) o Docker Engine con Compose (Linux), Git y una clave de Groq.
+
+### 1. Clonar el repositorio
+
+#### macOS y Linux
+
+Ejecuta los comandos desde una terminal ubicada en la carpeta donde quieras guardar
+el proyecto:
+
+```bash
+git clone https://github.com/Edigiraldo/tech-sphere-challenge.git
+cd tech-sphere-challenge
+```
+
+#### Windows PowerShell
+
+```powershell
+git clone https://github.com/Edigiraldo/tech-sphere-challenge.git
+Set-Location -LiteralPath .\tech-sphere-challenge
+```
+
+### 2. Confirmar la carpeta del proyecto
+
+Todos los comandos Docker siguientes deben ejecutarse desde la raíz del repositorio,
+es decir, la carpeta que contiene `Dockerfile`, `docker-compose.yml`, `pyproject.toml`,
+`backend/`, `frontend/` y `dataset/`:
+
+#### macOS y Linux
+
+```bash
+test -f Dockerfile && test -f docker-compose.yml && echo "Raiz confirmada"
+```
+
+#### Windows PowerShell
+
+```powershell
+Test-Path .\Dockerfile
+Test-Path .\docker-compose.yml
+```
+
+Ambos comandos deben devolver una confirmación positiva. No ejecutes `docker compose`
+desde `backend/`, `frontend/` u otra subcarpeta.
+
+### 3. Crear y configurar `.env`
+
+Crea `.env` en la raíz del repositorio. No lo subas a Git:
 
 ```ini
 GROQ_API_KEY=tu-clave-de-groq
 ```
 
-Construye y levanta el servicio:
+En Windows PowerShell puedes crearlo desde la plantilla:
+
+```powershell
+Copy-Item .env.example .env
+notepad .env
+```
+
+En macOS/Linux:
+
+```bash
+cp .env.example .env
+nano .env
+```
+
+En ambos casos, conserva el archivo en la raíz y reemplaza el valor de
+`GROQ_API_KEY` por tu clave real.
+
+### 4. Construir y levantar el servicio
 
 ```bash
 docker compose up --build -d
 ```
 
-La aplicación queda disponible en `http://127.0.0.1:8000`. Para usar otro puerto del
-host, define `APP_PORT` al ejecutar Compose, por ejemplo `APP_PORT=8080 docker compose up
---build -d` (en PowerShell: `$env:APP_PORT=8080; docker compose up --build -d`).
-Comprueba el estado con `curl http://127.0.0.1:8000/health` o visita `/docs`.
+En Windows PowerShell, macOS y Linux usa el mismo comando desde la raíz del repositorio.
+
+### 5. Verificar el servicio
+
+Comprueba el estado del contenedor:
+
+#### macOS y Linux
+
+```bash
+docker compose ps
+curl http://127.0.0.1:8000/health
+```
+
+#### Windows PowerShell
+
+```powershell
+curl.exe http://127.0.0.1:8000/health
+```
+
+La respuesta esperada es `{"status":"ok"}`. Abre luego `http://127.0.0.1:8000/`.
+La documentación interactiva está en `http://127.0.0.1:8000/docs`.
+
+### 6. Puerto alternativo
+
+La aplicación queda disponible por defecto en `http://127.0.0.1:8000`. Para usar otro puerto del
+ host, define `APP_PORT` al ejecutar Compose.
+
+macOS/Linux:
+
+```bash
+APP_PORT=8080 docker compose up --build -d
+```
+
+Windows PowerShell:
+
+```powershell
+$env:APP_PORT=8080
+docker compose up --build -d
+```
+
+### 7. Detener la aplicación
+
+```bash
+docker compose down
+```
+
+Este comando conserva los volúmenes. Para eliminar también SQLite, ChromaDB y los
+archivos cargados, usa `docker compose down --volumes`.
 
 SQLite, ChromaDB y los archivos cargados usan volúmenes nombrados (`sqlite_data`,
 `chroma_data`, `uploads_data`) y sobreviven a la recreación del contenedor. Detén el
