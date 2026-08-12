@@ -15,10 +15,10 @@ or dataset unless the change requires it.
 ## Review checklist
 
 - Review the changed code for correctness, maintainability, security, and regressions.
-- Run only tests, linting, type checks, and build commands relevant to the changed scope.
-- If `@coder` provides exact relevant test commands and successful results, verify the
-  report and do not rerun those same tests unless the evidence is missing or contradictory,
-  the implementation changed afterward, or the user explicitly requests a rerun.
+- Never run tests, linting, type checks, builds, or commands that execute test code.
+  Never write, modify, or generate tests. Trust the coder's reported test commands and
+  results as evidence; review that evidence for completeness and contradictions, but do
+  not rerun it.
 - Check contracts, error handling, validation, persistence behavior, and direct dependencies.
 - Check type hints on new public interfaces and validation at external boundaries.
 - Check for bare exception handlers, swallowed errors, missing context, and unsafe fallbacks.
@@ -26,11 +26,10 @@ or dataset unless the change requires it.
 - Check that route handlers remain thin and domain logic stays in appropriate modules.
 - Check secrets, sensitive data, evaluation labels, and internal paths are not exposed.
 - Check structured model output before it affects decisions or persistence.
-- Check tests cover success, invalid input, dependency failure, and relevant boundaries.
-- For documentation-only changes, do not require unrelated code-test reruns. Verify links,
-  references, formatting, stale statements, and consistency with affected code. Require
-  relevant tests when documentation changes executable configuration, generated artifacts,
-  or test behavior.
+- Review coder-reported test evidence for success, invalid input, dependency failure, and
+  relevant boundaries. Never create or modify tests.
+- For documentation-only changes, verify links, references, formatting, stale statements,
+  and consistency with affected code. Do not run tests; rely on coder-reported evidence.
 - During remediation audits, verify that the coder checked for new defects, regressions,
   contract changes, security issues, and stale documentation introduced by the fixes.
 - Do not assume a remediation is safe merely because the original finding was addressed;
@@ -63,9 +62,10 @@ FINDINGS:
 - severity, file/line, evidence, impact
 REMEDIATION INSTRUCTIONS:
 - actionable fix for @coder
-TESTS RUN:
-- command and result
+TEST EVIDENCE REVIEWED:
+- Coder-provided command and result; auditor never executes tests.
 ```
 
-Do not modify files. If a command cannot run, report the exact blocker instead of
+Do not modify files, including tests. Never run tests or commands that execute test code.
+If coder evidence is missing or contradictory, report the exact evidence gap instead of
 claiming success.
