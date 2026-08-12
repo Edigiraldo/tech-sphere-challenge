@@ -82,7 +82,7 @@ _MOCK_AUDIO_BYTES = b"\x00\x01\x02" * 100
 # classification for all six symptom domains.
 _GREEN_PATIENT_RESPONSE = (
     "Sí, claro, todo bien, sin dolor, sin fiebre, herida limpia, "
-    "como bien, duermo bien, camino sin problema"
+    "tengo buen apetito, duermo bien, camino sin problema"
 )
 _MOCK_AUDIO_B64 = base64.b64encode(_MOCK_AUDIO_BYTES).decode("ascii")
 _MOCK_WAV_BYTES = b"RIFF....WAVE...."
@@ -1660,7 +1660,169 @@ class TestSummaryFrontendContract:
             assert any(
                 kw in decision.lower()
                 for kw in ["verde", "amarillo", "rojo", "precaucion", "precaución",
-                           "normal", "inmediato", "escalamiento"]
+                           "normal", "inmediato", "escalamiento", "indicador"]
             ), f"decision_summary contains no severity indicator: {decision!r}"
 
             await global_store.remove(call_id)
+
+
+# ---------------------------------------------------------------------------
+# Escalation banner should_escalate contract
+# ---------------------------------------------------------------------------
+
+
+class TestShouldEscalateBannerContract:
+    """Verify that ``should_escalate`` controls whether the frontend
+    shows the escalation banner.
+
+    call.js line ~251: ``if (!escalation || !escalation.should_escalate)``
+    hides the banner for non-conclusive (should_escalate=False) results.
+    """
+
+    @pytest.fixture
+    async def call_id_questions(self):
+        """Create a call advanced to the first question."""
+        transport = ASGITransport(app=app)
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            resp = await client.post(
+                "/calls",
+                json={
+                    "patient_id": "P001",
+                    "dia_postop": 3,
+                    "procedimiento": "Apendicectomía laparoscópica",
+                    "nombre_completo": "Paciente 001",
+                    "eps": "EPS",
+                },
+            )
+            cid = resp.json()["call_id"]
+            await client.post(f"/calls/{cid}/turn", json={"audio_base64": _MOCK_AUDIO_B64})
+            await client.post(f"/calls/{cid}/turn", json={"audio_base64": _MOCK_AUDIO_B64})
+
+        yield cid
+        await global_store.remove(cid)
+
+    @pytest.mark.asyncio
+    async def test_green_should_escalate_false(self, call_id_questions):
+        """GREEN classifications have should_escalate=False so the
+        frontend hides the banner."""
+        transport = ASGITransport(app=app)
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            response = await client.post(
+                f"/calls/{call_id_questions}/turn",
+                json={"audio_base64": _MOCK_AUDIO_B64},
+            )
+
+        assert response.status_code == 200
+        esc = response.json()["escalation"]
+        assert esc is not None
+        assert esc["severity"] == "GREEN"
+        assert esc["should_escalate"] is False
+
+    @pytest.mark.asyncio
+    async def test_first_yellow_should_escalate_false(self, call_id_questions):
+        """First YELLOW (non-conclusive) has should_escalate=False."""
+        async def _yellow_stt(audio_data: bytes) -> TranscriptionResult:
+            return TranscriptionResult(
+                text="Me duele un 6 de 10.",
+                language="es",
+                duration_seconds=1.0,
+                model="whisper-large-v3",
+            )
+
+        with patch("backend.api.calls._stt", _yellow_stt):
+            transport = ASGITransport(app=app)
+            async with AsyncClient(
+                transport=transport, base_url="http://test"
+            ) as client:
+                response = await client.post(
+                    f"/calls/{call_id_questions}/turn",
+                    json={"audio_base64": _MOCK_AUDIO_B64},
+                )
+
+        esc = response.json()["escalation"]
+        assert esc is not None
+        assert esc["severity"] == "YELLOW"
+        assert esc["should_escalate"] is False, (
+            "First YELLOW must have should_escalate=False — "
+            "frontend banner must stay hidden"
+        )
+
+    @pytest.mark.asyncio
+    async def test_red_should_escalate_true(self, call_id_questions):
+        """RED classifications always have should_escalate=True."""
+        async def _red_stt(audio_data: bytes) -> TranscriptionResult:
+            return TranscriptionResult(
+                text="Me duele un 9, no aguanto mas.",
+                language="es",
+                duration_seconds=2.0,
+                model="whisper-large-v3",
+            )
+
+        with patch("backend.api.calls._stt", _red_stt):
+            transport = ASGITransport(app=app)
+            async with AsyncClient(
+                transport=transport, base_url="http://test"
+            ) as client:
+                response = await client.post(
+                    f"/calls/{call_id_questions}/turn",
+                    json={"audio_base64": _MOCK_AUDIO_B64},
+                )
+
+        esc = response.json()["escalation"]
+        assert esc is not None
+        assert esc["severity"] == "RED"
+        assert esc["should_escalate"] is True, (
+            "RED must have should_escalate=True — frontend must show banner"
+        )
+
+    @pytest.mark.asyncio
+    async def test_consecutive_yellow_second_should_escalate_true(
+        self, call_id_questions
+    ):
+        """Second consecutive YELLOW has should_escalate=True."""
+        _responses = [
+            "Me duele un 6 de 10.",          # first YELLOW
+            "Tuve un poco de fiebre ayer.",   # second YELLOW → escalate
+        ]
+        _call_count = 0
+
+        async def _two_yellows_stt(audio_data: bytes) -> TranscriptionResult:
+            nonlocal _call_count
+            text = _responses[_call_count]
+            _call_count += 1
+            return TranscriptionResult(
+                text=text,
+                language="es",
+                duration_seconds=1.0,
+                model="whisper-large-v3",
+            )
+
+        with patch("backend.api.calls._stt", _two_yellows_stt):
+            transport = ASGITransport(app=app)
+            async with AsyncClient(
+                transport=transport, base_url="http://test"
+            ) as client:
+                # First YELLOW
+                resp1 = await client.post(
+                    f"/calls/{call_id_questions}/turn",
+                    json={"audio_base64": _MOCK_AUDIO_B64},
+                )
+                # Second YELLOW
+                resp2 = await client.post(
+                    f"/calls/{call_id_questions}/turn",
+                    json={"audio_base64": _MOCK_AUDIO_B64},
+                )
+
+        esc1 = resp1.json()["escalation"]
+        assert esc1["should_escalate"] is False, (
+            "First YELLOW should_escalate=False"
+        )
+        esc2 = resp2.json()["escalation"]
+        assert esc2["should_escalate"] is True, (
+            "Second consecutive YELLOW should_escalate=True"
+        )
+        assert esc2["severity"] == "YELLOW"

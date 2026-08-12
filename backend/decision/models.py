@@ -69,10 +69,11 @@ class EscalationResult:
             raise ValueError("next_action must be non-empty after stripping")
 
         # ---------- source must be a recognised value ----------
-        if self.source not in {"rule", "numeric", "ambig", "invalid", "incomplete"}:
+        if self.source not in {"rule", "numeric", "ambig", "invalid", "incomplete", "doubt", "escalation"}:
             raise ValueError(
-                f"source must be 'rule', 'numeric', 'ambig', 'invalid', or "
-                f"'incomplete', got {self.source!r}"
+                f"source must be 'rule', 'numeric', 'ambig', 'invalid', "
+                f"'incomplete', 'doubt', or 'escalation', "
+                f"got {self.source!r}"
             )
 
         # ---------- consistency: RED always escalates ----------

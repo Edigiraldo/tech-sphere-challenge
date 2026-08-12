@@ -9,11 +9,13 @@ coordinated dialogue flow for postoperative follow-up.
 The orchestrator is text-only and deterministic: it uses a fixed sequence of
 structured questions (in Spanish), drives state transitions safely, records
 every turn in the history, and classifies patient answers **before** any
-RAG/LLM call.  RED answers short-circuit immediately to ENDED with an urgent
-safety message, ``call_ended=True``, and no further processing — RED never
-passes through LLM approval.
+RAG/LLM call or doubt-intent gate.  RED answers short-circuit immediately
+to ENDED with an urgent safety message, ``call_ended=True``, and no further
+processing — RED never passes through LLM approval nor the doubt gate.
 
-Every non-RED answer during QUESTIONS goes through **LLM second-approval**
+Every non-RED answer during QUESTIONS goes through the doubt-intent gate
+(clinical questions trigger RAG and repeat the same question) and then
+**LLM second-approval**
 (``llm_second_approval()``), a conservative safety reviewer that may:
 * **confirm** the deterministic classification,
 * **escalate** severity (upgrade GREEN→YELLOW, GREEN→RED, or YELLOW→RED;
@@ -62,7 +64,14 @@ from backend.conversation.transitions import InvalidTransitionError, next_state
 from backend.decision import classify as _decision_classify
 from backend.decision import EscalationResult, Severity
 from backend.llm.adapter import RagAnswer, generate_rag_answer
-from backend.llm.approval import llm_second_approval, LlmApprovalResult
+from backend.llm.approval import (
+    llm_confirm_doubt,
+    llm_second_approval,
+    DoubtApprovalResult,
+    LlmApprovalResult,
+    _has_explicit_doubt_markers,
+    _build_doubt_rag_query,
+)
 from backend.llm.config import LlmConfig
 from backend.rag.config import RagConfig
 from backend.rag.retrieval import RetrievalResult, retrieve
@@ -440,29 +449,49 @@ class ConversationOrchestrator:
         """Process patient answer to a follow-up question.
 
         Steps (safety-first):
-        1. Classify the patient's answer against the symptom domain.
-        2. **RED** → short-circuit: no RAG/LLM, urgent safety message,
-           transition directly to ENDED, ``call_ended=True``.
-        3. **LLM second-approval** for every non-RED answer:
+        1. **Classify** the patient's answer against the symptom domain
+           deterministically.  RED detection runs first so that numeric
+           and domain-specific RED signals embedded in question-shaped
+           text (e.g. ``"es normal que me duela un 9?"``) are never
+           bypassed by the doubt-intent gate.
+        2. **RED** → short-circuit: no RAG/LLM, no doubt gate, urgent
+           safety message, transition directly to ENDED,
+           ``call_ended=True``.
+        3. **Doubt-intent gate** (only for non-RED answers): check whether
+           the patient's input is a clinical question/doubt rather than a
+           symptom answer.
+           a. Deterministic check for explicit markers (question marks,
+              interrogative words).
+           b. LLM confirmation when available (``llm_confirm_doubt()``).
+           c. On confirmed doubt: run RAG inline, answer with citations,
+              repeat the same follow-up question (do NOT advance index).
+           d. Safe fallback preserves explicit doubt markers when LLM fails.
+           e. Doubt-intent answers must NOT trigger YELLOW accumulation or
+              escalation — they are unanswered questions.
+        4. **LLM second-approval** for every non-RED, non-doubt answer:
            a. Call ``llm_second_approval()`` — it may confirm, upgrade severity,
               request RAG for a doubt, or request one clarification.
            b. Failures/timeouts/invalid/low-confidence output fall back to
               deterministic classification.
-        4. Process the approval result:
+        5. Process the approval result:
            - **confirm** → proceed normally with final severity.
            - **escalate** → apply upgraded severity.
            - **request_clarification** → stay on same question, ask one
              clarification question (max 1 per question).
            - **request_rag** → run RAG retrieval in QUESTIONS, get clinical
              context, then continue/finish normally.
-        5. Final question (index 5, movilidad) proceeds to CLOSING after
+        6. Final question (index 5, movilidad) proceeds to CLOSING after
            answer/RAG; clarification stays on question 6.
         """
         answered_idx = self._question_index
         domain = _QUESTION_DOMAINS[answered_idx]
         pc = self._call_context.patient_context
 
-        # --- Safety-first: classify before any RAG/LLM ---
+        # --- Safety-first: classify before doubt-gate ---
+        # RED detection must always run first, even for question-shaped
+        # text (e.g. "es normal que me duela un 9?").  The deterministic
+        # classifier catches numeric RED signals and domain-specific RED
+        # keywords regardless of interrogative phrasing.
         try:
             classification = _decision_classify(
                 patient_text=patient_text,
@@ -483,7 +512,7 @@ class ConversationOrchestrator:
 
         severity = classification.severity
 
-        # --- RED: short-circuit immediately → ENDED (no LLM approval) ---
+        # --- RED: short-circuit immediately → ENDED (no doubt gate, no LLM) ---
         if severity is Severity.RED:
             self._consecutive_yellows = 0
             self._transition(Event.EMERGENCY_TERMINATE)
@@ -498,7 +527,18 @@ class ConversationOrchestrator:
                 escalation=classification,
             )
 
-        # --- LLM second-approval for every non-RED answer ---
+        # --- Doubt-intent gate: only for non-RED answers ---
+        # Clinical questions are not symptom reports — they should trigger
+        # RAG and repeat the same question, never accumulate YELLOW or
+        # trigger escalation.  RED was already handled above; only
+        # non-RED answers reach this gate.
+        doubt_result = self._check_doubt_intent(
+            patient_text, answered_idx, domain, pc,
+        )
+        if doubt_result is not None:
+            return doubt_result
+
+        # --- LLM second-approval for every non-RED, non-doubt answer ---
         final_classification = classification
         approval_result: LlmApprovalResult | None = None
         approval_meta: dict[str, Any] = {}
@@ -1206,6 +1246,152 @@ class ConversationOrchestrator:
             requires_response=True,
             llm_meta=llm_meta,
             escalation=escalation,
+        )
+
+    # -- doubt-intent detection and handling ----------------------------------
+
+    def _check_doubt_intent(
+        self,
+        patient_text: str,
+        answered_idx: int,
+        domain: str,
+        pc: PatientContext,
+    ) -> OrchestratorTurn | None:
+        """Check whether the patient input is a clinical doubt rather than
+        an answer to the follow-up question.
+
+        Returns an ``OrchestratorTurn`` when doubt is confirmed (with RAG
+        answer and same question repeated), or ``None`` when the input
+        should proceed to normal escalation classification.
+
+        Two-stage detection:
+        1. Deterministic check for explicit markers (question marks,
+           interrogative words, ``"es normal"``, ``"puedo"``, etc.).
+        2. LLM confirmation when available — the LLM can overrule the
+           deterministic check in either direction.
+
+        On LLM failure the deterministic result is preserved — explicit
+        doubts stay as doubts (safe fallback).
+        """
+        has_explicit = _has_explicit_doubt_markers(patient_text)
+
+        if self._llm_config is not None:
+            try:
+                doubt_check = llm_confirm_doubt(
+                    patient_text=patient_text,
+                    domain=domain,
+                    follow_up_question=FOLLOW_UP_QUESTIONS[answered_idx],
+                    dia_postop=pc.dia_postop,
+                    procedimiento=pc.procedimiento,
+                    config=self._llm_config,
+                )
+            except Exception:
+                logger.exception(
+                    "Doubt-check LLM crashed — falling back to deterministic"
+                )
+                if has_explicit:
+                    return self._handle_confirmed_doubt(
+                        patient_text, answered_idx, domain,
+                        rag_query=_build_doubt_rag_query(patient_text),
+                    )
+                return None
+
+            if doubt_check.is_doubt:
+                return self._handle_confirmed_doubt(
+                    patient_text, answered_idx, domain,
+                    rag_query=doubt_check.rag_query,
+                    clarification_text=doubt_check.clarification_text,
+                    doubt_meta={
+                        "llm_duration_ms": doubt_check.llm_duration_ms,
+                        "prompt_tokens": doubt_check.prompt_tokens,
+                        "completion_tokens": doubt_check.completion_tokens,
+                    },
+                )
+            return None
+
+        # No LLM config — fall back to deterministic markers only
+        if has_explicit:
+            return self._handle_confirmed_doubt(
+                patient_text, answered_idx, domain,
+                rag_query=_build_doubt_rag_query(patient_text),
+            )
+        return None
+
+    def _handle_confirmed_doubt(
+        self,
+        patient_text: str,
+        answered_idx: int,
+        domain: str,
+        rag_query: str,
+        clarification_text: str = "",
+        doubt_meta: dict[str, Any] | None = None,
+    ) -> OrchestratorTurn:
+        """Handle a confirmed clinical doubt during QUESTIONS.
+
+        Runs RAG retrieval with the provided query, returns the RAG answer
+        with traceable citations, then repeats the same follow-up question.
+        Does **not** advance the question index — the patient still needs
+        to answer the original follow-up question.
+
+        Doubt turns carry an ``EscalationResult`` with ``source="doubt"``
+        and ``should_escalate=False`` so they never persist as alerts.
+        Consecutive-YELLOW accumulation is reset because a doubt is not
+        a symptom report.
+        """
+        # Run RAG for the doubt
+        rag_response, rag_citations, rag_meta = self._run_doubt_rag(
+            patient_text=patient_text,
+            rag_query=rag_query,
+            domain=domain,
+        )
+
+        # Merge LLM doubt metrics with RAG response metrics
+        merged_meta: dict[str, Any] = dict(doubt_meta or {})
+        if rag_meta.get("rag_queries", 0) > 0:
+            merged_meta["rag_queries"] = rag_meta.get("rag_queries", 0)
+        if rag_meta.get("llm_duration_ms") is not None:
+            merged_meta["llm_duration_ms"] = rag_meta.get("llm_duration_ms")
+        if rag_meta.get("prompt_tokens") is not None:
+            merged_meta["prompt_tokens"] = rag_meta.get("prompt_tokens")
+        if rag_meta.get("completion_tokens") is not None:
+            merged_meta["completion_tokens"] = rag_meta.get("completion_tokens")
+
+        # Build response: clarification + RAG answer + repeat question
+        parts: list[str] = []
+        if clarification_text:
+            parts.append(clarification_text)
+        if rag_response:
+            parts.append(rag_response)
+        question = FOLLOW_UP_QUESTIONS[answered_idx]
+        parts.append(question)
+
+        full_msg = "\n\n".join(parts)
+        self._record_agent(full_msg)
+
+        # Doubt turns get a non-conclusive escalation marker.
+        # source="doubt" ensures the API layer does not reclassify.
+        doubt_escalation = EscalationResult(
+            severity=Severity.YELLOW,
+            should_escalate=False,
+            reason=(
+                "El paciente tiene una duda clínica — "
+                "no es un reporte de síntoma."
+            ),
+            next_action="Responder la duda con RAG y repetir la pregunta.",
+            domain=domain,
+            source="doubt",
+        )
+
+        # Reset consecutive yellows — doubt is not a symptom report
+        self._consecutive_yellows = 0
+
+        return self._make_turn(
+            full_msg,
+            citations=rag_citations,
+            question_index=answered_idx,
+            requires_response=True,
+            escalation=doubt_escalation,
+            llm_meta=merged_meta if merged_meta else None,
         )
 
     # -- safety-first message builders ---------------------------------------

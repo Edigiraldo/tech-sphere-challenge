@@ -39,7 +39,19 @@ implementación por fases) están completas. La aplicación implementa:
   confirmados reciben acuses deterministas sin generación RAG+LLM; dos resultados
   YELLOW consecutivos disparan escalamiento con ``should_escalate=True``; las preguntas
   clínicas durante CLOSING se responden con RAG+LLM (con citas) mientras que las
-  no-preguntas finalizan la llamada; fallbacks seguros).
+  no-preguntas finalizan la llamada; fallbacks seguros). **Puerta de intención de
+  duda determinista** (``_check_doubt_intent``): después de la clasificación
+  (solo para respuestas no-RED), el orquestador verifica si la entrada del paciente
+  es una pregunta clínica (no un reporte de síntoma) usando marcadores explícitos
+  (signos de interrogación, frases compuestas con "como", consultas explícitas);
+  la aprobación LLM (``llm_confirm_doubt``) confirma con mayor precisión; fallos
+  del LLM preservan las dudas explícitas mediante el fallback determinista; las
+  dudas confirmadas ejecutan RAG inline con citas, repiten la misma pregunta sin
+  avanzar el índice y no acumulan YELLOW ni generan alertas; RED se detecta
+  primero para que texto con forma de pregunta que contiene señales RED
+  (ej. ``"es normal que me duela un 9?"``) derive directamente a ENDED sin
+  pasar por la puerta de duda; la sexta pregunta (movilidad) permanece en QUESTIONS
+  hasta recibir una respuesta válida.
 - Motor de escalamiento (clasificador GREEN/YELLOW/RED con lexicones de señales de
   alarma en español, umbrales numéricos, manejo de negaciones; conectado a los endpoints
   de turnos de voz mediante ``EscalationInfo`` en ``TurnResponse``).
@@ -55,8 +67,11 @@ implementación por fases) están completas. La aplicación implementa:
 - Interfaz de llamada frontal (HTML/CSS/JS vanilla en ``/`` y ``/call``: selección de
   paciente, captura de micrófono MediaRecorder, llamadas fetch a ``POST /calls`` y
   ``POST /calls/{call_id}/turn``, insignia de estado, historial de conversación, área
-  de transcripción, visualización de citas y escalamiento, y reproducción de audio WAV
-  para respuestas TTS).
+  de transcripción, visualización de citas, y reproducción de audio WAV
+  para respuestas TTS). El banner de escalamiento solo se muestra para
+  escalamientos conclusivos (``should_escalate=True``); las clasificaciones
+  por turno no conclusivas (GREEN, primer YELLOW) se registran en el historial
+  pero no activan la alerta visual.
 
 **Pendiente (trabajo futuro):**
 - Transporte WebSocket/streaming para conversaciones de voz en tiempo real. La
@@ -125,13 +140,13 @@ fases están documentados en `docs/ARCHITECTURE.md`.
   preguntas estructuradas de seguimiento en español: dolor, fiebre, herida, apetito,
   sueño, movilidad) → CLOSING → ENDED. Integra recuperación RAG + LLM con controles
   de suficiencia de recuperación y fallbacks seguros. **LLM second-approval** integrado
-  para cada respuesta no-RED durante QUESTIONS (``backend/llm/approval.py``). 228
+  para cada respuesta no-RED durante QUESTIONS (``backend/llm/approval.py``). 229
   pruebas pasan.
 - Motor de decisión de escalamiento: ``backend/decision/`` — ``classify()`` devuelve
   ``EscalationResult`` tipado (GREEN/YELLOW/RED) con lexicones deterministas de señales
   de alarma en español, umbrales numéricos, manejo de negaciones, detección de
   ambigüedad. 178 pruebas pasan. Solo stdlib, solo texto. Las pruebas de aprobación
-  secundaria por LLM (53, en ``backend/llm/approval.py``) y las pruebas de integración
+  secundaria por LLM (78, en ``backend/llm/approval.py``) y las pruebas de integración
   del orquestador con la aprobación (16) se contabilizan por separado
   (ver sección LLM second-approval más abajo).
 - Adaptador STT: ``backend/voice/`` — Protocolo ``SttProvider``,
@@ -172,7 +187,10 @@ fases están documentados en `docs/ARCHITECTURE.md`.
   Solo stdlib.
 - Módulo de resúmenes: ``backend/summaries/`` — generador determinista de resúmenes en
   español (datos demográficos del paciente, procedimiento, seis dominios de síntomas,
-  decisión de escalamiento, próximos pasos). 44 pruebas pasan. Solo stdlib.
+  decisión de escalamiento, próximos pasos). La decisión distingue entre escalamiento
+  conclusivo (``ESCALAMIENTO INMEDIATO (ROJO)``, ``ESCALAMIENTO POR ACUMULACION (AMARILLO)``)
+  e indicadores YELLOW no conclusivos observados (``INDICADOR DETECTADO (AMARILLO)``).
+  44 pruebas pasan. Solo stdlib.
 - Endpoints de turnos de voz con persistencia: ``backend/api/calls.py`` —
   ``POST /calls`` crea una llamada y devuelve el saludo del agente como WAV base64;
   ``POST /calls/{call_id}/turn`` transcribe el audio del paciente (STT), ejecuta el
@@ -185,14 +203,24 @@ fases están documentados en `docs/ARCHITECTURE.md`.
   encontrados en el dataset. ``backend/api/call_store.py`` — ``CallStore`` en memoria
   thread-safe para instancias del orquestador en ejecución. La persistencia de voz está
   completamente integrada con la capa SQLite: la creación de llamada inserta un
-  ``CallRecord``; cada turno persiste entradas ``ConversationTurnRecord``; las
-  clasificaciones de escalamiento YELLOW/RED persisten ``EscalationAlertRecord``; la
-  finalización de llamada genera un resumen estructurado mediante
+  ``CallRecord``; cada turno persiste entradas ``ConversationTurnRecord``; **solo las
+  clasificaciones de escalamiento conclusivas** (``should_escalate=True``: RED,
+  segundo YELLOW consecutivo, YELLOW ascendido por LLM) persisten
+  ``EscalationAlertRecord`` — la primera observación YELLOW, las aclaraciones, las
+  dudas RAG y los turnos de duda se registran por turno pero no generan alertas
+  persistentes. La persistencia de alertas es **idempotente** mediante IDs
+  determinísticos (SHA-256 sobre ``call_id``, severidad y dominio) y
+  ``INSERT OR IGNORE``; los reinicios y reintentos no duplican alertas. Las alertas
+  conclusivas (RED, segundo YELLOW consecutivo, YELLOW ascendido por LLM) son las
+  únicas que persisten. 6 pruebas nuevas de idempotencia de alertas.
   ``backend/summaries/generator.py`` y persiste un ``SummaryRecord``. Las llamadas
   incompletas se rastrean con ``ended_at=None``. SQLite se inicializa al arrancar la
   aplicación en ``backend/main.py``. Las llamadas, turnos, resúmenes y alertas son
   seguros ante reinicios: sobreviven a reinicios del proceso porque los datos están en
-  SQLite, no solo en memoria. 71 pruebas pasan (9 enfocadas en persistencia).
+  SQLite, no solo en memoria. **No se implementa rehidratación de llamadas activas**
+  (el ``CallStore`` en memoria se pierde en cada reinicio; las llamadas en curso deben
+  reiniciarse). Los datos históricos (turnos, resúmenes, alertas) persisten
+  correctamente. 71 pruebas pasan (9 enfocadas en persistencia).
 - Clasificación de escalamiento conectada en los endpoints de turnos de voz: prefiere
   la clasificación del orquestador cuando está disponible (``turn.escalation``), con
   fallback al clasificador a nivel de endpoint con acumulación de YELLOW consecutivos
@@ -272,10 +300,33 @@ fases están documentados en `docs/ARCHITECTURE.md`.
   automáticamente a la clasificación determinista. La pregunta final (movilidad) procede
   a CLOSING después de respuesta/RAG; la aclaración se queda en la pregunta 6. Los
   controles de inyección de prompts y la política conservadora de escalamiento se
-  preservan en todos los caminos. 68 pruebas nuevas pasan (53 de aprobación/decisión +
-  16 de integración con el orquestador).
+  preservan en todos los caminos. Adicionalmente, ``llm_confirm_doubt()`` proporciona
+  confirmación LLM para la puerta de intención de duda, con fallback determinista que
+  preserva dudas explícitas. 78 pruebas de aprobación + 16 de integración con el
+  orquestador (94 total en approval + orchestrator integration).
+- **Puerta de intención de duda determinista:** ``_check_doubt_intent()`` en el
+  orquestador verifica si la entrada del paciente es una pregunta clínica (no un
+  reporte de síntoma) **después** de la clasificación determinista — solo para
+  respuestas no-RED. Combina detección determinista por marcadores explícitos
+  (signos de interrogación, frases compuestas con "como", consultas explícitas)
+  con confirmación LLM (``llm_confirm_doubt``). Las dudas confirmadas ejecutan RAG
+  inline con citas trazables, repiten la misma pregunta sin avanzar el índice y no
+  acumulan YELLOW ni generan alertas. RED siempre se detecta primero — texto con
+  forma de pregunta que contiene señales RED (ej. ``"es normal que me duela un 9?"``)
+  deriva directamente a ENDED sin pasar por la puerta de duda. La sexta pregunta
+  (movilidad) permanece en QUESTIONS hasta recibir una respuesta válida. 11 pruebas
+  enfocadas en el orquestador cubren apendicectomía, movilidad, RED dentro de duda,
+  RED con forma de pregunta, fallo de LLM e intención ambigua.
 
-Totales de pruebas: 1 065 pruebas rapidas (pytest), 26 pruebas lentas (`pytest -m slow`), 1 091 pruebas en total.
+Totales de pruebas: 1 107 pruebas rapidas (pytest), 27 pruebas lentas (`pytest -m slow`),
+1 134 pruebas en total. 7 pruebas de servidor en vivo (alternate port 18000) en
+``tests/test_live_server.py``.
+
+Los conteos por módulo repartidos en esta sección «Completado» son
+instantáneas históricas del momento en que se completó cada módulo y pueden
+no reflejar adiciones, refactorizaciones o reorganizaciones posteriores.
+Los totales agregados arriba (1 107 rápidas + 27 lentas = 1 134 total)
+son el conteo autoritativo actual.
 
 ## En progreso
 

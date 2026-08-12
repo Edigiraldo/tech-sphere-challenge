@@ -165,15 +165,25 @@ class SummaryResult:
 
     @property
     def has_escalation(self) -> bool:
-        """``True`` when the decision section indicates escalation."""
+        """``True`` when the decision section indicates a **conclusive**
+        escalation (RED, accumulated YELLOW, or LLM-upgraded RED).
+
+        Non-conclusive YELLOW observations (first YELLOW per domain) are
+        recorded for the audit trail but do not constitute an escalation
+        at the call level.
+        """
         content_lower = self.decision.content.lower()
         # Explicitly exclude phrasing that states escalation was NOT required
         if "no se requiri" in content_lower:
             return False
         if "no fue necesario" in content_lower:
             return False
-        # Check for any escalation indicator
+        # Conclusive escalation indicators (excludes bare "amarillo" which
+        # may appear in non-conclusive per-domain observations)
         escalation_indicators = [
-            "escalamiento", "rojo", "amarillo", "precaucion", "alerta",
+            "escalamiento inmediato",
+            "escalamiento por acumulacion",
+            "rojo",
+            "alerta roja",
         ]
         return any(indicator in content_lower for indicator in escalation_indicators)

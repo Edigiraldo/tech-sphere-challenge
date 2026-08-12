@@ -550,6 +550,23 @@ class TestAlertCRUD:
         alerts = get_alerts_for_call(sample_call.call_id)
         assert alerts[0].domain is None
 
+    def test_idempotent_insert_same_alert_id(self, db, sample_call):
+        """Inserting the same alert_id twice is idempotent (INSERT OR IGNORE)."""
+        insert_call(sample_call)
+        a = EscalationAlertRecord(
+            alert_id="alert-det-1", call_id=sample_call.call_id,
+            reason="Dolor severo (NRS 9)", severity="RED", domain="dolor",
+        )
+        insert_escalation_alert(a)
+        # Second insert with same alert_id — must not raise
+        insert_escalation_alert(a)
+        alerts = get_alerts_for_call(sample_call.call_id)
+        assert len(alerts) == 1, (
+            f"Idempotent insert must not duplicate, got {len(alerts)} alerts"
+        )
+        assert alerts[0].alert_id == "alert-det-1"
+        assert alerts[0].reason == "Dolor severo (NRS 9)"
+
 
 # ======================================================================
 # Lifecycle tests

@@ -21,6 +21,7 @@ from __future__ import annotations
 import base64
 import binascii
 import datetime
+import hashlib
 import json
 import logging
 import time
@@ -391,18 +392,30 @@ def _persist_escalation_alert(
     call_id: str,
     escalation: EscalationInfo,
 ) -> None:
-    """Persist an ``EscalationAlertRecord`` when severity is YELLOW or RED.
+    """Persist an ``EscalationAlertRecord`` **only** when the escalation is
+    conclusive (``should_escalate=True``).
 
-    GREEN classifications are informational only and are not persisted as
-    standalone alerts.
+    First-YELLOW observations, clarification rounds, and RAG-doubt answers
+    are per-turn audit events that do **not** create persistent alerts.
+
+    The ``alert_id`` is deterministically derived from ``call_id``,
+    ``severity``, and ``domain`` so that retries and application restarts
+    are naturally idempotent — the same logical alert always maps to the
+    same primary key and ``INSERT OR IGNORE`` in the persistence layer
+    silently skips duplicates.
     """
-    if escalation.severity == "GREEN":
+    if not escalation.should_escalate:
         return
+
+    # Deterministic alert_id for idempotent persistence
+    _key = f"{call_id}:{escalation.severity}:{escalation.domain or 'none'}"
+    alert_id = hashlib.sha256(_key.encode()).hexdigest()[:32]
+
     now = datetime.datetime.now(datetime.timezone.utc)
     try:
         insert_escalation_alert(
             EscalationAlertRecord(
-                alert_id=uuid.uuid4().hex,
+                alert_id=alert_id,
                 call_id=call_id,
                 created_at=now,
                 severity=escalation.severity,

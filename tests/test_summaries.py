@@ -389,24 +389,54 @@ class TestGenerateSummaryDecision:
         assert "Dolor NRS 9" in result.decision.content
         assert result.has_escalation
 
-    def test_yellow_accumulation(self):
+    def test_yellow_accumulation_conclusive(self):
+        """Two conclusive YELLOW -> ESCALAMIENTO POR ACUMULACION."""
         pc = make_patient_context()
+        # Conclusive YELLOWs (should_escalate=True, as produced by the
+        # orchestrator on the second consecutive YELLOW)
         esc = [
-            make_escalation_result(Severity.YELLOW, domain="dolor", reason="Dolor moderado"),
-            make_escalation_result(Severity.YELLOW, domain="fiebre", reason="Temp 37.9"),
+            EscalationResult(
+                severity=Severity.YELLOW,
+                should_escalate=True,
+                reason="Dolor moderado",
+                next_action="Seguimiento prioritario.",
+                domain="dolor",
+                source="rule",
+            ),
+            EscalationResult(
+                severity=Severity.YELLOW,
+                should_escalate=True,
+                reason="Temp 37.9",
+                next_action="Seguimiento prioritario.",
+                domain="fiebre",
+                source="rule",
+            ),
         ]
         result = generate_summary("c1", pc, [], esc, [])
         assert "ACUMULACION" in result.decision.content
         assert "AMARILLO x2" in result.decision.content
         assert result.has_escalation
 
-    def test_single_yellow(self):
+    def test_yellow_accumulation_non_conclusive(self):
+        """Two non-conclusive YELLOWs -> INDICADOR DETECTADO, not escalation."""
+        pc = make_patient_context()
+        esc = [
+            make_escalation_result(Severity.YELLOW, domain="dolor", reason="Dolor moderado"),
+            make_escalation_result(Severity.YELLOW, domain="fiebre", reason="Temp 37.9"),
+        ]
+        result = generate_summary("c1", pc, [], esc, [])
+        assert "INDICADOR DETECTADO" in result.decision.content
+        assert "Acumulacion" not in result.decision.content
+        assert not result.has_escalation
+
+    def test_single_yellow_non_conclusive(self):
+        """Single non-conclusive YELLOW -> INDICADOR DETECTADO, not escalation."""
         pc = make_patient_context()
         esc = [make_escalation_result(Severity.YELLOW, domain="herida", reason="Enrojecimiento")]
         result = generate_summary("c1", pc, [], esc, [])
-        assert "PRECAUCION" in result.decision.content
+        assert "INDICADOR DETECTADO" in result.decision.content
         assert "Enrojecimiento" in result.decision.content
-        assert result.has_escalation
+        assert not result.has_escalation
 
     def test_red_takes_precedence_over_yellow(self):
         pc = make_patient_context()

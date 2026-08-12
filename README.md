@@ -83,6 +83,10 @@ documentación interactiva también está disponible en `/docs`.
 
 **Pendiente (futuro):**
 - Transporte WebSocket/streaming para conversación de voz en tiempo real.
+- Rehidratación de llamadas activas. Las llamadas en curso no sobreviven
+  a un reinicio del servidor (el ``CallStore`` en memoria se pierde). Los
+  datos históricos (turnos, resúmenes, alertas) persisten correctamente
+  en SQLite.
 
 ## Requisitos
 
@@ -228,7 +232,44 @@ Nunca subas claves de API, secretos ni credenciales al repositorio. La sección
 [Privacidad y seguridad](#privacidad-y-seguridad) detalla las políticas del
 proyecto.
 
+## Semántica de reinicio
+
+La aplicación persiste datos en SQLite (llamadas, turnos, resúmenes, alertas de
+escalamiento). Las alertas de escalamiento son **idempotentes**: se insertan con IDs
+determinísticos (SHA-256 sobre ``call_id``, severidad y dominio) y ``INSERT OR IGNORE``,
+por lo que reintentos y reinicios no duplican registros.
+
+**Las llamadas activas no sobreviven a un reinicio.** El ``CallStore`` en memoria
+almacena las instancias del orquestador; al reiniciar el proceso, todas las llamadas
+en curso se pierden y deben reiniciarse desde ``POST /calls``. Los datos históricos
+(turnos completados, resúmenes, alertas) permanecen disponibles en SQLite.
+
+Solo los escalamientos **conclusivos** (``should_escalate=True``) persisten alertas:
+- RED determinista
+- Segundo YELLOW consecutivo (acumulación)
+- YELLOW ascendido a RED por el revisor LLM
+
+Las clasificaciones por turno no conclusivas (GREEN, primer YELLOW, aclaraciones,
+dudas RAG) se registran en los turnos para auditoría pero no generan alertas
+persistentes ni activan el banner visual en el frontal.
+
 ## Pruebas
+
+### Pruebas en puerto alterno
+
+Para ejecutar pruebas de integración con un servidor en vivo sin interferir con
+la instancia de desarrollo en ``8000``, usar puertos ``8011`` (aplicación) y
+``18000`` (puerto de prueba):
+
+```bash
+# Iniciar servidor de prueba en puerto alterno
+uvicorn backend.main:app --host 127.0.0.1 --port 8011
+
+# Ejecutar pruebas live contra el puerto alterno
+python -m pytest tests/live_scenarios.py -v
+
+# Detener siempre el proceso del puerto alterno al finalizar
+```
 
 ### Pruebas rápidas (sin modelo ni PDF)
 
@@ -236,7 +277,7 @@ proyecto.
 pytest
 ```
 
-Estas pruebas (987) validan dataset, salud del servidor, chunking y extracción de
+Estas pruebas (aprox. 1 030) validan dataset, salud del servidor, chunking y extracción de
 PDF (con error paths), el adaptador LLM (Llama 3.3 70B Versatile vía Groq con
 fallback extractivo, validación,
 respuestas estructuradas, detección de inyección de prompts y

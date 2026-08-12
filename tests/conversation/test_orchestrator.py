@@ -32,7 +32,7 @@ from backend.rag.config import RagConfig
 # tests that walk the full question loop without triggering YELLOW escalation.
 _GREEN_RESPONSE = (
     "Todo bien, sin dolor, sin fiebre, herida limpia, "
-    "como bien, duermo bien, camino sin problema"
+    "tengo buen apetito, duermo bien, camino sin problema"
 )
 
 
@@ -104,6 +104,17 @@ def make_rag_config() -> RagConfig:
         chunk_overlap=150,
         retrieval_top_k=5,
         similarity_threshold=0.0,
+    )
+
+
+def make_llm_config() -> LlmConfig:
+    """Build a default LlmConfig for tests (no external API key needed)."""
+    return LlmConfig(
+        provider="groq",
+        model_name="llama-3.1-70b-versatile",
+        api_key="test-key",
+        temperature=0.2,
+        max_output_tokens=512,
     )
 
 
@@ -2808,4 +2819,243 @@ class TestEscalationDomainAlignmentDeterministic:
         r5 = orch.process_patient_message("Camino sin problema.")
         assert r5.escalation.domain == "movilidad"
         assert orch.state is State.CLOSING
+
+
+# ===========================================================================
+# Doubt-intent gate scenarios (Questions state)
+# ===========================================================================
+
+
+class TestDoubtIntentGate:
+    """Tests for the deterministic doubt-intent gate during QUESTIONS."""
+
+    @staticmethod
+    def _advance_to_questions(orch: ConversationOrchestrator) -> None:
+        orch.start_call()
+        orch.process_patient_message("Bien, gracias.")
+        orch.process_patient_message("Si, acepto.")
+        assert orch.state is State.QUESTIONS
+
+    def test_appendectomy_doubt_detected_and_answered(self):
+        """Exact appendectomy doubt: patient asks about pain → RAG answer, repeat question."""
+        orch = make_orchestrator(llm_config=make_llm_config())
+        self._advance_to_questions(orch)
+
+        # Patient asks a clinical question instead of answering
+        result = orch.process_patient_message(
+            "es normal que me duela al caminar despues de una apendicectomia"
+        )
+        # Doubt gate should catch this
+        assert result.escalation is not None
+        assert result.escalation.source == "doubt"
+        assert result.escalation.should_escalate is False
+        # Question index should NOT have advanced (still on question 0)
+        assert result.question_index == 0
+        assert orch.state is State.QUESTIONS
+
+    def test_sixth_mobility_doubt_stays_in_questions(self):
+        """Sixth question (mobility) doubt → stays in QUESTIONS, repeats question."""
+        orch = make_orchestrator(llm_config=make_llm_config())
+        self._advance_to_questions(orch)
+
+        # Answer questions 0-4 with green (no LLM, deterministic only)
+        for _ in range(5):
+            orch.process_patient_message(_GREEN_RESPONSE)
+
+        # Question 5 (mobility) — patient asks a doubt with explicit markers
+        # Using ? marker to guarantee deterministic detection
+        result = orch.process_patient_message(
+            "?como debo movilizarme despues de la cirugia?"
+        )
+        # The ? and "como debo" are explicit doubt markers
+        assert result.escalation is not None
+        assert result.escalation.source == "doubt"
+        assert result.escalation.should_escalate is False
+        assert orch.state is State.QUESTIONS, (
+            f"Expected QUESTIONS, got {orch.state.name}"
+        )
+
+    def test_mobility_doubt_with_llm_confirmation(self):
+        """LLM confirms mobility doubt, question repeated, stays in QUESTIONS."""
+        from backend.llm.approval import DoubtApprovalResult
+        from unittest.mock import patch as mock_patch
+
+        # Create a no-doubt result for first 5 questions
+        no_doubt = DoubtApprovalResult(
+            is_doubt=False,
+            reason="Respuesta normal.",
+            llm_used=True,
+            classification="llm",
+        )
+        # Create a doubt result for the 6th question
+        yes_doubt = DoubtApprovalResult(
+            is_doubt=True,
+            reason="El paciente pregunta sobre ejercicio.",
+            rag_query="cuando puedo hacer ejercicio despues de apendicectomia",
+            clarification_text="Permitame consultar.",
+            llm_used=True,
+            classification="llm",
+        )
+
+        orch = make_orchestrator(llm_config=make_llm_config())
+        self._advance_to_questions(orch)
+
+        # Answer questions 0-4 with no-doubt mock
+        with mock_patch("backend.conversation.orchestrator.llm_confirm_doubt",
+                        return_value=no_doubt):
+            for _ in range(5):
+                orch.process_patient_message(_GREEN_RESPONSE)
+
+        # Question 5 — doubt confirmed
+        with mock_patch("backend.conversation.orchestrator.llm_confirm_doubt",
+                        return_value=yes_doubt):
+            result = orch.process_patient_message(
+                "como debo movilizarme despues de la operacion"
+            )
+
+        assert result.question_index == 5  # stays on mobility
+        assert orch.state is State.QUESTIONS
+        assert result.escalation is not None
+        assert result.escalation.source == "doubt"
+        assert result.escalation.should_escalate is False
+
+    def test_red_inside_doubt_still_short_circuits(self):
+        """RED symptoms inside a doubt-looking response still trigger RED."""
+        orch = make_orchestrator()
+        self._advance_to_questions(orch)
+
+        # Text that could look like a doubt but has RED keywords
+        # Use explicit RED-triggering text
+        result = orch.process_patient_message(
+            "me duele un 9, es insoportable, no aguanto mas"
+        )
+        # RED should still short-circuit
+        assert orch.state is State.ENDED
+        assert result.call_ended
+        assert result.escalation is not None
+        assert result.escalation.severity is Severity.RED
+
+    @patch("backend.conversation.orchestrator.llm_confirm_doubt")
+    def test_unclear_intent_llm_handles_ambiguity(self, mock_doubt):
+        """Unclear intent — LLM says NOT a doubt, proceeds to classification."""
+        from backend.llm.approval import DoubtApprovalResult
+        mock_doubt.return_value = DoubtApprovalResult(
+            is_doubt=False,
+            reason="El paciente describe su estado, no pregunta.",
+            llm_used=True,
+            classification="llm",
+        )
+
+        orch = make_orchestrator(llm_config=make_llm_config())
+        self._advance_to_questions(orch)
+
+        result = orch.process_patient_message("pues no se, tal vez un poco")
+        # Should be classified (GREEN, YELLOW, or RED but NOT doubt)
+        assert result.escalation is not None
+        assert result.escalation.source != "doubt"
+        assert result.question_index == 1  # advanced
+
+    def test_doubt_does_not_trigger_alert(self):
+        """Doubt turns have should_escalate=False → no alert."""
+        orch = make_orchestrator(llm_config=make_llm_config())
+        self._advance_to_questions(orch)
+
+        result = orch.process_patient_message(
+            "es normal que me duela al caminar"
+        )
+        assert result.escalation is not None
+        assert result.escalation.source == "doubt"
+        assert result.escalation.should_escalate is False
+        assert result.escalation.severity is Severity.YELLOW  # non-conclusive marker
+
+    @patch("backend.conversation.orchestrator.llm_second_approval")
+    def test_llm_failure_doubt_falls_back(self, mock_approval):
+        """When LLM fails, explicit doubt markers are preserved."""
+        mock_approval.side_effect = RuntimeError("LLM crash")
+
+        orch = make_orchestrator(llm_config=make_llm_config())
+        self._advance_to_questions(orch)
+
+        result = orch.process_patient_message("?es normal que me duela?")
+        # The input "?es normal que me duela?" has ? marker which is in
+        # explicit doubt markers. The LLM crashes, but deterministic
+        # markers preserve the doubt.
+        assert result.escalation is not None
+        # Falls back to deterministic — the doubt gate catches it
+        assert result.escalation.source == "doubt"
+
+    def test_question_shaped_red_still_short_circuits(self):
+        """Question-shaped text with RED signals still triggers RED, not doubt.
+
+        ``"es normal que me duela un 9?"`` is interrogative (``?``,
+        ``"es normal"``) but contains a pain level of 9/10, which is RED.
+        The RED classifier must run before the doubt-intent gate so that
+        numeric RED signals embedded in question-shaped text are never
+        bypassed.
+        """
+        orch = make_orchestrator(llm_config=make_llm_config())
+        self._advance_to_questions(orch)
+
+        result = orch.process_patient_message(
+            "es normal que me duela un 9?"
+        )
+        # RED must short-circuit — no doubt path
+        assert orch.state is State.ENDED
+        assert result.call_ended
+        assert result.escalation is not None
+        assert result.escalation.severity is Severity.RED, (
+            f"Expected RED, got {result.escalation.severity}"
+        )
+        assert result.escalation.should_escalate is True
+        assert result.escalation.source != "doubt", (
+            "Question-shaped RED text must NOT follow the doubt path"
+        )
+
+    def test_first_yellow_not_conclusive(self):
+        """First YELLOW classification has should_escalate=False."""
+        orch = make_orchestrator()
+        self._advance_to_questions(orch)
+
+        # Answer q0 (dolor) with a YELLOW-triggering response
+        result = orch.process_patient_message("Me duele un 6 de 10.")
+        assert result.escalation is not None
+        assert result.escalation.severity is Severity.YELLOW
+        assert result.escalation.should_escalate is False, (
+            "First YELLOW must NOT be conclusive"
+        )
+
+    def test_second_consecutive_yellow_is_conclusive(self):
+        """Second consecutive YELLOW triggers should_escalate=True."""
+        orch = make_orchestrator()
+        self._advance_to_questions(orch)
+
+        # q0: first YELLOW
+        orch.process_patient_message("Me duele un 6 de 10.")
+        # q1: second YELLOW
+        result = orch.process_patient_message("Tuve un poco de fiebre ayer.")
+        assert result.escalation is not None
+        assert result.escalation.severity is Severity.YELLOW
+        assert result.escalation.should_escalate is True, (
+            "Second consecutive YELLOW must be conclusive"
+        )
+
+    def test_green_resets_consecutive_yellows(self):
+        """GREEN between YELLOWs resets the counter — no escalation."""
+        orch = make_orchestrator()
+        self._advance_to_questions(orch)
+
+        # q0: YELLOW (dolor)
+        r0 = orch.process_patient_message("Me duele un 6 de 10.")
+        assert r0.escalation.severity is Severity.YELLOW
+        assert r0.escalation.should_escalate is False
+        # q1: GREEN (fiebre)
+        r1 = orch.process_patient_message("No tuve fiebre, todo normal.")
+        assert r1.escalation.severity is Severity.GREEN
+        # q2: YELLOW (herida) — first after reset, NOT conclusive
+        r2 = orch.process_patient_message("La herida esta un poco roja pero sin pus.")
+        assert r2.escalation is not None
+        assert r2.escalation.severity is Severity.YELLOW
+        assert r2.escalation.should_escalate is False, (
+            "YELLOW after GREEN must NOT be conclusive"
+        )
 

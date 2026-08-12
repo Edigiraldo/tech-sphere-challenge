@@ -1,5 +1,8 @@
-"""LLM second-approval for deterministic escalation classification.
+"""LLM second-approval for deterministic escalation classification
+and doubt-intent detection during follow-up QUESTIONS.
 
+Escalation second-approval
+--------------------------
 After the deterministic classifier (``backend/decision/rules.py``) produces a
 non-RED verdict on a patient answer during QUESTIONS, this module asks the LLM
 to act as a conservative safety reviewer.  The LLM may:
@@ -18,6 +21,21 @@ any LLM call.
 
 On failure, timeout, invalid output, or low-confidence response, this module
 returns the original deterministic classification unchanged (safe fallback).
+
+Doubt-intent detection
+----------------------
+After deterministic classification (and only for non-RED answers) during
+QUESTIONS, the orchestrator checks whether the patient's input looks like a
+clinical question (not an answer).  This module provides
+``llm_confirm_doubt()`` as a secondary LLM check that operates **after** the
+deterministic classifier and only on non-RED answers:
+
+* If the LLM confirms the input is a clinical question/doubt → run RAG inline
+  to answer it, then repeat the same follow-up question.
+* On LLM failure, safe fallback preserves explicit doubt-markers (question
+  marks, interrogative words) — these stay as doubts and trigger RAG.
+* Doubt-intent answers must **not** be classified as YELLOW or trigger
+  escalation — they are unanswered questions, not symptom reports.
 
 Prompt-injection controls from ``backend/llm/adapter.py`` are applied at the
 input boundary before any LLM call.
@@ -54,7 +72,505 @@ _VALID_ACTIONS: frozenset[str] = frozenset({
 })
 
 # ---------------------------------------------------------------------------
-# Result dataclass
+# Doubt approval result
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class DoubtApprovalResult:
+    """Result of LLM doubt-intent check on a patient answer during QUESTIONS.
+
+    This result is used **before** escalation classification to determine
+    whether the patient's input is a clinical question/doubt rather than an
+    answer to the follow-up question.  Doubt-intent answers trigger RAG
+    inline instead of classification.
+
+    Attributes
+    ----------
+    is_doubt : bool
+        ``True`` when the LLM (or deterministic fallback) believes the
+        patient is asking a clinical question, not reporting a symptom.
+    reason : str
+        Spanish-language rationale explaining the decision.
+    rag_query : str
+        RAG query to use for answering the doubt (non-empty when
+        ``is_doubt=True``).  Derived from the patient's input.
+    clarification_text : str
+        Text to say to the patient before the RAG answer (e.g.
+        "Permítame consultar esa información.").
+    llm_duration_ms : float or None
+        LLM inference duration in milliseconds.
+    prompt_tokens : int or None
+        Input tokens consumed.
+    completion_tokens : int or None
+        Output tokens consumed.
+    llm_used : bool
+        ``True`` when the LLM was actually called (``False`` on fallback).
+    classification : str
+        How the decision was reached: ``"llm"``, ``"deterministic"``, or
+        ``"fallback"``.
+    """
+
+    is_doubt: bool
+    reason: str = ""
+    rag_query: str = ""
+    clarification_text: str = ""
+    llm_duration_ms: float | None = None
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    llm_used: bool = False
+    classification: str = "fallback"
+
+    def __post_init__(self) -> None:
+        if self.is_doubt and not self.rag_query.strip():
+            raise ValueError("rag_query must be non-empty when is_doubt=True")
+
+
+# ---------------------------------------------------------------------------
+# Deterministic doubt-marker detection (safe fallback)
+# ---------------------------------------------------------------------------
+
+_EXPLICIT_DOUBT_MARKERS: tuple[str, ...] = (
+    # -- Unambiguous question markers --
+    "?", "¿",
+    "por que", "por qué",
+    "que es ", "qué es ",
+    "que significa", "qué significa",
+    "es normal", "será normal", "sera normal",
+    # -- Compound "como" patterns (avoid false positives on "como un N"
+    #    and "como bien" — "como" by itself is too ambiguous without LLM) --
+    "como debo", "cómo debo",
+    "como deberia", "cómo deberia", "como debería", "cómo debería",
+    "como puedo", "cómo puedo",
+    "como hago", "cómo hago",
+    "como me ", "cómo me ",
+    "como le ", "cómo le ",
+    "como se ", "cómo se ",
+    "como saber", "cómo saber",
+    "como saber si", "cómo saber si",
+    "como esta", "cómo esta", "como está", "cómo está",
+    "como van", "cómo van",
+    "como aliviar", "cómo aliviar",
+    "como manejar", "cómo manejar",
+    "como controlar", "cómo controlar",
+    "como evitar", "cómo evitar",
+    "como prevenir", "cómo prevenir",
+    "como tratar", "cómo tratar",
+    "como cuidar", "cómo cuidar",
+    "como curar", "cómo curar",
+    "como queda", "cómo queda",
+    "como quedo", "cómo quedo",
+    "como funciona", "cómo funciona",
+    "como seguir", "cómo seguir",
+    "como continuar", "cómo continuar",
+    "como proceder", "cómo proceder",
+    # -- Explicit inquiry patterns (explicitly asking for help/info) --
+    "tengo una duda", "tengo una pregunta",
+    "quisiera saber", "quisiera preguntar",
+    "necesito saber", "quiero saber",
+    "me puede decir", "me podría decir",
+    "me puede explicar", "me podría explicar",
+    "puede decirme", "podría decirme",
+    "puede explicarme", "podría explicarme",
+    "explíqueme", "expliqueme", "dígame", "digame",
+)
+
+
+def _has_explicit_doubt_markers(text: str) -> bool:
+    """Detect explicit doubt/question markers in patient input.
+
+    This is the deterministic fallback for doubt-intent detection.
+    It checks for literal question marks and common Spanish
+    interrogative/question phrases without normalisation.
+    """
+    lowered = text.lower().strip()
+    for marker in _EXPLICIT_DOUBT_MARKERS:
+        if marker in lowered:
+            return True
+    return False
+
+
+def _build_doubt_rag_query(patient_text: str) -> str:
+    """Build a RAG query from the patient's doubt text.
+
+    Strips filler words and question markers, preserving the clinical
+    content for retrieval.
+    """
+    # Remove leading question words for a cleaner RAG query
+    cleaned = patient_text.strip()
+    for prefix in ("por que ", "por qué ", "que es ", "qué es ",
+                    "es normal que ", "sera normal que ",
+                    "puedo ", "se puede ", "debo ", "deberia ",
+                    "como ", "cómo ", "cuanto ", "cuándo "):
+        low = cleaned.lower()
+        if low.startswith(prefix):
+            cleaned = cleaned[len(prefix):]
+            break
+    return cleaned.strip().rstrip("?¿").strip()
+
+
+# ---------------------------------------------------------------------------
+# LLM doubt-intent prompt
+# ---------------------------------------------------------------------------
+
+_DOUBT_SYSTEM_PROMPT = """\
+Eres un detector de intención para un agente de seguimiento postoperatorio \
+en Colombia. Tu ÚNICA tarea es decidir si la entrada del paciente es una \
+**pregunta clínica** (el paciente tiene una duda sobre su recuperación y \
+quiere información) o una **respuesta** (el paciente está reportando cómo \
+se siente en respuesta a una pregunta de seguimiento).
+
+CONTEXTO: El agente acaba de hacer una pregunta de seguimiento \
+postoperatorio y el paciente ha respondido. Algunos pacientes responden \
+con una pregunta en lugar de reportar sus síntomas. Ejemplo:
+- Agente pregunta sobre dolor → Paciente dice "¿es normal que me duela?"
+  (ESTO ES UNA DUDA — el paciente no reporta intensidad, pregunta si es normal).
+- Agente pregunta sobre movilidad → Paciente dice "puedo caminar bien, \
+  gracias" (ESTO ES UNA RESPUESTA — el paciente reporta su estado).
+
+REGLAS:
+1. Si el paciente hace una pregunta clínica legítima sobre su recuperación
+   → action = "doubt".
+2. Si el paciente reporta síntomas (aunque sea con incertidumbre como
+   "no estoy seguro" o "tal vez") → action = "no_doubt".
+3. Si el texto es ambiguo pero contiene palabras interrogativas claras
+   ("cómo", "por qué", "es normal", "puedo") → action = "doubt".
+4. Ante la duda, prefiere "doubt" — es mejor responder una pregunta
+   innecesaria que ignorar una duda real del paciente.
+5. Tu respuesta DEBE ser SOLO el JSON. Responde en español.
+
+Ejemplos de "no_doubt":
+- "me duele un poquito" (reporta síntoma)
+- "no, todo bien" (responde negativamente)
+- "he tenido un poco de fiebre" (reporta síntoma)
+- "la herida está bien" (reporta estado)
+
+Ejemplos de "doubt":
+- "¿es normal que me duela al caminar?"
+- "por qué tengo fiebre si me operaron del apéndice"
+- "puedo comer alimentos sólidos ya"
+- "cuánto tiempo debo esperar para bañarme"
+"""
+
+_DOUBT_USER_PROMPT_TEMPLATE = """\
+DOMINIO CLÍNICO: {domain}
+DÍA POSTOPERATORIO: {dia_postop}
+PROCEDIMIENTO: {procedimiento}
+
+PREGUNTA DE SEGUIMIENTO QUE HIZO EL AGENTE:
+{follow_up_question}
+
+ENTRADA DEL PACIENTE:
+{patient_text}
+
+Tu tarea: ¿es esto una DUDA clínica o una RESPUESTA a la pregunta de seguimiento?
+
+Responde EXCLUSIVAMENTE en formato JSON:
+{{
+  "action": "doubt" o "no_doubt",
+  "reason": "tu razonamiento en español (1-2 frases)",
+  "rag_query": "consulta clínica para buscar en documentos (solo si action=doubt, extrae la pregunta clínica del paciente, sin la pregunta original del agente)"
+}}
+"""
+
+
+def _build_doubt_prompt(
+    patient_text: str,
+    domain: str,
+    follow_up_question: str,
+    dia_postop: int,
+    procedimiento: str,
+) -> tuple[str, str]:
+    """Build (system_prompt, user_prompt) for the doubt-intent LLM call."""
+    user_prompt = _DOUBT_USER_PROMPT_TEMPLATE.format(
+        domain=domain,
+        dia_postop=dia_postop,
+        procedimiento=procedimiento or "No especificado",
+        follow_up_question=follow_up_question,
+        patient_text=patient_text,
+    )
+    return _DOUBT_SYSTEM_PROMPT, user_prompt
+
+
+def _parse_and_validate_doubt_output(
+    parsed: dict[str, Any],
+) -> DoubtApprovalResult | None:
+    """Parse LLM JSON output for doubt-intent check and validate constraints.
+
+    Returns a ``DoubtApprovalResult`` or ``None`` when validation fails.
+    """
+    action = str(parsed.get("action", "")).strip().lower()
+    reason = str(parsed.get("reason", "")).strip()
+    rag_query = str(parsed.get("rag_query", "")).strip()
+
+    if action not in ("doubt", "no_doubt"):
+        return None
+
+    if not reason:
+        return None
+
+    if action == "doubt":
+        if not rag_query:
+            # LLM said doubt but no query — derive from patient text
+            rag_query = reason
+        return DoubtApprovalResult(
+            is_doubt=True,
+            reason=reason,
+            rag_query=rag_query,
+            clarification_text=(
+                "Permítame consultar esa información para responderle."
+            ),
+            llm_used=False,  # will be set by caller
+            classification="llm",
+        )
+
+    return DoubtApprovalResult(
+        is_doubt=False,
+        reason=reason,
+        llm_used=False,
+        classification="llm",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Doubt-intent Groq transport
+# ---------------------------------------------------------------------------
+
+
+def _call_groq_doubt(
+    system_prompt: str,
+    user_prompt: str,
+    config: LlmConfig,
+) -> dict[str, Any]:
+    """Invoke Llama via Groq for structured doubt-intent JSON."""
+    if not config.api_key:
+        raise RuntimeError(
+            "GROQ_API_KEY no está configurada. "
+            "Defina la variable de entorno GROQ_API_KEY."
+        )
+
+    try:
+        import groq
+    except ImportError as exc:
+        raise RuntimeError(
+            "El paquete groq no está instalado."
+        ) from exc
+
+    client = groq.Groq(api_key=config.api_key)
+
+    try:
+        start = time.time()
+        response = client.chat.completions.create(
+            model=config.model_name,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=config.temperature,
+            max_tokens=config.max_output_tokens,
+            response_format={"type": "json_object"},
+        )
+        llm_duration_ms = (time.time() - start) * 1000.0
+    except Exception as exc:
+        raise RuntimeError(
+            f"Error al llamar a {config.model_name}: {exc}"
+        ) from exc
+
+    usage = getattr(response, "usage", None)
+    prompt_tokens = getattr(usage, "prompt_tokens", None) if usage is not None else None
+    completion_tokens = getattr(usage, "completion_tokens", None) if usage is not None else None
+
+    raw_text = (response.choices[0].message.content or "").strip()
+
+    if raw_text.startswith("```"):
+        raw_text = re.sub(r"^```(?:json)?\s*", "", raw_text)
+        raw_text = re.sub(r"\s*```$", "", raw_text)
+
+    try:
+        parsed = json.loads(raw_text)
+    except json.JSONDecodeError as exc:
+        logger.warning("Failed to parse doubt JSON: %s", raw_text[:200])
+        raise ValueError(
+            f"El modelo no devolvió JSON válido: {exc}"
+        ) from exc
+
+    if not isinstance(parsed, dict):
+        raise ValueError("El modelo devolvió JSON pero no es un objeto.")
+
+    parsed["_llm_duration_ms"] = llm_duration_ms
+    parsed["_prompt_tokens"] = prompt_tokens
+    parsed["_completion_tokens"] = completion_tokens
+
+    return parsed
+
+
+# ---------------------------------------------------------------------------
+# Public API — doubt-intent confirmation
+# ---------------------------------------------------------------------------
+
+
+def llm_confirm_doubt(
+    patient_text: str,
+    domain: str,
+    follow_up_question: str,
+    dia_postop: int,
+    procedimiento: str,
+    config: LlmConfig,
+) -> DoubtApprovalResult:
+    """Check whether the patient's input is a clinical doubt (not an answer).
+
+    This operates **before** escalation classification.  When the LLM
+    confirms the input is a clinical question, the orchestrator runs RAG
+    inline and repeats the same follow-up question instead of classifying.
+
+    Parameters
+    ----------
+    patient_text : str
+        The patient's raw input text.
+    domain : str
+        Symptom domain being assessed (e.g. ``"dolor"``).
+    follow_up_question : str
+        The follow-up question the agent just asked.
+    dia_postop : int
+        Post-operative day number.
+    procedimiento : str
+        Surgical procedure name.
+    config : LlmConfig
+        LLM configuration.
+
+    Returns
+    -------
+    DoubtApprovalResult
+        The LLM's decision (``is_doubt``, ``rag_query``, etc.).
+        On any failure, falls back to deterministic explicit-marker
+        detection — explicit doubts are preserved, non-doubts are safe.
+    """
+    # Detect prompt injection in patient input
+    injection_reasons = _detect_injection(patient_text)
+    if injection_reasons:
+        logger.warning(
+            "Prompt injection detected during doubt check for query %r: %s",
+            patient_text[:120],
+            "; ".join(injection_reasons),
+        )
+        # Fall back to deterministic markers
+        is_doubt = _has_explicit_doubt_markers(patient_text)
+        if is_doubt:
+            rag_query = _build_doubt_rag_query(patient_text)
+            return DoubtApprovalResult(
+                is_doubt=True,
+                reason=(
+                    "El paciente parece tener una duda clínica "
+                    "(detectado por marcadores explícitos)."
+                ),
+                rag_query=rag_query,
+                clarification_text=(
+                    "Permítame consultar esa información para responderle."
+                ),
+                llm_used=False,
+                classification="deterministic",
+            )
+        return DoubtApprovalResult(
+            is_doubt=False,
+            reason="Entrada válida — no parece ser una duda clínica.",
+            llm_used=False,
+            classification="fallback",
+        )
+
+    # Build prompt
+    system_prompt, user_prompt = _build_doubt_prompt(
+        patient_text=patient_text,
+        domain=domain,
+        follow_up_question=follow_up_question,
+        dia_postop=dia_postop,
+        procedimiento=procedimiento,
+    )
+
+    # Call LLM with timeout safety
+    try:
+        parsed = _call_groq_doubt(system_prompt, user_prompt, config)
+    except (RuntimeError, ValueError) as exc:
+        logger.warning(
+            "LLM doubt check failed, falling back to deterministic: %s", exc
+        )
+        # Safe fallback: check explicit markers
+        is_doubt = _has_explicit_doubt_markers(patient_text)
+        if is_doubt:
+            rag_query = _build_doubt_rag_query(patient_text)
+            return DoubtApprovalResult(
+                is_doubt=True,
+                reason=(
+                    "El paciente parece tener una duda clínica "
+                    "(detectado por marcadores explícitos tras fallo del LLM)."
+                ),
+                rag_query=rag_query,
+                clarification_text=(
+                    "Permítame consultar esa información para responderle."
+                ),
+                llm_used=False,
+                classification="deterministic",
+            )
+        return DoubtApprovalResult(
+            is_doubt=False,
+            reason=(
+                "No se pudo verificar la intención del paciente. "
+                "Se asume que es una respuesta (no una duda)."
+            ),
+            llm_used=False,
+            classification="fallback",
+        )
+
+    llm_duration_ms = parsed.pop("_llm_duration_ms", None)
+    prompt_tokens = parsed.pop("_prompt_tokens", None)
+    completion_tokens = parsed.pop("_completion_tokens", None)
+
+    # Parse and validate
+    result = _parse_and_validate_doubt_output(parsed)
+
+    if result is None:
+        logger.warning(
+            "LLM doubt output rejected. Falling back to deterministic markers."
+        )
+        is_doubt = _has_explicit_doubt_markers(patient_text)
+        if is_doubt:
+            rag_query = _build_doubt_rag_query(patient_text)
+            return DoubtApprovalResult(
+                is_doubt=True,
+                reason=(
+                    "El paciente parece tener una duda clínica "
+                    "(detectado por marcadores explícitos tras salida inválida)."
+                ),
+                rag_query=rag_query,
+                clarification_text=(
+                    "Permítame consultar esa información para responderle."
+                ),
+                llm_used=False,
+                classification="deterministic",
+            )
+        return DoubtApprovalResult(
+            is_doubt=False,
+            reason="No se pudo validar la salida del LLM — se asume respuesta.",
+            llm_used=False,
+            classification="fallback",
+        )
+
+    # Attach metrics and mark LLM as used
+    object.__setattr__(result, "llm_duration_ms", llm_duration_ms)
+    object.__setattr__(result, "prompt_tokens", prompt_tokens)
+    object.__setattr__(result, "completion_tokens", completion_tokens)
+    object.__setattr__(result, "llm_used", True)
+
+    logger.info(
+        "LLM doubt check: is_doubt=%s classification=%s",
+        result.is_doubt,
+        result.classification,
+    )
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Result dataclass (escalation approval)
 # ---------------------------------------------------------------------------
 
 

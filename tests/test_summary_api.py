@@ -386,7 +386,7 @@ class TestSummaryAfterFullCall:
         async def _mock_stt(audio_data: bytes):
             from backend.voice.models import TranscriptionResult
             return TranscriptionResult(
-                text="Sí, claro, todo bien, sin dolor, sin fiebre, herida limpia, como bien, duermo bien, camino sin problema",
+                text="Sí, claro, todo bien, sin dolor, sin fiebre, herida limpia, tengo buen apetito, duermo bien, camino sin problema",
                 language="es",
                 duration_seconds=1.5,
                 model="whisper-large-v3",

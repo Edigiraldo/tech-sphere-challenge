@@ -130,19 +130,27 @@ determinista.
 ```
 Navegador (WAV base64 vía HTTP POST) → voice/STT → conversation/ orquestador:
   1. Cargar perfil del paciente + historial de turnos
-  2. **Clasificar** respuesta del paciente contra el dominio de síntomas (decision/classify)
-  3a. Si RED → derivación inmediata: sin RAG/LLM, mensaje urgente de seguridad,
+  2. **Puerta de intención de duda** (``_check_doubt_intent``): verificar si el
+     paciente pregunta en lugar de reportar síntomas
+     - Determinista: marcadores explícitos (?, ``"por que"``, ``"como debo"``,
+       ``"tengo una duda"``, …)
+     - Aprobación LLM: ``llm_confirm_doubt()`` confirma o rechaza
+     - Si DUDA → RAG inline con citas, repetir la misma pregunta (sin avanzar índice
+       ni acumular YELLOW)
+     - Si NO duda → continuar a clasificación
+  3. **Clasificar** respuesta del paciente contra el dominio de síntomas (decision/classify)
+  4a. Si RED → derivación inmediata: sin RAG/LLM, mensaje urgente de seguridad,
        transición directa a ENDED, ``call_ended=True``
-  3b. Si GREEN / YELLOW (no-RED) → **LLM second-approval** (``backend/llm/approval.py``)
+  4b. Si GREEN / YELLOW (no-RED) → **LLM second-approval** (``backend/llm/approval.py``)
        - Confirmar clasificación determinista
        - Subir severidad (nunca bajarla; YELLOW no puede bajar a GREEN)
        - Solicitar aclaración (máximo 1 por pregunta; no avanza índice)
        - Solicitar RAG por duda (ejecutar RAG en QUESTIONS, continuar después)
-       - Fallos/timeout salida inválida → caer a clasificación determinista
-  3c. Si segundo YELLOW consecutivo → escalar a CLOSING
-  4. (Solo CLOSING) Si pregunta clínica → llamar rag/retrieve + llm/generate
+       - Fallos/timeout/salida inválida → caer a clasificación determinista
+  4c. Si segundo YELLOW consecutivo → escalar a CLOSING
+  5. (Solo CLOSING) Si pregunta clínica → llamar rag/retrieve + llm/generate
       con citas, permanecer en CLOSING
-  5. Si CLOSING no-pregunta → finalizar llamada
+  6. Si CLOSING no-pregunta → finalizar llamada
   → voice/TTS → Navegador (WAV base64 en respuesta HTTP)
 ```
 
@@ -301,6 +309,10 @@ para el paciente.
 
 - **La clasificación ocurre antes de RAG/LLM.** Durante la fase QUESTIONS, la llamada a
   ``decision/classify`` controla todo el procesamiento posterior.
+- **La puerta de duda es anterior a la clasificación.** Antes de clasificar, el
+  orquestador verifica si el paciente está preguntando (marcadores deterministas +
+  aprobación LLM). Las dudas confirmadas ejecutan RAG y repiten la pregunta sin
+  acumular YELLOW ni generar alertas.
 - **Red siempre escala inmediatamente.** El orquestador deriva: sin llamada RAG/LLM, se
   devuelve un mensaje claro de seguridad urgente en español, el estado transita
   directamente a ENDED con ``call_ended=True``, y el frontal deshabilita la grabación
@@ -313,6 +325,14 @@ para el paciente.
 - **Desconocido es yellow.** Los turnos no clasificables o con validación fallida se
   tratan como yellow por defecto.
 - **La ambigüedad dispara indagación.** Una pregunta aclaratoria antes de clasificar.
+
+**Persistencia de alertas:** Solo los resultados **conclusivos**
+(``should_escalate=True``) persisten registros ``EscalationAlertRecord``:
+RED determinista, segundo YELLOW consecutivo y YELLOW ascendido a RED por el
+revisor LLM. GREEN, primer YELLOW, aclaraciones y dudas RAG son no-conclusivos:
+se registran en los turnos pero no generan alertas persistentes ni activan el
+banner visual. La inserción es idempotente mediante ``alert_id`` determinístico
+(SHA-256 de ``call_id``, severidad y dominio) y ``INSERT OR IGNORE``.
 
 ### Defensa contra inyección de prompts
 

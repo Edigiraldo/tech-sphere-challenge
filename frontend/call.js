@@ -246,12 +246,23 @@ document.addEventListener("DOMContentLoaded", () => {
 
     /**
      * Show or update the escalation banner.
+     *
+     * The banner is only displayed for conclusive escalations
+     * (``should_escalate === true``).  Per-turn classifications such as
+     * first YELLOW observations, GREEN confirmations, clarification
+     * rounds, and doubt/RAG answers are recorded for the audit trail
+     * but do not trigger the user-visible alert banner.
+     *
+     * Conclusive alerts show the clinical reason and recommended
+     * next action with alert styling.  Severity labels (GREEN/YELLOW/RED)
+     * are not rendered — the banner styling conveys urgency.
+     *
      * @param {object|null} escalation - EscalationInfo from API or null
      */
     function showEscalation(escalation) {
         if (!escalationBanner || !escalationText) return;
 
-        if (!escalation) {
+        if (!escalation || !escalation.should_escalate) {
             escalationBanner.classList.add("hidden");
             return;
         }
@@ -262,8 +273,11 @@ document.addEventListener("DOMContentLoaded", () => {
         escalationBanner.classList.remove("hidden");
 
         const domainLabel = escalation.domain || "general";
+        const reason = escalation.reason || "";
+        const nextAction = escalation.next_action || "";
+        const nextActionSuffix = nextAction ? ` — ${nextAction}` : "";
         escalationText.textContent =
-            `[${escalation.severity}] ${domainLabel}: ${escalation.reason}`;
+            `${domainLabel}: ${reason}${nextActionSuffix}`;
     }
 
     // -----------------------------------------------------------------------

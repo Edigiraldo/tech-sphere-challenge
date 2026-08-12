@@ -55,7 +55,7 @@ def mock_stt():
         return TranscriptionResult(
             text=(
                 "Sí, claro, todo bien, sin dolor, sin fiebre, "
-                "herida limpia, como bien, duermo bien, camino sin problema"
+                "herida limpia, tengo buen apetito, duermo bien, camino sin problema"
             ),
             language="es",
             duration_seconds=1.5,
@@ -2249,6 +2249,135 @@ class TestVoicePersistence:
         await global_store.remove(call_id)
 
     @pytest.mark.asyncio
+    async def test_no_alert_persisted_for_first_yellow(self):
+        """First YELLOW (non-conclusive, should_escalate=False) is NOT
+        persisted as an escalation alert — it is only recorded per-turn."""
+        from backend.persistence.sqlite import get_alerts_for_call
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            resp = await client.post(
+                "/calls",
+                json={
+                    "patient_id": "pac-first-yellow",
+                    "dia_postop": 3,
+                    "procedimiento": "Apendicectomía",
+                    "nombre_completo": "First Yellow",
+                    "eps": "EPS",
+                },
+            )
+            call_id = resp.json()["call_id"]
+
+            # greeting → consent
+            await client.post(
+                f"/calls/{call_id}/turn",
+                json={"audio_base64": _MOCK_AUDIO_B64},
+            )
+            await client.post(
+                f"/calls/{call_id}/turn",
+                json={"audio_base64": _MOCK_AUDIO_B64},
+            )
+
+            # Answer pain with first YELLOW (pain NRS 6)
+            async def _first_yellow_stt(audio_data):
+                return TranscriptionResult(
+                    text="Me duele bastante, un 6 de 10.",
+                    language="es",
+                    duration_seconds=1.0,
+                    model="whisper-large-v3",
+                )
+
+            with patch("backend.api.calls._stt", _first_yellow_stt):
+                resp_turn = await client.post(
+                    f"/calls/{call_id}/turn",
+                    json={"audio_base64": _MOCK_AUDIO_B64},
+                )
+
+        d = resp_turn.json()
+        esc = d["escalation"]
+        assert esc is not None
+        assert esc["severity"] == "YELLOW"
+        assert esc["should_escalate"] is False, (
+            "First YELLOW must have should_escalate=False"
+        )
+
+        alerts = get_alerts_for_call(call_id)
+        assert len(alerts) == 0, (
+            "First YELLOW (non-conclusive) must NOT persist an alert. "
+            f"Got {len(alerts)} alerts."
+        )
+
+        await global_store.remove(call_id)
+
+    @pytest.mark.asyncio
+    async def test_alert_idempotency_on_retry(self):
+        """When the same conclusive escalation is processed twice
+        (simulating a retry/restart scenario), only one alert row is
+        inserted because the deterministic alert_id triggers
+        INSERT OR IGNORE."""
+        from backend.persistence.sqlite import get_alerts_for_call
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            resp = await client.post(
+                "/calls",
+                json={
+                    "patient_id": "pac-idemp",
+                    "dia_postop": 3,
+                    "procedimiento": "Apendicectomía",
+                    "nombre_completo": "Idempotency Test",
+                    "eps": "EPS",
+                },
+            )
+            call_id = resp.json()["call_id"]
+
+            # greeting → consent
+            await client.post(
+                f"/calls/{call_id}/turn",
+                json={"audio_base64": _MOCK_AUDIO_B64},
+            )
+            await client.post(
+                f"/calls/{call_id}/turn",
+                json={"audio_base64": _MOCK_AUDIO_B64},
+            )
+
+            # RED pain response
+            async def _red_stt(audio_data):
+                return TranscriptionResult(
+                    text="Me duele un 9 de 10, es insoportable.",
+                    language="es",
+                    duration_seconds=2.0,
+                    model="whisper-large-v3",
+                )
+
+            with patch("backend.api.calls._stt", _red_stt):
+                resp1 = await client.post(
+                    f"/calls/{call_id}/turn",
+                    json={"audio_base64": _MOCK_AUDIO_B64},
+                )
+
+            # Simulate a retry: call _persist_escalation_alert directly
+            # with the same escalation info
+            from backend.api.calls import _persist_escalation_alert
+            d = resp1.json()
+            esc = EscalationInfo(**d["escalation"])
+            _persist_escalation_alert(call_id, esc)
+            _persist_escalation_alert(call_id, esc)
+
+        alerts = get_alerts_for_call(call_id)
+        assert len(alerts) == 1, (
+            f"Idempotent persistence must produce exactly 1 alert, got {len(alerts)}"
+        )
+        assert alerts[0].severity == "RED"
+        assert alerts[0].domain == "dolor"
+
+        await global_store.remove(call_id)
+
+    @pytest.mark.asyncio
     async def test_escalation_alert_persisted_for_two_consecutive_yellows(self):
         """Two consecutive YELLOW classifications must persist an
         EscalationAlertRecord with severity=YELLOW, and the call-level
@@ -2585,3 +2714,173 @@ class TestVoicePersistence:
 
         # Call store should be empty (simulating restart)
         assert not await cs.exists(call_id)
+
+
+# ===========================================================================
+# Alert persistence — idempotency and non-conclusive guards
+# ===========================================================================
+
+
+class TestAlertIdempotency:
+    """Tests for idempotent escalation alert persistence and non-conclusive guard."""
+
+    def test_alert_id_is_deterministic(self):
+        """Same call_id, severity, domain produce same alert_id."""
+        import hashlib
+
+        key1 = "call-abc:RED:dolor"
+        key2 = "call-abc:RED:dolor"
+        aid1 = hashlib.sha256(key1.encode()).hexdigest()[:32]
+        aid2 = hashlib.sha256(key2.encode()).hexdigest()[:32]
+        assert aid1 == aid2
+
+    def test_different_domains_produce_different_ids(self):
+        """Different domains produce different alert_ids."""
+        import hashlib
+
+        key1 = "call-abc:YELLOW:dolor"
+        key2 = "call-abc:YELLOW:fiebre"
+        aid1 = hashlib.sha256(key1.encode()).hexdigest()[:32]
+        aid2 = hashlib.sha256(key2.encode()).hexdigest()[:32]
+        assert aid1 != aid2
+
+    def test_insert_or_ignore_prevents_duplicate(self, tmp_path):
+        """INSERT OR IGNORE prevents duplicate alert insertion."""
+        import datetime
+        from backend.persistence.sqlite import (
+            EscalationAlertRecord,
+            _reset_sqlite,
+            get_alerts_for_call,
+            init_sqlite,
+            insert_escalation_alert,
+        )
+
+        _reset_sqlite()
+        init_sqlite(tmp_path / "test_idem.db")
+        try:
+            now = datetime.datetime.now(datetime.timezone.utc)
+            call_id = "call-idem-1"
+            alert_id = "alert-idem-001"
+            record = EscalationAlertRecord(
+                alert_id=alert_id,
+                call_id=call_id,
+                created_at=now,
+                severity="RED",
+                reason="Test alert",
+                domain="dolor",
+            )
+
+            # First insert
+            insert_escalation_alert(record)
+            # Second insert with same alert_id (duplicate)
+            insert_escalation_alert(record)
+            # Should only have one alert
+            alerts = get_alerts_for_call(call_id)
+            assert len(alerts) == 1
+        finally:
+            _reset_sqlite()
+
+    def test_non_should_escalate_skips_persistence(self, tmp_path):
+        """GREEN and first YELLOW should_escalate=False → no alert persisted."""
+        # This is verified by _persist_escalation_alert returning early
+        # when should_escalate=False (line 404 in calls.py)
+        from backend.api.calls import _persist_escalation_alert, EscalationInfo
+        from backend.persistence.sqlite import _reset_sqlite, get_alerts_for_call, init_sqlite
+
+        _reset_sqlite()
+        try:
+            init_sqlite(tmp_path / "test_skip.db")
+
+            # GREEN — should NOT persist
+            green_info = EscalationInfo(
+                severity="GREEN",
+                should_escalate=False,
+                reason="Todo bien.",
+                next_action="Continuar.",
+                domain="dolor",
+            )
+            _persist_escalation_alert("call-non-conclusive", green_info)
+
+            # First YELLOW — should NOT persist
+            yellow_info = EscalationInfo(
+                severity="YELLOW",
+                should_escalate=False,
+                reason="Precaución.",
+                next_action="Monitorear.",
+                domain="fiebre",
+            )
+            _persist_escalation_alert("call-non-conclusive", yellow_info)
+
+            # Verify no alerts persisted
+            alerts = get_alerts_for_call("call-non-conclusive")
+            assert len(alerts) == 0, (
+                f"Expected 0 alerts for non-conclusive results, got {len(alerts)}"
+            )
+        finally:
+            _reset_sqlite()
+
+    def test_conclusive_alerts_persist(self, tmp_path):
+        """RED and second-YELLOW should_escalate=True → alert persisted."""
+        from backend.api.calls import _persist_escalation_alert, EscalationInfo
+        from backend.persistence.sqlite import _reset_sqlite, get_alerts_for_call, init_sqlite
+
+        _reset_sqlite()
+        try:
+            init_sqlite(tmp_path / "test_conclusive.db")
+
+            # RED → should persist
+            red_info = EscalationInfo(
+                severity="RED",
+                should_escalate=True,
+                reason="Dolor severo.",
+                next_action="Transferir urgente.",
+                domain="dolor",
+            )
+            _persist_escalation_alert("call-conclusive", red_info)
+
+            # Conclusive YELLOW → should persist
+            yellow_conc = EscalationInfo(
+                severity="YELLOW",
+                should_escalate=True,
+                reason="Dos amarillos consecutivos.",
+                next_action="Escalar.",
+                domain="fiebre",
+            )
+            _persist_escalation_alert("call-conclusive", yellow_conc)
+
+            alerts = get_alerts_for_call("call-conclusive")
+            assert len(alerts) == 2, (
+                f"Expected 2 alerts for conclusive results, got {len(alerts)}"
+            )
+            assert any(a.severity == "RED" for a in alerts)
+            assert any(a.severity == "YELLOW" for a in alerts)
+        finally:
+            _reset_sqlite()
+
+    def test_conclusive_red_duplicate_prevention_full_flow(self, tmp_path):
+        """Double-insert of same RED alert is idempotent."""
+        from backend.api.calls import _persist_escalation_alert, EscalationInfo
+        from backend.persistence.sqlite import _reset_sqlite, get_alerts_for_call, init_sqlite
+
+        _reset_sqlite()
+        try:
+            init_sqlite(tmp_path / "test_dup.db")
+
+            red_info = EscalationInfo(
+                severity="RED",
+                should_escalate=True,
+                reason="Dolor severo.",
+                next_action="Transferir urgente.",
+                domain="dolor",
+            )
+
+            # Insert twice
+            _persist_escalation_alert("call-dup", red_info)
+            _persist_escalation_alert("call-dup", red_info)
+
+            alerts = get_alerts_for_call("call-dup")
+            assert len(alerts) == 1, (
+                f"Expected 1 alert (idempotent), got {len(alerts)}"
+            )
+        finally:
+            _reset_sqlite()

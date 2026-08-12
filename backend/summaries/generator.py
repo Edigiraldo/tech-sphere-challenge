@@ -235,7 +235,13 @@ def _build_symptom_sections(
 def _build_decision_section(
     escalation_results: list[EscalationResult],
 ) -> SummarySection:
-    """Build the escalation decision section."""
+    """Build the escalation decision section.
+
+    Distinguishes between **conclusive** escalations (RED, accumulated
+    YELLOW, or LLM-upgraded RED — all have ``should_escalate=True``)
+    and **non-conclusive** YELLOW observations (first YELLOW per domain,
+    clarification rounds, RAG-doubt answers).
+    """
     if not escalation_results:
         return SummarySection(
             heading="Decision de escalamiento",
@@ -245,40 +251,55 @@ def _build_decision_section(
             ),
         )
 
-    # Find the highest severity
+    # Separate conclusive from non-conclusive results
+    conclusive = [r for r in escalation_results if r.should_escalate]
+    # All YELLOWs (both conclusive and non-conclusive) for audit
+    all_yellow = [r for r in escalation_results if r.severity.name == "YELLOW"]
+
+    # Find highest severity
     highest = "GREEN"
     red_reason = None
-    yellow_reasons: list[str] = []
-
     for result in escalation_results:
         sev_name = result.severity.name
         if _severity_gt(sev_name, highest):
             highest = sev_name
             if sev_name == "RED":
                 red_reason = result.reason
-        if sev_name == "YELLOW":
-            yellow_reasons.append(f"{result.domain or 'general'}: {result.reason}")
 
-    if highest == "RED":
-        content = (
-            f"ESCALAMIENTO INMEDIATO (ROJO). "
-            f"Razon: {red_reason}. "
-            f"Se recomienda transferir al medico tratante de inmediato."
-        )
-    elif highest == "YELLOW":
-        if len(escalation_results) >= 2:
+    if conclusive:
+        # At least one conclusive escalation (RED or accumulated YELLOW)
+        red_conclusive = [r for r in conclusive if r.severity.name == "RED"]
+        yellow_conclusive = [r for r in conclusive if r.severity.name == "YELLOW"]
+
+        if red_conclusive:
+            best = red_conclusive[0]
             content = (
-                f"ESCALAMIENTO POR ACUMULACION (AMARILLO x{len(escalation_results)}). "
+                f"ESCALAMIENTO INMEDIATO (ROJO). "
+                f"Razon: {best.reason}. "
+                f"Se recomienda transferir al medico tratante de inmediato."
+            )
+        else:
+            yellow_reasons = [
+                f"{r.domain or 'general'}: {r.reason}"
+                for r in yellow_conclusive
+            ]
+            content = (
+                f"ESCALAMIENTO POR ACUMULACION (AMARILLO x{len(yellow_conclusive)}). "
                 f"Se detectaron multiples indicadores de precaucion. "
                 f"Detalles: {'; '.join(yellow_reasons[:3])}. "
                 f"Se recomienda seguimiento prioritario."
             )
-        else:
-            content = (
-                f"PRECAUCION (AMARILLO). "
-                f"{yellow_reasons[0] if yellow_reasons else 'Indicador de precaucion detectado.'} "
-                f"Se recomienda seguimiento cercano."
-            )
+    elif highest == "YELLOW":
+        # Only non-conclusive YELLOW observations — not an escalation
+        yellow_reasons = [
+            f"{r.domain or 'general'}: {r.reason}"
+            for r in all_yellow
+        ]
+        content = (
+            f"INDICADOR DETECTADO (AMARILLO). "
+            f"{yellow_reasons[0] if yellow_reasons else 'Indicador de precaucion detectado.'} "
+            f"Se recomienda monitoreo cercano."
+        )
     else:
         content = (
             "No se detectaron senales de alarma en esta llamada. "

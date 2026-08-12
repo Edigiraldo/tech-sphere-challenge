@@ -873,13 +873,18 @@ def get_summary_for_call(call_id: str) -> SummaryRecord | None:
 def insert_escalation_alert(record: EscalationAlertRecord) -> None:
     """Insert a new escalation alert.
 
+    Uses ``INSERT OR IGNORE`` so that duplicate ``alert_id`` values are
+    silently skipped.  When callers compute a deterministic ``alert_id``
+    (e.g. from ``call_id``, ``severity``, and ``domain``), retries and
+    restarts are naturally idempotent.
+
     Args:
         record: The alert to insert. ``alert_id`` must be unique.
     """
     conn = _get_conn()
     try:
         conn.execute(
-            """INSERT INTO escalation_alerts
+            """INSERT OR IGNORE INTO escalation_alerts
                (alert_id, call_id, created_at, severity, reason, domain)
                VALUES (?, ?, ?, ?, ?, ?)""",
             (
