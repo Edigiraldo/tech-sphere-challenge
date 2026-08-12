@@ -51,10 +51,13 @@ from backend.persistence.sqlite import (
     EscalationAlertRecord,
     SummaryRecord,
     insert_call as _db_insert_call,
+    insert_call_metrics,
     insert_escalation_alert,
     insert_summary,
+    insert_turn_metrics_row,
     insert_turns,
     update_call_ended,
+    update_call_metrics_ended,
 )
 from backend.rag.config import RagConfig
 from backend.summaries.generator import generate_summary
@@ -789,6 +792,16 @@ async def create_call(body: CreateCallRequest) -> CreateCallResponse:
     metrics_collector.start_call(patient_context.call_id, body.patient_id)
     _call_turn_index[patient_context.call_id] = 0
 
+    # Persist the metrics-registration row so the call survives restart
+    try:
+        insert_call_metrics(patient_context.call_id, body.patient_id)
+    except Exception:
+        logger.warning(
+            "Failed to persist call-metrics row for %s",
+            patient_context.call_id,
+            exc_info=True,
+        )
+
     logger.info(
         "Call %s created for patient %s (state=%s)",
         patient_context.call_id,
@@ -989,11 +1002,6 @@ async def process_turn(
             )
 
         await call_store.remove(call_id)
-        metrics_collector.end_call(call_id)
-        _call_turn_index.pop(call_id, None)
-        _call_escalations.pop(call_id, None)
-        _call_citations.pop(call_id, None)
-        _call_consecutive_yellows.pop(call_id, None)
         logger.info("Call %s ended — orchestrator removed from store.", call_id)
 
     # Record turn metrics with component timings
@@ -1021,9 +1029,9 @@ async def process_turn(
                 output_tokens=turn.completion_tokens,
             )
         )
-        # Only advance the index when the call has *not* ended (after
-        # the call ends the key has been popped — re-adding it would
-        # leak a stale counter).
+        # Only advance the index when the call has *not* ended.  When
+        # the call has ended the cleanup below removes the key, so
+        # re-adding it would leak a stale counter.
         if not turn.call_ended:
             _call_turn_index[call_id] = turn_index + 1
     except ValueError as exc:
@@ -1037,6 +1045,49 @@ async def process_turn(
                 "Unexpected ValueError recording metrics for call %s: %s",
                 call_id,
                 exc,
+            )
+
+    # Persist this turn's metrics to SQLite so they survive restart
+    try:
+        insert_turn_metrics_row(
+            call_id=call_id,
+            turn_index=turn_index,
+            total_latency_ms=total_latency_ms,
+            model=model_id,
+            rag_queries=turn.rag_queries,
+            timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            tts_duration_ms=tts_duration_ms,
+            stt_duration_ms=stt_duration_ms,
+            llm_duration_ms=turn.llm_duration_ms,
+            input_tokens=turn.prompt_tokens,
+            output_tokens=turn.completion_tokens,
+        )
+    except Exception:
+        logger.warning(
+            "Failed to persist turn metrics for call %s turn %d",
+            call_id,
+            turn_index,
+            exc_info=True,
+        )
+
+    # --- Mark call as ended in metrics *after* the final turn has been
+    #     recorded so that queries never observe a completed call that
+    #     is missing its last turn.
+    if turn.call_ended:
+        metrics_collector.end_call(call_id)
+        _call_turn_index.pop(call_id, None)
+        _call_escalations.pop(call_id, None)
+        _call_citations.pop(call_id, None)
+        _call_consecutive_yellows.pop(call_id, None)
+
+        # Mark the call as ended in SQLite metrics persistence as well
+        try:
+            update_call_metrics_ended(call_id)
+        except Exception:
+            logger.warning(
+                "Failed to persist call-ended marker for %s",
+                call_id,
+                exc_info=True,
             )
 
     return TurnResponse(

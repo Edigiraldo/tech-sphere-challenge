@@ -162,7 +162,13 @@ fases están documentados en `docs/ARCHITECTURE.md`.
   orden monótono.
 - Instrumentación de métricas: ``backend/metrics/`` — ``InMemoryMetricsCollector``
   (thread-safe, ``threading.Lock``), ``TurnMetrics`` / ``CallMetrics`` /
-  ``MetricsSummary``, estimación de costos, percentiles P50/P95. 94 pruebas pasan.
+  ``MetricsSummary``, estimación de costos, percentiles P50/P95. Persistencia de
+  métricas en SQLite (tablas ``calls_metrics`` y ``turn_metrics``) con reconstrucción
+  automática al inicio para que los endpoints ``GET /metrics/summary``,
+  ``GET /metrics/calls`` y ``GET /metrics/calls/{call_id}`` muestren llamadas
+   completadas después de reiniciar el servidor. La validación live de reinicio se
+   ejecutó en el puerto alternativo ``18000`` y no modificó el frontend. 105 pruebas
+   pasan.
   Solo stdlib.
 - Módulo de resúmenes: ``backend/summaries/`` — generador determinista de resúmenes en
   español (datos demográficos del paciente, procedimiento, seis dominios de síntomas,
@@ -231,7 +237,9 @@ fases están documentados en `docs/ARCHITECTURE.md`.
   citas trazables. 16 pruebas nuevas pasan (12 API + 4 contrato de integración).
 - API de métricas y frontal: endpoints tipados de solo lectura ``GET /metrics/summary``,
   ``GET /metrics/calls`` y ``GET /metrics/calls/{call_id}`` y vista frontal de
-  métricas; el módulo colector de métricas es distinto de la API de reporte.
+  métricas; el módulo colector de métricas es distinto de la API de reporte. Las
+  métricas de llamadas completadas sobreviven reinicios del servidor mediante
+  persistencia en SQLite y reconstrucción automática en el arranque.
 - Refuerzo de seguridad RAG/LLM: controles de suficiencia de recuperación (cantidad
   mínima de chunks, umbral de similitud promedio, configurables mediante variables de
   entorno), detección de inyección de prompts a nivel de entrada (escaneo de patrones
@@ -267,7 +275,7 @@ fases están documentados en `docs/ARCHITECTURE.md`.
   preservan en todos los caminos. 68 pruebas nuevas pasan (53 de aprobación/decisión +
   16 de integración con el orquestador).
 
-Totales de pruebas: 1 054 pruebas rapidas (pytest), 26 pruebas lentas (`pytest -m slow`), 1 080 pruebas en total.
+Totales de pruebas: 1 065 pruebas rapidas (pytest), 26 pruebas lentas (`pytest -m slow`), 1 091 pruebas en total.
 
 ## En progreso
 
