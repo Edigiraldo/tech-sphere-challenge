@@ -7,6 +7,10 @@ and returns immutable aggregate snapshots.
 
 ``get_summary()`` computes P50/P95 latency and component-duration
 percentiles from the raw per-turn observations stored by the collector.
+
+The module also provides ``load_metrics_from_sqlite()`` to reconstruct
+the collector state from the persisted ``calls_metrics`` and
+``turn_metrics`` tables after a server restart.
 """
 
 from __future__ import annotations
@@ -314,3 +318,75 @@ class InMemoryMetricsCollector:
             llm_p50_ms=percentile(all_llm_durations, 50),
             llm_p95_ms=percentile(all_llm_durations, 95),
         )
+
+
+# ===================================================================
+# Reconstruction from SQLite (restart survival)
+# ===================================================================
+
+
+def load_metrics_from_sqlite(
+    collector: InMemoryMetricsCollector,
+) -> int:
+    """Reconstruct completed-call metrics from the SQLite
+    ``calls_metrics`` and ``turn_metrics`` tables.
+
+    Uses the collector's public API (``start_call``, ``record_turn``,
+    ``end_call``) so that the in-memory state is consistent with any
+    in-flight calls after the load completes.
+
+    Returns the number of calls loaded.
+    """
+    from datetime import datetime
+
+    from backend.persistence.sqlite import (
+        get_all_ended_call_metrics_ids,
+        get_turn_metrics_rows_for_call,
+    )
+
+    loaded = 0
+    for call_id, patient_id in get_all_ended_call_metrics_ids():
+        try:
+            collector.start_call(call_id, patient_id)
+        except ValueError:
+            # Already present in the collector — skip.
+            continue
+
+        for row in get_turn_metrics_rows_for_call(call_id):
+            (
+                _,
+                turn_index,
+                total_latency_ms,
+                model,
+                rag_queries,
+                ts_str,
+                tts_duration_ms,
+                stt_duration_ms,
+                llm_duration_ms,
+                input_tokens,
+                output_tokens,
+            ) = row
+
+            turn = TurnMetrics(
+                call_id=call_id,
+                turn_index=turn_index,
+                total_latency_ms=total_latency_ms,
+                model=model,
+                rag_queries=rag_queries,
+                timestamp=datetime.fromisoformat(ts_str),
+                tts_duration_ms=tts_duration_ms,
+                stt_duration_ms=stt_duration_ms,
+                llm_duration_ms=llm_duration_ms,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+            )
+            collector.record_turn(turn)
+
+        try:
+            collector.end_call(call_id)
+        except ValueError:
+            pass
+
+        loaded += 1
+
+    return loaded

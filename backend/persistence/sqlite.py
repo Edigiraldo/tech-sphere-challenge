@@ -364,6 +364,35 @@ def init_sqlite(db_path: str | Path) -> None:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS calls_metrics (
+                call_id    TEXT PRIMARY KEY,
+                patient_id TEXT NOT NULL,
+                ended      INTEGER NOT NULL DEFAULT 0,
+                FOREIGN KEY (call_id) REFERENCES calls(call_id)
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS turn_metrics (
+                call_id          TEXT    NOT NULL,
+                turn_index       INTEGER NOT NULL,
+                total_latency_ms REAL    NOT NULL DEFAULT 0,
+                model            TEXT    NOT NULL DEFAULT '',
+                rag_queries      INTEGER NOT NULL DEFAULT 0,
+                timestamp        TEXT    NOT NULL,
+                tts_duration_ms  REAL,
+                stt_duration_ms  REAL,
+                llm_duration_ms  REAL,
+                input_tokens     INTEGER,
+                output_tokens    INTEGER,
+                PRIMARY KEY (call_id, turn_index),
+                FOREIGN KEY (call_id) REFERENCES calls(call_id)
+            )
+            """
+        )
         conn.commit()
         logger.info("SQLite database initialised at %s", _db_path)
     finally:
@@ -878,5 +907,131 @@ def get_alerts_for_call(call_id: str) -> list[EscalationAlertRecord]:
             (call_id,),
         ).fetchall()
         return [_row_to_alert(r) for r in rows]
+    finally:
+        conn.close()
+
+
+# ===================================================================
+# Public CRUD — Calls Metrics (for restart survival)
+# ===================================================================
+
+
+def insert_call_metrics(call_id: str, patient_id: str) -> None:
+    """Register a call in the metrics tables.
+
+    Args:
+        call_id: Unique call identifier.
+        patient_id: Patient identifier.
+    """
+    conn = _get_conn()
+    try:
+        conn.execute(
+            """INSERT INTO calls_metrics (call_id, patient_id, ended)
+               VALUES (?, ?, 0)""",
+            (call_id, patient_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def update_call_metrics_ended(call_id: str) -> None:
+    """Mark *call_id* as ended in the calls_metrics table."""
+    conn = _get_conn()
+    try:
+        conn.execute(
+            "UPDATE calls_metrics SET ended = 1 WHERE call_id = ?",
+            (call_id,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def insert_turn_metrics_row(
+    call_id: str,
+    turn_index: int,
+    total_latency_ms: float,
+    model: str,
+    rag_queries: int,
+    timestamp: str,
+    tts_duration_ms: float | None = None,
+    stt_duration_ms: float | None = None,
+    llm_duration_ms: float | None = None,
+    input_tokens: int | None = None,
+    output_tokens: int | None = None,
+) -> None:
+    """Persist a single turn-metrics row to SQLite.
+
+    Uses INSERT OR REPLACE to be idempotent for the (call_id, turn_index)
+    primary key — a turn recorded twice will overwrite the previous row
+    without raising an error.
+    """
+    conn = _get_conn()
+    try:
+        conn.execute(
+            """INSERT OR REPLACE INTO turn_metrics
+               (call_id, turn_index, total_latency_ms, model, rag_queries,
+                timestamp, tts_duration_ms, stt_duration_ms,
+                llm_duration_ms, input_tokens, output_tokens)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                call_id,
+                turn_index,
+                total_latency_ms,
+                model,
+                rag_queries,
+                timestamp,
+                tts_duration_ms,
+                stt_duration_ms,
+                llm_duration_ms,
+                input_tokens,
+                output_tokens,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_all_ended_call_metrics_ids() -> list[tuple[str, str]]:
+    """Return ``(call_id, patient_id)`` for every ended call in
+    ``calls_metrics``, ordered by *call_id*."""
+    conn = _get_conn()
+    try:
+        rows = conn.execute(
+            """SELECT call_id, patient_id FROM calls_metrics
+               WHERE ended = 1
+               ORDER BY call_id ASC"""
+        ).fetchall()
+        return [(r["call_id"], r["patient_id"]) for r in rows]
+    finally:
+        conn.close()
+
+
+def get_turn_metrics_rows_for_call(
+    call_id: str,
+) -> list[tuple]:
+    """Return raw turn-metrics rows for *call_id*, ordered by
+    ``turn_index`` ascending.
+
+    Each row is a tuple of:
+    (call_id, turn_index, total_latency_ms, model, rag_queries,
+     timestamp, tts_duration_ms, stt_duration_ms, llm_duration_ms,
+     input_tokens, output_tokens)
+    """
+    conn = _get_conn()
+    try:
+        rows = conn.execute(
+            """SELECT call_id, turn_index, total_latency_ms, model,
+                      rag_queries, timestamp, tts_duration_ms,
+                      stt_duration_ms, llm_duration_ms, input_tokens,
+                      output_tokens
+               FROM turn_metrics
+               WHERE call_id = ?
+               ORDER BY turn_index ASC""",
+            (call_id,),
+        ).fetchall()
+        return [tuple(r) for r in rows]
     finally:
         conn.close()

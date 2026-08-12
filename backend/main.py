@@ -71,6 +71,13 @@ async def _lifespan(app: FastAPI):  # type: ignore[arg-type]
     init_sqlite(_db_path)
     logger.info("SQLite initialised at %s.", _db_path)
 
+    # Reconstruct completed-call metrics from SQLite so that
+    # GET /metrics/* endpoints show historical calls after a restart.
+    from backend.api.metrics import metrics_collector
+    from backend.metrics.collector import load_metrics_from_sqlite
+    _loaded = load_metrics_from_sqlite(metrics_collector)
+    logger.info("Loaded %d completed call(s) from metrics persistence.", _loaded)
+
     logger.info("Application startup — wiring voice providers …")
     configure_providers()
     logger.info("Application startup complete.")
