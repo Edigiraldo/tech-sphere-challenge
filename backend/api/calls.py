@@ -2,6 +2,7 @@
 
 POST   /calls                  — Create a new voice call.
 POST   /calls/{call_id}/turn   — Process a voice turn (audio in → audio out).
+POST   /calls/{call_id}/end    — Manually finalize an active call.
 
 The endpoints accept base64-encoded WAV audio, transcribe via the injected STT
 provider, delegate to the ``ConversationOrchestrator`` for dialogue management,
@@ -14,6 +15,11 @@ request-body fields when the patient is not found in the dataset.  The
 orchestrator is wired with live ``RagConfig`` and ``LlmConfig`` (from
 environment variables); safe fallbacks built into the orchestrator handle
 cases where RAG or LLM are unavailable.
+
+The ``end_call`` endpoint finalizes an active call: generates and persists the
+structured summary from the orchestrator's current history, marks the SQLite
+call record as ENDED, ends metrics, and cleans up transient per-call state.
+It is idempotent — repeated calls on an already-finalized call return 409.
 """
 
 from __future__ import annotations
@@ -51,6 +57,8 @@ from backend.persistence.sqlite import (
     ConversationTurnRecord,
     EscalationAlertRecord,
     SummaryRecord,
+    get_call_by_id,
+    get_summary_for_call,
     insert_call as _db_insert_call,
     insert_call_metrics,
     insert_escalation_alert,
@@ -280,6 +288,28 @@ class TurnResponse(BaseModel):
     call_ended: bool = Field(..., description="True if the call has ended")
     escalation: EscalationInfo | None = Field(
         None, description="Escalation verdict (only during QUESTIONS phase)"
+    )
+
+
+class EndCallResponse(BaseModel):
+    """Response returned after manually finalizing a call.
+
+    Includes the generated summary so the frontend can render it directly
+    without a separate GET /calls/{call_id}/summary request.
+    """
+
+    call_id: str = Field(..., description="Unique call identifier")
+    state: str = Field(..., description="Final conversation state (ENDED)")
+    summary_id: str = Field(..., description="Unique summary identifier")
+    created_at: str = Field(..., description="UTC ISO-8601 timestamp")
+    patient_summary: str = Field(..., description="Patient demographics in Spanish")
+    procedure_summary: str = Field(..., description="Procedure and post-op day in Spanish")
+    symptoms_summary: str = Field(..., description="Aggregated symptom responses in Spanish")
+    decision_summary: str = Field(..., description="Escalation decision and rationale")
+    next_steps: str = Field(..., description="Recommended next steps")
+    sources: list[CitationResponse] = Field(
+        default_factory=list,
+        description="Traceable sources cited in the summary",
     )
 
 
@@ -1123,4 +1153,303 @@ async def process_turn(
         total_questions=turn.total_questions,
         call_ended=turn.call_ended,
         escalation=escalation,
+    )
+
+
+@calls_router.post("/{call_id}/end", response_model=EndCallResponse)
+async def end_call(
+    call_id: str,
+) -> EndCallResponse:
+    """Manually finalize an active voice call.
+
+    Generates and persists the structured summary from the orchestrator's
+    current conversation history, marks the SQLite call record as ENDED,
+    ends metrics, and cleans up transient per-call state.
+
+    **Idempotent**: repeated calls on an already-finalized call return
+    ``409 Conflict`` with the existing summary data.  Calls that have never
+    been created return ``404``.
+
+    Returns the generated summary so the frontend can render it directly.
+    """
+    # 1. Check if the call exists in SQLite
+    call_record = get_call_by_id(call_id)
+    if call_record is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Call '{call_id}' not found.",
+        )
+
+    # 2. If already ended, return 409 with the existing summary
+    if call_record.ended_at is not None:
+        existing_summary = get_summary_for_call(call_id)
+        if existing_summary is not None:
+            # Deserialise sources for the response
+            sources: list[CitationResponse] = []
+            try:
+                raw = json.loads(existing_summary.sources_json)
+                if isinstance(raw, list):
+                    for entry in raw:
+                        if isinstance(entry, list) and len(entry) >= 2:
+                            sources.append(
+                                CitationResponse(
+                                    chunk_id="",
+                                    document_id=str(entry[0]) if entry[0] else "",
+                                    source_filename=str(entry[1]) if entry[1] else "",
+                                    page_number=int(entry[2]) if len(entry) > 2 and entry[2] else 1,
+                                )
+                            )
+            except (json.JSONDecodeError, TypeError, ValueError):
+                pass
+
+            return EndCallResponse(
+                call_id=existing_summary.call_id,
+                state="ENDED",
+                summary_id=existing_summary.summary_id,
+                created_at=existing_summary.created_at.isoformat(),
+                patient_summary=existing_summary.patient_summary,
+                procedure_summary=existing_summary.procedure_summary,
+                symptoms_summary=existing_summary.symptoms_summary,
+                decision_summary=existing_summary.decision_summary,
+                next_steps=existing_summary.next_steps,
+                sources=sources,
+            )
+
+        # Ended but no summary — treat as conflict (data inconsistency)
+        raise HTTPException(
+            status_code=409,
+            detail=f"Call '{call_id}' is already finalized but no summary "
+            "was found. This may indicate a data inconsistency.",
+        )
+
+    # 3. Get the orchestrator from the call store
+    orchestrator = await call_store.get(call_id)
+
+    # 4. Generate and persist the summary
+    all_escalations_for_call = _call_escalations.get(call_id, [])
+    all_citations_for_call = _call_citations.get(call_id, [])
+
+    if orchestrator is not None:
+        _persist_call_summary(
+            orchestrator,
+            escalation_results=all_escalations_for_call,
+            citations=all_citations_for_call,
+        )
+    else:
+        # The orchestrator has been removed but the call is not ended —
+        # we can still persist a minimal end state without summary.
+        logger.warning(
+            "Call %s has no orchestrator in store but is not ended. "
+            "Generating a minimal end state.",
+            call_id,
+        )
+        # Attempt to generate a summary from what we have in SQLite
+        from backend.persistence.sqlite import get_turns_for_call
+        from backend.summaries.generator import generate_summary
+        from backend.summaries.models import SourceReference
+        from backend.decision import EscalationResult, Severity as SevEnum
+
+        turn_records = get_turns_for_call(call_id)
+        if not turn_records:
+            logger.warning(
+                "Call %s has no persisted turns — cannot generate summary.",
+                call_id,
+            )
+        else:
+            esc_results: list[EscalationResult] = [
+                EscalationResult(
+                    severity=SevEnum(info.severity),
+                    should_escalate=info.should_escalate,
+                    reason=info.reason,
+                    next_action=info.next_action,
+                    domain=info.domain,
+                    source="rule",
+                )
+                for info in all_escalations_for_call
+            ]
+
+            sources_for_gen: list[SourceReference] = []
+            seen: set[str] = set()
+            for c in all_citations_for_call:
+                if c.document_id and c.document_id not in seen:
+                    seen.add(c.document_id)
+                    sources_for_gen.append(
+                        SourceReference(
+                            document_id=c.document_id,
+                            source_filename=c.source_filename,
+                            page_number=c.page_number,
+                        )
+                    )
+
+            try:
+                summary = generate_summary(
+                    call_id=call_id,
+                    patient_context=orchestrator.call_context.patient_context if orchestrator is not None else (
+                        _build_placeholder_context(call_record)
+                    ),
+                    turns=turn_records,
+                    escalation_results=esc_results,
+                    sources=sources_for_gen,
+                )
+                insert_summary(
+                    SummaryRecord(
+                        summary_id=summary.summary_id,
+                        call_id=summary.call_id,
+                        created_at=summary.created_at,
+                        patient_summary=summary.patient_summary.content,
+                        procedure_summary=summary.procedure.content,
+                        symptoms_summary="\n".join(
+                            s.content for s in summary.symptoms
+                        ),
+                        decision_summary=summary.decision.content,
+                        sources_json=json.dumps(
+                            [
+                                [s.document_id, s.source_filename, s.page_number]
+                                for s in summary.sources
+                            ],
+                            ensure_ascii=False,
+                        ),
+                        next_steps=summary.next_steps.content,
+                    )
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to generate summary for call %s during manual end.", call_id
+                )
+
+    # 5. Update the SQLite call record as ended
+    _total = (
+        (_call_turn_index.get(call_id, 0) + 1) * 2
+        if _call_turn_index.get(call_id, 0) > 0
+        else 0
+    )
+    _any_escalated = any(
+        e.should_escalate for e in all_escalations_for_call
+    )
+    try:
+        update_call_ended(
+            call_id=call_id,
+            state=State.ENDED.value,
+            ended_at=datetime.datetime.now(datetime.timezone.utc),
+            total_turns=_total,
+            escalated=_any_escalated,
+        )
+        logger.info("Call %s manually ended — SQLite update persisted.", call_id)
+    except Exception:
+        logger.exception("Failed to update call-ended for call %s.", call_id)
+
+    # 6. End metrics collection (no-op if already ended)
+    try:
+        metrics_collector.end_call(call_id)
+    except ValueError:
+        # Already ended in metrics — safe to ignore
+        pass
+
+    # 7. Clean up transient per-call state
+    _call_turn_index.pop(call_id, None)
+    _call_escalations.pop(call_id, None)
+    _call_citations.pop(call_id, None)
+    _call_consecutive_yellows.pop(call_id, None)
+
+    # 8. Update SQLite metrics ended flag
+    try:
+        update_call_metrics_ended(call_id)
+    except Exception:
+        logger.warning(
+            "Failed to persist call-ended marker for %s",
+            call_id,
+            exc_info=True,
+        )
+
+    # 9. Remove the orchestrator from the store
+    await call_store.remove(call_id)
+
+    # 10. Read back the persisted summary to return in the response
+    persisted = get_summary_for_call(call_id)
+
+    if persisted is None:
+        # Return a minimal response — the call was ended but no summary
+        # could be generated (no turns recorded).
+        return EndCallResponse(
+            call_id=call_id,
+            state="ENDED",
+            summary_id="",
+            created_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            patient_summary="Llamada finalizada sin resumen.",
+            procedure_summary="No disponible.",
+            symptoms_summary="No hay síntomas registrados.",
+            decision_summary="No se realizó decisión de escalamiento.",
+            next_steps="Contactar al paciente para seguimiento.",
+            sources=[],
+        )
+
+    # Deserialise sources
+    sources: list[CitationResponse] = []
+    try:
+        raw = json.loads(persisted.sources_json)
+        if isinstance(raw, list):
+            for entry in raw:
+                if isinstance(entry, list) and len(entry) >= 2:
+                    sources.append(
+                        CitationResponse(
+                            chunk_id="",
+                            document_id=str(entry[0]) if entry[0] else "",
+                            source_filename=str(entry[1]) if entry[1] else "",
+                            page_number=int(entry[2]) if len(entry) > 2 and entry[2] else 1,
+                        )
+                    )
+    except (json.JSONDecodeError, TypeError, ValueError):
+        pass
+
+    logger.info("Call %s manually finalized with summary %s.", call_id, persisted.summary_id)
+
+    return EndCallResponse(
+        call_id=persisted.call_id,
+        state="ENDED",
+        summary_id=persisted.summary_id,
+        created_at=persisted.created_at.isoformat(),
+        patient_summary=persisted.patient_summary,
+        procedure_summary=persisted.procedure_summary,
+        symptoms_summary=persisted.symptoms_summary,
+        decision_summary=persisted.decision_summary,
+        next_steps=persisted.next_steps,
+        sources=sources,
+    )
+
+
+def _build_placeholder_context(call_record: CallRecord) -> "PatientContext":
+    """Build a minimal ``PatientContext`` from a persisted call record
+    when the orchestrator is no longer in memory.
+
+    Used by ``end_call`` when the call store entry is missing but the
+    call record exists and is not yet finalized.
+    """
+    from backend.conversation.context import PatientContext
+    from backend.data.models import Patient as DataPatient
+
+    placeholder = DataPatient(
+        paciente_id=call_record.paciente_id,
+        bundle_id="",
+        synthea_runtime="",
+        modulo_synthea="",
+        procedimiento=call_record.procedimiento,
+        fecha_cirugia=datetime.date.today(),
+        edad=0,
+        genero="",
+        comorbilidades=[],
+        complicacion_encounter=False,
+        nombre_completo=call_record.nombre_completo,
+        direccion="",
+        ciudad="",
+        departamento="",
+        documento_cc="",
+        eps=call_record.eps,
+        source_country="CO",
+        adapted_country="CO",
+        adaptation_fields=[],
+    )
+    return PatientContext(
+        patient=placeholder,
+        dia_postop=call_record.dia_postop,
+        procedimiento=call_record.procedimiento,
     )

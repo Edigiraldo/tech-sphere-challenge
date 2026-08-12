@@ -328,6 +328,19 @@ no reflejar adiciones, refactorizaciones o reorganizaciones posteriores.
 Los totales agregados arriba (1 107 rápidas + 27 lentas = 1 134 total)
 son el conteo autoritativo actual.
 
+- **Finalización manual de llamadas:** endpoint ``POST /calls/{call_id}/end`` que
+  finaliza una llamada activa: obtiene el orquestador, genera y persiste el resumen
+  estructurado desde el historial actual, marca la llamada como ENDED en SQLite,
+  cierra métricas después de registrar los turnos existentes, elimina la entrada del
+  store y el estado transitorio por llamada, y devuelve una respuesta que permite al
+  frontend renderizar el resumen directamente. Es idempotente (llamadas repetidas
+  devuelven el resumen existente con 200) y retorna 404 para llamadas inexistentes.
+  El frontend ``call.js`` llama a este endpoint y solo muestra completado/carga el
+  resumen tras una respuesta exitosa, manejando errores de red/API sin afirmar
+  falsamente la finalización. La finalización automática (``call_ended``) se preserva
+  sin generar resúmenes, métricas ni alertas duplicadas. 14 pruebas pasan (9 API + 5
+  contrato de integración frontend).
+
 ## En progreso
 
 - Formato de transporte de audio — la decisión D5 es de facto HTTP REST con WAV base64
