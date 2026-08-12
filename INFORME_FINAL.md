@@ -280,6 +280,16 @@ Y una vista frontend en `/metrics`.
 - Consultas RAG.
 - Costo estimado por llamada.
 
+### Ejemplo documentado de una llamada
+
+Como evidencia de demostración, una llamada observó 9 turnos, 6 014 tokens de
+entrada, 918 tokens de salida, 1 consulta RAG y 6 invocaciones al modelo. Las
+latencias observadas fueron: total P50 14 155,1 ms y P95 53 604,1 ms; TTS P50
+11 834,0 ms y P95 41 508,1 ms; STT P50 1 552,7 ms y P95 1 776,3 ms; LLM P50
+1 054,0 ms y P95 1 334,1 ms. Estos valores son evidencia de una sesión, no
+valores hardcodeados ni una garantía de rendimiento. No se reporta costo
+estimado porque no existe un valor validado para esta llamada.
+
 ## 10. Proceso de desarrollo con IA
 
 ### Herramientas utilizadas
