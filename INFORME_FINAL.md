@@ -78,11 +78,13 @@ Backend (FastAPI)
 3. STT (Groq Whisper) → transcribe a texto español
 4. Orquestador → consulta máquina de estados
 5. Decision → clasifica GREEN/YELLOW/RED
-6. Según clasificación:
-   - GREEN: respuesta determinista → siguiente pregunta
-   - Primer YELLOW: reconocimiento determinista → siguiente pregunta
-   - RED: mensaje urgente → ENDED (sin RAG ni LLM)
-   - Segundo YELLOW: escalamiento → CLOSING
+6. Según clasificación y aprobación secundaria:
+   - RED: mensaje urgente → ENDED (sin aprobación LLM)
+   - GREEN/YELLOW no-RED: aprobación LLM conservadora, sin degradar severidad
+   - Confirmación: respuesta determinista → siguiente pregunta
+   - Duda aprobada: RAG → LLM → respuesta con citas → siguiente pregunta
+   - Respuesta poco clara: aclaración y permanencia en la misma pregunta
+   - Dos resultados YELLOW consecutivos: escalamiento → CLOSING
    - Pregunta clínica en CLOSING: RAG → LLM → respuesta con citas
 7. TTS (Kokoro) → genera audio WAV
 8. Browser reproduce la respuesta

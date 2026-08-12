@@ -87,6 +87,13 @@ trabajo futuro.
 | `metrics/` | Observa latencia (P50/P95), consumo de tokens, invocaciones del modelo, consultas RAG, costo estimado. El módulo colector alimenta endpoints tipados de solo lectura ``GET /metrics/summary``, ``GET /metrics/calls`` y ``GET /metrics/calls/{call_id}`` más una vista frontal de métricas. El colector y la API de reporte son responsabilidades distintas. | Observador no bloqueante. Nunca modifica el comportamiento de la aplicación. |
 | `persistence/` | SQLite (llamadas, turnos, resúmenes, metadatos de documentos, alertas) y ChromaDB (chunks, embeddings, metadatos de fuente). | Solo los módulos propietarios escriben. `rag/` posee ChromaDB; `documents/`, `conversation/`, `summaries/`, `decision/` poseen sus tablas SQLite. |
 
+### Catálogo de interfaces HTTP
+
+La superficie REST se divide en routers de llamadas, RAG, documentos, resúmenes y
+métricas. El catálogo completo de métodos, rutas y propósitos está en `README.md` §
+Catálogo de rutas. Las páginas servidas son `/`, `/call`, `/admin`, `/summary`,
+`/metrics` y `/docs`; `/health` es el endpoint de disponibilidad.
+
 ## Flujos de datos
 
 ### Conversación de voz (por turno)

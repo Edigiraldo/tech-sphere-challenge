@@ -48,6 +48,39 @@ lectura tipado (``GET /metrics/summary``, ``GET /metrics/calls`` y
 ``GET /metrics/calls/{call_id}``) y una vista frontal de métricas. El colector
 y la API de reporte son módulos independientes.
 
+## Catálogo de rutas
+
+Referencia completa de las rutas HTTP y páginas servidas por la aplicación. La
+documentación interactiva también está disponible en `/docs`.
+
+### API REST
+
+| Método | Ruta | Propósito |
+| --- | --- | --- |
+| `GET` | `/health` | Verifica que el backend está disponible. |
+| `POST` | `/calls` | Crea una llamada y devuelve el saludo WAV base64. |
+| `POST` | `/calls/{call_id}/turn` | Recibe audio, ejecuta STT, orquestación, decisión, RAG/LLM y TTS. |
+| `POST` | `/rag/query` | Ejecuta una consulta RAG con citas trazables. |
+| `POST` | `/documents` | Carga e ingiere un documento. |
+| `GET` | `/documents` | Lista documentos, opcionalmente filtrados por estado. |
+| `DELETE` | `/documents/{document_id}` | Elimina un documento y purga sus chunks. |
+| `POST` | `/documents/reconcile` | Reconcilia el registro SQLite con ChromaDB. |
+| `GET` | `/calls/{call_id}/summary` | Devuelve el resumen persistido de una llamada. |
+| `GET` | `/metrics/summary` | Devuelve métricas agregadas y percentiles. |
+| `GET` | `/metrics/calls` | Lista métricas de llamadas finalizadas. |
+| `GET` | `/metrics/calls/{call_id}` | Devuelve métricas detalladas de una llamada. |
+
+### Páginas del frontend
+
+| Ruta | Propósito |
+| --- | --- |
+| `/` | Selección de paciente e inicio de llamada. |
+| `/call` | Interfaz de llamada, micrófono, transcripciones, citas y escalamiento. |
+| `/admin` | Carga, listado y eliminación de documentos. |
+| `/summary?call_id=<id>` | Vista independiente del resumen. |
+| `/metrics` | Vista de métricas. |
+| `/docs` | Swagger UI de FastAPI. |
+
 **Pendiente (futuro):**
 - Transporte WebSocket/streaming para conversación de voz en tiempo real.
 

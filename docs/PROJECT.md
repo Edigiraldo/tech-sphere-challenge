@@ -11,7 +11,8 @@ El producto debe soportar:
   ``POST /calls/{call_id}/turn``) con audio WAV codificado en base64 y captura de
   micrófono nativa del navegador (MediaRecorder). El transporte WebSocket/streaming
   queda como trabajo futuro.
-- Generación aumentada por recuperación (RAG) clínica con citas trazables de fuentes.
+- Generación aumentada por recuperación (RAG) clínica con citas trazables de fuentes
+  mediante ``POST /rag/query``.
 - Carga, listado, seguimiento de estado de procesamiento y eliminación de documentos
   en vivo (incluyendo purgado de chunks indexados) mediante una API REST
   (``POST/GET/DELETE /documents``) y una consola de administración gráfica en
@@ -38,7 +39,8 @@ de voz real (MediaRecorder + reproducción WAV), una consola de administración 
 ``/admin`` para la gestión del ciclo de vida de documentos y una vista de métricas.
 El backend del ciclo de vida de documentos (``POST/GET/DELETE /documents``) es un
 módulo separado de la UI de la consola de administración.
-Consulta `docs/ARCHITECTURE.md` para el catálogo completo de módulos, flujos de datos,
+Consulta `README.md` § Catálogo de rutas para la referencia completa de endpoints y
+páginas. Consulta `docs/ARCHITECTURE.md` para el catálogo completo de módulos, flujos de datos,
 límites de persistencia, adaptadores permitidos, plan de implementación por fases y
 decisiones abiertas.
 
