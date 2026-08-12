@@ -31,6 +31,7 @@ from httpx import ASGITransport, AsyncClient
 
 from backend.api.call_store import call_store as global_store
 from backend.conversation.state import State
+from backend.persistence.sqlite import _get_conn
 from backend.voice.models import TranscriptionResult
 from backend.voice.tts.protocol import TTSResult
 from backend.main import app
@@ -1826,3 +1827,263 @@ class TestShouldEscalateBannerContract:
             "Second consecutive YELLOW should_escalate=True"
         )
         assert esc2["severity"] == "YELLOW"
+
+
+# ---------------------------------------------------------------------------
+# Manual end-call endpoint — frontend contract
+# ---------------------------------------------------------------------------
+
+
+class TestEndCallFrontendContract:
+    """Verify POST /calls/{call_id}/end returns the shape the frontend expects.
+
+    call.js ~line 643-715 calls this endpoint to manually end a call, and
+    renderInlineSummaryFromEndResponse expects specific fields.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _persistence_setup(self, tmp_path):
+        """Initialise SQLite so persistence and retrieval work."""
+        from backend.persistence.sqlite import _reset_sqlite, init_sqlite
+        _reset_sqlite()
+        db_path = tmp_path / "test_frontend_endcall.db"
+        init_sqlite(db_path)
+        yield
+        _reset_sqlite()
+
+    @pytest.mark.asyncio
+    async def test_end_call_response_has_all_frontend_fields(self):
+        """EndCallResponse must include every field that call.js's
+        renderInlineSummaryFromEndResponse reads."""
+        transport = ASGITransport(app=app)
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            resp = await client.post(
+                "/calls",
+                json={
+                    "patient_id": "P001",
+                    "dia_postop": 3,
+                    "procedimiento": "Apendicectomía laparoscópica",
+                    "nombre_completo": "Paciente 001",
+                    "eps": "EPS",
+                },
+            )
+            assert resp.status_code == 201
+            call_id = resp.json()["call_id"]
+
+            # Process one turn so there is recorded conversation
+            await client.post(
+                f"/calls/{call_id}/turn",
+                json={"audio_base64": _MOCK_AUDIO_B64},
+            )
+
+            # Manually end the call
+            end_resp = await client.post(f"/calls/{call_id}/end")
+
+        assert end_resp.status_code == 200
+        data = end_resp.json()
+
+        # Fields consumed by call.js's renderInlineSummaryFromEndResponse:
+        # data.call_id, data.patient_summary, data.procedure_summary,
+        # data.decision_summary, data.next_steps, data.sources
+        assert "call_id" in data
+        assert data["call_id"] == call_id
+
+        assert "patient_summary" in data
+        assert isinstance(data["patient_summary"], str)
+        assert len(data["patient_summary"]) > 0
+
+        assert "procedure_summary" in data
+        assert isinstance(data["procedure_summary"], str)
+        assert len(data["procedure_summary"]) > 0
+
+        assert "decision_summary" in data
+        assert isinstance(data["decision_summary"], str)
+        assert len(data["decision_summary"]) > 0
+
+        assert "next_steps" in data
+        assert isinstance(data["next_steps"], str)
+        assert len(data["next_steps"]) > 0
+
+        assert "sources" in data
+        assert isinstance(data["sources"], list)
+
+        # New summary_generated field
+        assert "summary_generated" in data
+        assert isinstance(data["summary_generated"], bool)
+        assert data["summary_generated"] is True
+
+        # State is always ENDED
+        assert data["state"] == "ENDED"
+
+    @pytest.mark.asyncio
+    async def test_end_call_sources_always_list(self):
+        """The sources field in EndCallResponse is always a list (even empty)
+        so call.js can safely iterate it."""
+        transport = ASGITransport(app=app)
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            resp = await client.post(
+                "/calls",
+                json={
+                    "patient_id": "P002",
+                    "dia_postop": 5,
+                    "procedimiento": "Colecistectomía",
+                    "nombre_completo": "Paciente 002",
+                    "eps": "EPS",
+                },
+            )
+            call_id = resp.json()["call_id"]
+            await client.post(
+                f"/calls/{call_id}/turn",
+                json={"audio_base64": _MOCK_AUDIO_B64},
+            )
+
+            end_resp = await client.post(f"/calls/{call_id}/end")
+
+        assert end_resp.status_code == 200
+        data = end_resp.json()
+        assert isinstance(data["sources"], list)
+
+    @pytest.mark.asyncio
+    async def test_end_call_summary_generated_false_handled_by_frontend(self):
+        """When summary_generated is False, the frontend's
+        renderInlineSummaryFromEndResponse should still not crash —
+        summary fields contain descriptive fallback text."""
+        transport = ASGITransport(app=app)
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            resp = await client.post(
+                "/calls",
+                json={
+                    "patient_id": "P003",
+                    "dia_postop": 2,
+                    "procedimiento": "Hernioplastia inguinal",
+                    "nombre_completo": "Paciente 003",
+                    "eps": "EPS",
+                },
+            )
+            call_id = resp.json()["call_id"]
+
+            # Remove orchestrator (simulate missing orchestrator)
+            await global_store.remove(call_id)
+
+            # End call without any turns recorded
+            end_resp = await client.post(f"/calls/{call_id}/end")
+
+        assert end_resp.status_code == 200
+        data = end_resp.json()
+        assert data["summary_generated"] is False
+
+        # Even with summary_generated=False, the required fields are present
+        # and contain non-empty strings (so the frontend doesn't render empty divs)
+        assert len(data["patient_summary"]) > 0
+        assert len(data["procedure_summary"]) > 0
+        assert len(data["decision_summary"]) > 0
+        assert len(data["next_steps"]) > 0
+        assert isinstance(data["sources"], list)
+
+        # summary_id is empty when no summary was generated
+        assert data["summary_id"] == ""
+
+    @pytest.mark.asyncio
+    async def test_end_call_idempotent_returns_200_with_summary(self):
+        """When /end is called on an already-finalized call that has a
+        persisted summary, the backend returns 200 OK with the full
+        EndCallResponse so the frontend can render the summary inline."""
+        transport = ASGITransport(app=app)
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            resp = await client.post(
+                "/calls",
+                json={
+                    "patient_id": "P004",
+                    "dia_postop": 4,
+                    "procedimiento": "Cesárea",
+                    "nombre_completo": "Paciente 004",
+                    "eps": "EPS",
+                },
+            )
+            call_id = resp.json()["call_id"]
+
+            # End the call normally first
+            await client.post(
+                f"/calls/{call_id}/turn",
+                json={"audio_base64": _MOCK_AUDIO_B64},
+            )
+            first_end = await client.post(f"/calls/{call_id}/end")
+            assert first_end.status_code == 200
+
+            # Call it again — should return 200 with same summary (idempotent)
+            second_end = await client.post(f"/calls/{call_id}/end")
+            assert second_end.status_code == 200
+            data = second_end.json()
+            # The frontend reads fields from the response; all should be present
+            assert "call_id" in data
+            assert "summary_generated" in data
+            assert data["summary_generated"] is True
+            assert "patient_summary" in data
+            assert "decision_summary" in data
+
+    @pytest.mark.asyncio
+    async def test_end_call_409_has_only_detail_no_summary_fields(self):
+        """When /end returns 409 (call already ended but no summary
+        exists — data inconsistency), the response body contains only
+        a ``detail`` field, NOT summary fields like ``patient_summary``.
+
+        This verifies the contract that call.js's 409 handler can safely
+        display the hard-coded Spanish inconsistency error without
+        attempting to render summary fields that are never present.
+        """
+        transport = ASGITransport(app=app)
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            # 1. Create and end a call normally (produces a summary)
+            resp = await client.post(
+                "/calls",
+                json={
+                    "patient_id": "P005",
+                    "dia_postop": 5,
+                    "procedimiento": "Cesárea",
+                    "nombre_completo": "Paciente 005",
+                    "eps": "EPS",
+                },
+            )
+            call_id = resp.json()["call_id"]
+            await client.post(
+                f"/calls/{call_id}/turn",
+                json={"audio_base64": _MOCK_AUDIO_B64},
+            )
+            first_end = await client.post(f"/calls/{call_id}/end")
+            assert first_end.status_code == 200
+
+            # 2. Delete the summary from SQLite to trigger the 409 path
+            conn = _get_conn()
+            try:
+                conn.execute(
+                    "DELETE FROM summaries WHERE call_id = ?", (call_id,)
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+            # 3. Call /end again — should return 409 (ended but no summary)
+            second_end = await client.post(f"/calls/{call_id}/end")
+            assert second_end.status_code == 409
+
+            data = second_end.json()
+            # 409 response MUST NOT contain summary fields
+            assert "detail" in data
+            assert isinstance(data["detail"], str)
+            assert len(data["detail"]) > 0
+            assert "patient_summary" not in data
+            assert "procedure_summary" not in data
+            assert "decision_summary" not in data
+            assert "next_steps" not in data
+            assert "call_id" not in data
+            assert "summary_generated" not in data

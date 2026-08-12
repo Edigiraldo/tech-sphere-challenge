@@ -663,30 +663,34 @@ document.addEventListener("DOMContentLoaded", () => {
                 } catch (_) { /* use default */ }
 
                 if (response.status === 409) {
-                    // Already finalized — that's fine, treat as success
-                    // and render the summary from the 409 response body.
-                    try {
-                        const text = await response.clone().text();
-                        const data = JSON.parse(text || "{}");
-                        renderInlineSummaryFromEndResponse(data);
-                        stopTimer();
-                        callEnded = true;
-                        setCallState("ENDED");
-                        addMessage("system", "Llamada finalizada.");
-                        setTranscript("Llamada completada.");
-                        showCompleted(true);
-                        return;
-                    } catch (_) { /* fall through to error */ }
+                    // 409: call already ended but no summary exists
+                    // (data inconsistency).  The response body contains
+                    // only a `detail` field — never summary fields.
+                    // Show a clear Spanish error without attempting
+                    // summary rendering.
+                    stopTimer();
+                    callEnded = true;
+                    setCallState("ENDED");
+                    addMessage("system", "Llamada finalizada.");
+                    setTranscript("Llamada completada.");
+                    showError(
+                        "La llamada ya fue finalizada pero no se encontr\u00f3 "
+                        + "el resumen. Consulte el historial o contacte al "
+                        + "administrador."
+                    );
+                    return;
                 }
 
-                // For 404, the call no longer exists — treat as ended
+                // For 404, the call no longer exists — treat as ended.
+                // Skip the summary fetch (showCompleted(true)) to avoid
+                // a futile GET /calls/{id}/summary request.
                 if (response.status === 404) {
                     stopTimer();
                     callEnded = true;
                     setCallState("ENDED");
                     addMessage("system", "Llamada finalizada.");
                     setTranscript("Llamada completada.");
-                    showCompleted(false);
+                    showCompleted(true);
                     return;
                 }
 

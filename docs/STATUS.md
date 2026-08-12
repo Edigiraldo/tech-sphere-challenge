@@ -329,17 +329,30 @@ Los totales agregados arriba (1 107 rápidas + 27 lentas = 1 134 total)
 son el conteo autoritativo actual.
 
 - **Finalización manual de llamadas:** endpoint ``POST /calls/{call_id}/end`` que
-  finaliza una llamada activa: obtiene el orquestador, genera y persiste el resumen
-  estructurado desde el historial actual, marca la llamada como ENDED en SQLite,
-  cierra métricas después de registrar los turnos existentes, elimina la entrada del
-  store y el estado transitorio por llamada, y devuelve una respuesta que permite al
-  frontend renderizar el resumen directamente. Es idempotente (llamadas repetidas
-  devuelven el resumen existente con 200) y retorna 404 para llamadas inexistentes.
-  El frontend ``call.js`` llama a este endpoint y solo muestra completado/carga el
-  resumen tras una respuesta exitosa, manejando errores de red/API sin afirmar
-  falsamente la finalización. La finalización automática (``call_ended``) se preserva
-  sin generar resúmenes, métricas ni alertas duplicadas. 14 pruebas pasan (9 API + 5
-  contrato de integración frontend).
+  finaliza una llamada activa manualmente: obtiene el orquestador (o los turnos
+  persistidos si el orquestador ya no está en memoria), genera y persiste el
+  resumen estructurado, persiste las alertas de escalamiento conclusivas pendientes
+  (con ``INSERT OR IGNORE`` para evitar duplicados), marca la llamada como ENDED
+  en SQLite, cierra métricas, elimina la entrada del store y el estado transitorio
+  por llamada, y devuelve una respuesta que permite al frontend renderizar el
+  resumen directamente. Es idempotente (llamadas repetidas devuelven 200 con el
+  resumen existente) y retorna 404 para llamadas inexistentes. El campo
+  ``summary_generated`` indica si el resumen fue generado exitosamente; cuando es
+  ``False`` los campos del resumen contienen texto descriptivo de la situación.
+  El frontend ``call.js`` llama a este endpoint y solo muestra completado/carga
+  el resumen tras una respuesta exitosa, manejando errores de red/API sin afirmar
+  falsamente la finalización.
+
+  **Dos caminos hacia ENDED:** La finalización automática (cuando el orquestador
+  establece ``call_ended=True`` durante el flujo normal de la conversación) también
+  genera resumen, persiste alertas, cierra métricas y limpia el estado transitorio —
+  exactamente las mismas operaciones que el endpoint manual. El endpoint manual es
+  una alternativa para forzar el cierre cuando el llamante no completa el flujo
+  normal (por ejemplo, si el usuario cuelga antes de que el orquestador alcance
+  ENDED). Ambos caminos comparten la misma lógica de persistencia de resúmenes
+  y métricas, y ninguno duplica datos gracias al diseño idempotente de las
+  operaciones de escritura. 18 pruebas pasan (13 API en ``test_calls_api.py`` + 5
+  contrato de integración frontend en ``test_frontend_integration.py``).
 
 ## En progreso
 
