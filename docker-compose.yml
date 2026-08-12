@@ -1,0 +1,27 @@
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DOCUMENTS_DB_PATH: /app/data/documents.db
+      RAG_CHROMA_DIR: /app/chroma_data
+      DOCUMENTS_UPLOAD_DIR: /app/uploads
+    ports:
+      - "${APP_PORT:-8000}:8000"
+    volumes:
+      - sqlite_data:/app/data
+      - chroma_data:/app/chroma_data
+      - uploads_data:/app/uploads
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 120s
+      retries: 3
+
+volumes:
+  sqlite_data:
+  chroma_data:
+  uploads_data:

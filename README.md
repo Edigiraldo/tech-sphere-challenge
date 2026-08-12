@@ -91,11 +91,57 @@ documentación interactiva también está disponible en `/docs`.
 
 ## Requisitos
 
-- Python 3.11 o superior
-- pip (incluido con Python)
-- Git
-- macOS 12+ o Windows 10/11
-- Una clave de API de Groq Cloud para Llama 3.3 y Whisper STT
+La ruta principal requiere Docker Desktop (Windows/macOS) o Docker Engine con Docker
+Compose (Linux), además de Git y una clave de API de Groq Cloud para Llama 3.3 y Whisper
+STT. Python 3.11+ y pip son una alternativa para ejecución local, desarrollo y pruebas.
+
+## Instalación y ejecución con Docker (ruta principal)
+
+Docker Compose es la ruta recomendada para ejecutar la aplicación. Requiere Docker
+Desktop (o Docker Engine con Compose) y una clave de Groq. Crea `.env` en la raíz sin
+versionarlo:
+
+```ini
+GROQ_API_KEY=tu-clave-de-groq
+```
+
+Construye y levanta el servicio:
+
+```bash
+docker compose up --build -d
+```
+
+La aplicación queda disponible en `http://127.0.0.1:8000`. Para usar otro puerto del
+host, define `APP_PORT` al ejecutar Compose, por ejemplo `APP_PORT=8080 docker compose up
+--build -d` (en PowerShell: `$env:APP_PORT=8080; docker compose up --build -d`).
+Comprueba el estado con `curl http://127.0.0.1:8000/health` o visita `/docs`.
+
+SQLite, ChromaDB y los archivos cargados usan volúmenes nombrados (`sqlite_data`,
+`chroma_data`, `uploads_data`) y sobreviven a la recreación del contenedor. Detén el
+servicio con `docker compose down`; no uses `--volumes` si quieres conservarlos.
+
+El modelo de embeddings BGE-M3 se descarga desde su repositorio la primera vez que una
+operación RAG lo necesita. El primer arranque o la primera ingestión puede permanecer en
+inicialización mientras se descarga y carga el modelo; no se debe asumir un tiempo fijo.
+La caché del modelo queda en la caché de Hugging Face del contenedor y puede volver a
+descargarse si se elimina el contenedor o no se configura una caché persistente.
+
+### Solución de problemas Docker
+
+- **Daemon no disponible:** inicia Docker Desktop o el servicio Docker Engine y verifica
+  que `docker info` funcione antes de ejecutar Compose.
+- **Puerto ocupado:** cambia `APP_PORT` por un puerto libre y vuelve a ejecutar Compose.
+- **Primera comprobación de salud o inicialización del modelo:** espera a que termine la
+  descarga/carga inicial de BGE-M3 y consulta `docker compose logs -f app`; el healthcheck
+  permite hasta 120 segundos de inicio antes de marcar el contenedor como no saludable.
+- **Eliminar datos persistentes:** `docker compose down --volumes` elimina SQLite,
+  ChromaDB y los archivos cargados. Úsalo solo si quieres empezar de cero; `docker compose
+  down` conserva esos volúmenes.
+
+### Alternativa local con Python
+
+La ejecución local sigue disponible para desarrollo y pruebas. Requiere Python 3.11+,
+pip y Git. Todos los comandos deben ejecutarse desde la raíz del repositorio.
 
 ## Instalación desde cero
 
@@ -313,6 +359,10 @@ primer uso.
 
 ```text
 .
+├── Dockerfile              Imagen reproducible de la aplicación
+├── docker-compose.yml      Servicio, volúmenes y healthcheck
+├── .dockerignore           Archivos excluidos del contexto de imagen
+├── .env.example             Plantilla de variables de entorno
 ├── backend/               Aplicación Python (FastAPI)
 │   ├── __init__.py
 │   ├── main.py            Punto de entrada, incluye servido de archivos estáticos

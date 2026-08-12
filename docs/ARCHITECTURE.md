@@ -258,6 +258,17 @@ históricos persisten en SQLite. Las llamadas activas (no finalizadas) no sobrev
 al reinicio — sus datos de turnos y métricas no se reconstruyen porque la bandera
 ``ended`` nunca se marcó como ``1``.
 
+### Despliegue Docker
+
+La ruta principal de ejecución es un único servicio FastAPI en Docker Compose. La imagen
+ejecuta `uvicorn backend.main:app --host 0.0.0.0 --port 8000` sin recarga automática.
+Compose publica el puerto interno 8000 en `${APP_PORT:-8000}` y carga secretos mediante
+el archivo `.env`, que nunca se copia a la imagen. SQLite, ChromaDB y los archivos de
+documentos usan volúmenes nombrados independientes para sobrevivir a reinicios y
+recreaciones del contenedor. La ejecución local con Python permanece como alternativa
+de desarrollo. BGE-M3 se descarga y carga bajo demanda en la primera operación RAG; su
+caché depende del entorno del contenedor y puede requerir otra descarga si no se conserva.
+
 ### Reglas clave
 
 - Eliminar un documento debe eliminar todos los chunks de ChromaDB con el `document_id`

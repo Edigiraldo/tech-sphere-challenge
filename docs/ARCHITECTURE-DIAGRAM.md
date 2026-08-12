@@ -222,21 +222,29 @@ sequenceDiagram
 
 ## Forma de despliegue
 
-La aplicación actual es un monolito modular FastAPI único. La distribución Docker está
-prevista para proporcionar una imagen preconstruida que contenga la aplicación, las
-dependencias, la caché de BGE-M3 y el corpus pre-indexado. Los secretos de ejecución
-como `GROQ_API_KEY` se inyectan mediante el entorno y nunca se incluyen en la imagen.
+La aplicación se distribuye como un monolito modular FastAPI en una imagen Docker. Docker
+Desktop o Docker Engine con Compose ejecuta Uvicorn en `0.0.0.0:8000`, sin reload, y
+permite configurar el puerto del host mediante `APP_PORT`. Los secretos de ejecución como
+`GROQ_API_KEY` se inyectan desde `.env` y nunca se incluyen en la imagen. BGE-M3 se
+descarga y carga bajo demanda en la primera operación RAG; su caché puede perderse al
+eliminar el contenedor.
 
 ```mermaid
 flowchart LR
     Judge[Máquina del jurado]
-    Image[Imagen de aplicación preconstruida]
-    Volume[(Volumen persistente de ejecución)]
+    Image[Imagen de aplicación]
+    Compose[Docker Compose]
+    SQLite[(Volumen sqlite_data)]
+    Chroma[(Volumen chroma_data)]
+    Uploads[(Volumen uploads_data)]
     App[FastAPI + frontal]
     Groq[Groq Cloud]
 
-    Judge -->|docker compose pull/up| Image
+    Judge -->|docker compose up --build| Compose
+    Compose --> Image
     Image --> App
-    App <--> Volume
+    App <--> SQLite
+    App <--> Chroma
+    App <--> Uploads
     App -->|GROQ_API_KEY| Groq
 ```

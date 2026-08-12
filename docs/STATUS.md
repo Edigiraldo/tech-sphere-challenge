@@ -5,6 +5,12 @@
 Las ocho fases del plan de implementación (`docs/ARCHITECTURE.md` § Plan de
 implementación por fases) están completas. La aplicación implementa:
 
+La distribución reproducible principal está disponible con Docker Desktop o Docker Engine
+con Compose: la imagen ejecuta Uvicorn sin reload en `0.0.0.0`, permite configurar
+`APP_PORT`, carga secretos desde `.env` y conserva SQLite, ChromaDB y cargas mediante
+volúmenes nombrados. BGE-M3 se descarga/carga bajo demanda en la primera operación RAG.
+La ejecución local con Python continúa documentada como alternativa.
+
 **Completamente integrado:**
 - Persistencia (SQLite + ChromaDB, esquemas tipados para llamadas, turnos, resúmenes,
   alertas, documentos).
