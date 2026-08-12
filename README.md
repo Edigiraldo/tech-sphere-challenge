@@ -430,7 +430,7 @@ para coordinar el desarrollo con el pipeline planificador/codificador/auditor.
 
 Video funcional de demostración para el jurado:
 
-https://drive.google.com/file/d/10T2mC5O_yOeEs7ysnRf4_74Dv_dqYsAH/view?usp=drive_link
+https://drive.google.com/file/d/1UiuMNFNNgFy0sjcJlHN4bq9z33tRZg4d/view?usp=drive_link
 
 El enlace debe mantenerse con permisos de visualización para el jurado.
 
