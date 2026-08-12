@@ -425,12 +425,42 @@ La aplicación expone:
   ``GET /metrics/calls`` y ``GET /metrics/calls/{call_id}``) y una
   vista frontal de métricas. El colector de métricas (``InMemoryMetricsCollector``)
   es un módulo independiente del endpoint de reporte.
+
 - Un endpoint de resumen de solo lectura (``GET /calls/{call_id}/summary``) que
   devuelve el resumen estructurado generado y persistido al finalizar cada
   llamada, con datos del paciente, procedimiento, síntomas, decisión de
   escalamiento, fuentes citadas y próximos pasos. Una página independiente
   ``/summary?call_id=...`` y una sección en línea al finalizar la llamada en
   ``/call`` permiten consultar el resumen de manera trazable.
+
+### Ejemplo de métricas observadas
+
+La siguiente captura corresponde a una llamada real de demostración y documenta
+la forma de reportar las métricas del reto. No es un valor hardcodeado ni una
+línea base de rendimiento; los valores cambian según el proveedor, el hardware y
+la duración de la llamada. No se reporta costo estimado porque no existe un valor
+validado para esta sesión.
+
+| Métrica | Valor observado |
+| --- | ---: |
+| Llamadas | 1 |
+| Turnos totales | 9 |
+| Tokens de entrada | 6 014 |
+| Tokens de salida | 918 |
+| Consultas RAG | 1 |
+| Llamadas al modelo | 6 |
+| Latencia P50 | 14 155,1 ms |
+| Latencia P95 | 53 604,1 ms |
+| TTS P50 | 11 834,0 ms |
+| TTS P95 | 41 508,1 ms |
+| STT P50 | 1 552,7 ms |
+| STT P95 | 1 776,3 ms |
+| LLM P50 | 1 054,0 ms |
+| LLM P95 | 1 334,1 ms |
+
+La evidencia se consulta desde `/metrics/summary`, `/metrics/calls` y
+`/metrics/calls/{call_id}`. La vista `/metrics` presenta estos mismos campos
+cuando están disponibles en el colector.
 
 El flujo esperado es:
 
