@@ -285,6 +285,25 @@ fases están documentados en `docs/ARCHITECTURE.md`.
   API RAG, y todas las pruebas existentes de conversación y documentos pasan con las
   nuevas capas de seguridad.
 
+- **Refuerzo anti-inyección centralizado:** ``backend/llm/injection.py`` —
+  módulo único de detección de inyección de prompts con normalización Unicode/zero-width,
+  límite de longitud de entrada (2000 caracteres), 8 categorías expandidas de patrones
+  (role_switching, system_extraction, tool_execution, role_tags, delimiter_attack,
+  encoding_bypass, exfiltration, prompt_injection_keywords) en español e inglés,
+  escaneo conservador de salida del LLM (detección de marcadores de inyección
+  estructural en el texto producido por el modelo), y escaneo de densidad en documentos
+  ingeridos (advertencias sin rechazo de documentos clínicos legítimos). La lógica de
+  detección duplicada en ``adapter.py`` y ``approval.py`` ha sido eliminada en favor
+  del módulo centralizado. Se agregaron verificaciones de límite de entrada en
+  ``backend/api/calls.py`` (después de STT, antes del orquestador), ``backend/api/rag.py``
+  (endpoint POST /rag/query) y ``backend/conversation/orchestrator.py``
+  (``process_patient_message``). Las entradas bloqueadas permanecen en el estado actual
+  sin avanzar la conversación. Los prompts del sistema ahora etiquetan explícitamente
+  las fuentes RAG y las entradas del paciente como contenido externo no verificado.
+  Las vistas previas en logs usan ``safe_log_preview()`` para preservar privacidad.
+  El escaneo de densidad de documentos durante la ingestión produce advertencias
+  sin rechazar documentos clínicos legítimos. 76 pruebas de inyección pasan.
+
 - Auditoría de dependencias: ``openpyxl>=3.0.0``, ``numpy>=1.24.0`` y ``pydantic>=2.0.0``
   declaradas como dependencias base explícitas en ``pyproject.toml``; ``numpy`` eliminado
   del extra ``voice``; ``kokoro>=0.7.0`` copiado al extra ``dev``.
@@ -318,14 +337,14 @@ fases están documentados en `docs/ARCHITECTURE.md`.
   enfocadas en el orquestador cubren apendicectomía, movilidad, RED dentro de duda,
   RED con forma de pregunta, fallo de LLM e intención ambigua.
 
-Totales de pruebas: 1 228 pruebas rápidas (pytest), 26 pruebas lentas (`pytest -m slow`),
-1 254 pruebas en total. 12 escenarios de validación live secuencial (puerto alterno 18001)
+Totales de pruebas: 1 304 pruebas rápidas (pytest), 26 pruebas lentas (`pytest -m slow`),
+1 330 pruebas en total. 12 escenarios de validación live secuencial (puerto alterno 18001)
 en ``tests/live_ten_call_validation.py``.
 
 Los conteos por módulo repartidos en esta sección «Completado» son
 instantáneas históricas del momento en que se completó cada módulo y pueden
 no reflejar adiciones, refactorizaciones o reorganizaciones posteriores.
-Los totales agregados arriba (1 228 rápidas + 26 lentas = 1 254 total)
+Los totales agregados arriba (1 304 rápidas + 26 lentas = 1 330 total)
 son el conteo autoritativo actual.
 
 - **Finalización manual de llamadas:** endpoint ``POST /calls/{call_id}/end`` que

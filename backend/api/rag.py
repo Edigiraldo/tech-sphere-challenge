@@ -17,6 +17,10 @@ from pydantic import BaseModel, Field
 
 from backend.llm.adapter import generate_rag_answer, RagCitation as LlmCitation
 from backend.llm.config import LlmConfig
+from backend.llm.injection import (
+    detect_input_injection,
+    safe_log_preview,
+)
 from backend.rag.config import RagConfig
 from backend.rag.retrieval import retrieve
 
@@ -145,7 +149,28 @@ async def rag_query(body: RagQueryRequest) -> RagQueryResponse:
     doses not grounded in a retrieved source.
     """
     query = body.query.strip()
-    logger.info("RAG query received: %r", query[:120])
+    logger.info("RAG query received: %r", safe_log_preview(query))
+
+    # --- Injection boundary check ---
+    injection_check = detect_input_injection(query)
+    if injection_check.blocked:
+        logger.warning(
+            "Injection blocked at RAG API boundary: categories=%s, "
+            "preview=%r",
+            injection_check.categories,
+            safe_log_preview(query),
+        )
+        return RagQueryResponse(
+            query=query,
+            answer=(
+                "No puedo procesar esta consulta. Por favor, "
+                "reformule su pregunta o comuníquese con su médico "
+                "tratante para recibir orientación."
+            ),
+            citations=[],
+            insufficient_knowledge=True,
+            model="none (injection blocked)",
+        )
 
     # 1. Retrieve (single call — result used for both sufficiency and context)
     rag_config = _get_rag_config()

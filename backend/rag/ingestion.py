@@ -1,6 +1,9 @@
 """Document ingestion pipeline: extract → chunk → embed → store.
 
 Orchestrates the full ingestion workflow for a single document.
+Includes density scanning of document text for injection-like patterns
+(via ``backend.llm.injection.scan_document_density``) — density warnings
+are logged but never reject legitimate clinical documents.
 """
 
 from __future__ import annotations
@@ -9,6 +12,7 @@ import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
+from backend.llm.injection import scan_document_density
 from backend.persistence.chroma import ChromaStore
 from backend.rag.chunking import Chunk, chunk_pages
 from backend.rag.config import RagConfig
@@ -59,6 +63,19 @@ def ingest_document(
     if not pages:
         logger.warning("No text extracted from %r", source_filename)
         return 0
+
+    # --- Density scan (warning only — never reject) ---
+    all_text = "\n".join(str(p["text"]) for p in pages)
+    density_result = scan_document_density(all_text, filename=source_filename)
+    if density_result.warning:
+        logger.warning(
+            "Document %r density warning: %d/%d lines matched (%.2f%%). "
+            "Document ingestion proceeds normally — this is NOT a rejection.",
+            source_filename,
+            density_result.match_count,
+            density_result.total_lines,
+            density_result.ratio * 100,
+        )
 
     # 2. Chunk
     chunks = list(chunk_pages(pages, document_id, source_filename, config))
