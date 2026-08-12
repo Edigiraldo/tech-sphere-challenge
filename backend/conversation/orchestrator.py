@@ -73,6 +73,10 @@ from backend.llm.approval import (
     _build_doubt_rag_query,
 )
 from backend.llm.config import LlmConfig
+from backend.llm.injection import (
+    detect_input_injection,
+    safe_log_preview,
+)
 from backend.rag.config import RagConfig
 from backend.rag.retrieval import RetrievalResult, retrieve
 
@@ -353,6 +357,31 @@ class ConversationOrchestrator:
             raise ValueError("Patient message must be non-empty")
 
         self._record_patient(stripped)
+
+        # --- Injection boundary check ---
+        # Blocked injection inputs must NOT advance conversation state.
+        # The patient message is recorded in history for audit purposes,
+        # but the orchestrator stays in the current state and returns a
+        # safe fallback response.  No RAG/LLM/classifier calls happen
+        # for blocked inputs.
+        injection_check = detect_input_injection(stripped)
+        if injection_check.blocked:
+            logger.warning(
+                "Injection blocked in orchestrator: categories=%s, "
+                "preview=%r",
+                injection_check.categories,
+                safe_log_preview(stripped),
+            )
+            safe_msg = (
+                "No puedo procesar esa información. Por favor, responda "
+                "únicamente a la pregunta que le hice sobre su "
+                "recuperación."
+            )
+            self._record_agent(safe_msg)
+            return self._make_turn(
+                safe_msg,
+                requires_response=True,
+            )
 
         current_state = self._call_context.state
 

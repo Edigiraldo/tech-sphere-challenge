@@ -43,6 +43,7 @@ from backend.api.metrics import metrics_collector
 from backend.conversation.context import PatientContext
 from backend.conversation.messages import MessageRole
 from backend.conversation.orchestrator import (
+    FOLLOW_UP_QUESTIONS,
     ConversationOrchestrator,
     OrchestratorTurn,
 )
@@ -52,6 +53,10 @@ from backend.data.loader import load_patients
 from backend.data.models import Patient as DataPatient
 from backend.decision import classify, EscalationResult, Severity
 from backend.llm.config import LlmConfig
+from backend.llm.injection import (
+    detect_input_injection,
+    safe_log_preview,
+)
 from backend.metrics.models import TurnMetrics
 from backend.persistence.sqlite import (
     CallRecord,
@@ -1035,9 +1040,54 @@ async def process_turn(
     logger.info(
         "Call %s turn: patient=%r (state=%s)",
         call_id,
-        patient_text[:120],
+        safe_log_preview(patient_text),
         orchestrator.state.name,
     )
+
+    # --- Injection boundary check (after STT, before orchestrator) ---
+    # Blocked injection inputs must NOT advance conversation state.
+    # Return a safe fallback response without calling the orchestrator,
+    # RAG, or LLM.  The current_state remains unchanged so the patient
+    # can retry with a legitimate response on the next turn.
+    injection_check = detect_input_injection(patient_text)
+    if injection_check.blocked:
+        logger.warning(
+            "Injection blocked at API boundary for call %s: categories=%s, "
+            "preview=%r",
+            call_id,
+            injection_check.categories,
+            safe_log_preview(patient_text),
+        )
+        # Synthesize a safe fallback response
+        safe_msg = (
+            "No puedo procesar esa información. Por favor, responda "
+            "únicamente a la pregunta que le hice sobre su recuperación."
+        )
+        wav_bytes = _synthesize(safe_msg)
+        audio_b64 = base64.b64encode(wav_bytes).decode("ascii")
+
+        # Preserve the orchestrator's current question tracking without
+        # advancing state.  During QUESTIONS the active question index is
+        # exposed; during other states question_index is None.
+        if orchestrator.state == State.QUESTIONS:
+            _qidx: int | None = orchestrator._question_index
+        else:
+            _qidx = None
+        _total_qs: int = len(FOLLOW_UP_QUESTIONS)
+
+        return TurnResponse(
+            call_id=call_id,
+            audio_base64=audio_b64,
+            transcription=safe_msg,
+            patient_transcription=patient_text,
+            state=orchestrator.state.value,
+            citations=[],
+            requires_response=True,
+            question_index=_qidx,
+            total_questions=_total_qs,
+            call_ended=False,
+            escalation=None,
+        )
 
     # 4. Process through orchestrator
     try:

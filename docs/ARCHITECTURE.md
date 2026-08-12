@@ -379,20 +379,66 @@ banner visual. La inserción es idempotente mediante ``alert_id`` determinístic
 
 ### Defensa contra inyección de prompts
 
-- Las instrucciones del sistema están en un rol de mensaje separado de la entrada del
-  usuario (separación de roles de la API de Groq).
-- El habla del paciente nunca se concatena en las instrucciones.
-- El esquema de salida estructurada restringe al LLM a una forma JSON fija.
-- Los intentos de cambio de rol en la salida del LLM se rechazan durante la validación.
-- **Detección de inyección a nivel de entrada** (``_detect_injection``): la consulta se
-  escanea en busca de patrones conocidos de jailbreak (cambio de rol, extracción de
-  prompt del sistema, inyección de delimitadores, etiquetas ``[INST]``, etc.) antes de
-  cualquier llamada al LLM. Cuando un patrón coincide, la llamada devuelve un fallback
-  seguro en español (``insufficient_knowledge=True``) sin invocar el modelo.
-- **Control de longitud**: las consultas de más de 2000 caracteres se rechazan en la
-  capa de detección de inyección.
-- **Controles a nivel de salida**: el validador de fundamentación detecta citas
-  alucinadas y afirmaciones de medicamentos sin fundamento en la salida del LLM.
+El módulo centralizado ``backend/llm/injection.py`` es la única fuente de verdad
+para la detección de inyección de prompts. Expone tres escáneres públicos con
+responsabilidades bien definidas:
+
+- ``detect_input_injection(text)`` — escáner de frontera para toda entrada del
+  usuario (transcripciones STT, consultas RAG, respuestas del paciente).
+- ``detect_output_injection(text)`` — escáner conservador de salida del LLM que
+  busca marcadores estructurales de inyección (etiquetas de rol, divulgación de
+  prompt del sistema, ``sudo``, ``exec()``, etc.).
+- ``scan_document_density(text, filename)`` — escáner de densidad durante la
+  ingesta de documentos que **nunca bloquea ni rechaza** un documento; solo emite
+  advertencias (warning) en los logs cuando la concentración de patrones tipo
+  inyección supera el 2 % de las líneas con al menos 3 coincidencias.
+
+**Normalización Unicode y caracteres de ancho cero.** Antes de cualquier escaneo,
+``normalize_unicode()`` elimina caracteres invisibles (U+200B, U+FEFF, U+200C‑
+U+200F y variantes de control Unicode) y normaliza a NFC para representación
+canónica. Esto impide que un atacante oculte patrones maliciosos detrás de ruido
+de ancho cero. La presencia de caracteres eliminados se registra en la categoría
+``zero_width_chars_removed`` para auditoría.
+
+**Controles de frontera.** ``detect_input_injection`` se invoca en cada punto de
+entrada de datos del usuario antes de que el texto alcance cualquier LLM, RAG o
+cambio de estado de conversación:
+
+| Frontera | Módulo | Comportamiento al bloquear |
+|---|---|---|
+| API REST de turnos de voz | ``backend/api/calls.py`` | Devuelve un mensaje de fallback en español sintetizado por voz; no avanza el estado de la conversación. |
+| API REST de consulta RAG | ``backend/api/rag.py`` | Devuelve ``RagQueryResponse`` con mensaje de fallback seguro; no invoca RAG ni LLM. |
+| Orquestador de conversación | ``backend/conversation/orchestrator.py`` | Registra la entrada bloqueada en el historial para auditoría; emite respuesta de fallback sin modificar el estado. |
+| Adaptador LLM (antes de Groq) | ``backend/llm/adapter.py`` | Rechaza la consulta con ``insufficient_knowledge=True`` sin llamar al modelo. |
+| Clasificador de aprobación | ``backend/llm/approval.py`` | Clasifica la entrada como no procesable sin invocar el LLM de revisión. |
+
+**Detección de inyección en la salida.** ``detect_output_injection`` escanea la
+respuesta producida por el LLM antes de entregarla al paciente. Es conservador
+para no bloquear texto clínico legítimo en español. Cuando detecta marcadores
+estructurales de inyección (etiquetas ``<|im_start|>``, ``[INST]``, divulgación
+de ``system prompt``, ``sudo``, ``exec(`` o intentos de falsear el campo
+``insufficient_knowledge`` en el JSON de salida), la respuesta se reemplaza con
+un mensaje de fallback seguro.
+
+**Etiquetado de contenido externo en prompts del sistema.** Todos los prompts de
+sistema que reciben contenido del paciente o fragmentos RAG etiquetan ese
+contenido explícitamente como ``contenido externo NO VERIFICADO`` para prevenir
+que el LLM interprete instrucciones inyectadas como parte de su rol:
+
+- ``_GROQ_SYSTEM_PROMPT`` (``adapter.py``): etiqueta los chunks RAG como
+  contenido externo y advierte al modelo que no obedezca instrucciones que
+  aparezcan en ellos.
+- ``_DOUBT_SYSTEM_PROMPT`` (``approval.py``): etiqueta la transcripción del
+  paciente como contenido externo.
+- ``_APPROVAL_SYSTEM_PROMPT`` (``approval.py``): etiqueta la respuesta del
+  paciente como contenido externo.
+
+Adicionalmente, las instrucciones del sistema están en un rol de mensaje separado
+de la entrada del usuario (separación de roles de la API de Groq), el habla del
+paciente nunca se concatena en las instrucciones, y el esquema de salida
+estructurada restringe al LLM a una forma JSON fija. Los intentos de cambio de rol
+en la salida del LLM se rechazan durante la validación. Las consultas de más de
+2000 caracteres se rechazan en la capa de detección de entrada.
 
 ### Prevención de alucinaciones clínicas
 
