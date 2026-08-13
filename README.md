@@ -706,7 +706,7 @@ fuera de este cálculo.
 | Turnos totales | 9 |
 | Tokens de entrada | 6 014 |
 | Tokens de salida | 918 |
-| Costo LLM estimado | 0,001663 USD |
+| Costo LLM estimado | 0,004273 USD |
 | Consultas RAG | 1 |
 | Llamadas al modelo | 6 |
 | Latencia P50 | 14 155,1 ms |
@@ -717,6 +717,12 @@ fuera de este cálculo.
 | STT P95 | 1 776,3 ms |
 | LLM P50 | 1 054,0 ms |
 | LLM P95 | 1 334,1 ms |
+
+**Nota sobre costos:** Los valores de costo LLM estimado utilizan las tarifas
+oficiales de Groq para **llama-3.3-70b-versatile** vigentes al momento de la
+implementación: $0.59 USD por millón de tokens de entrada y $0.79 USD por millón
+de tokens de salida. Estos valores pueden actualizarse mediante las variables de
+entorno `LLM_INPUT_COST_PER_MILLION` y `LLM_OUTPUT_COST_PER_MILLION`.
 
 La evidencia se consulta desde `/metrics/summary`, `/metrics/calls` y
 `/metrics/calls/{call_id}`. La vista `/metrics` presenta estos mismos campos
