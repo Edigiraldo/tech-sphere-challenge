@@ -12,7 +12,7 @@ from backend.metrics.collector import (
     MetricsCollector,
     load_metrics_from_sqlite,
 )
-from backend.metrics.cost import CostConfig, estimate_cost
+from backend.metrics.cost import CostConfig, estimate_cost, default_groq_llama33_cost_config
 from backend.metrics.models import CallMetrics, MetricsSummary, TurnMetrics
 from backend.metrics.percentiles import percentile
 
@@ -24,6 +24,7 @@ __all__ = [
     "MetricsSummary",
     "TurnMetrics",
     "estimate_cost",
+    "default_groq_llama33_cost_config",
     "load_metrics_from_sqlite",
     "percentile",
 ]

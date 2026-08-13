@@ -306,8 +306,10 @@ entrada, 918 tokens de salida, 1 consulta RAG y 6 invocaciones al modelo. Las
 latencias observadas fueron: total P50 14 155,1 ms y P95 53 604,1 ms; TTS P50
 11 834,0 ms y P95 41 508,1 ms; STT P50 1 552,7 ms y P95 1 776,3 ms; LLM P50
 1 054,0 ms y P95 1 334,1 ms. Estos valores son evidencia de una sesión, no
-valores hardcodeados ni una garantía de rendimiento. No se reporta costo
-estimado porque no existe un valor validado para esta llamada.
+valores hardcodeados ni una garantía de rendimiento. El costo LLM estimado se
+calcula como ``(tokens_entrada / 1 000 000 × tarifa_entrada) +
+(tokens_salida / 1 000 000 × tarifa_salida)`` usando las tarifas configurables
+de Groq Llama 3.3. Se excluyen STT, TTS, embeddings, hosting, red e infraestructura.
 
 ## 10. Proceso de desarrollo con IA
 

@@ -17,14 +17,17 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from backend.metrics.collector import InMemoryMetricsCollector
-from backend.metrics.cost import estimate_cost
+from backend.metrics.cost import CostConfig, estimate_cost, default_groq_llama33_cost_config
 from backend.metrics.models import CallMetrics, TurnMetrics
 
 # ---------------------------------------------------------------------------
 # Module-level singleton (shared for instrumentation by other API modules)
 # ---------------------------------------------------------------------------
 
-metrics_collector = InMemoryMetricsCollector()
+metrics_collector = InMemoryMetricsCollector(
+    cost_config=default_groq_llama33_cost_config()
+)
+_cost_config = default_groq_llama33_cost_config()
 
 # ---------------------------------------------------------------------------
 # Router
@@ -153,7 +156,9 @@ class TurnMetricsItem(BaseModel):
     )
 
     @classmethod
-    def from_turn_metrics(cls, tm: TurnMetrics) -> "TurnMetricsItem":
+    def from_turn_metrics(
+        cls, tm: TurnMetrics, cost_config: CostConfig = _cost_config
+    ) -> "TurnMetricsItem":
         """Build a response item from a domain ``TurnMetrics``."""
         cost: Optional[float] = None
         if (
@@ -163,8 +168,8 @@ class TurnMetricsItem(BaseModel):
             cost = estimate_cost(
                 input_tokens=tm.input_tokens,
                 output_tokens=tm.output_tokens,
-                input_cost_per_million=0.0,
-                output_cost_per_million=0.0,
+                input_cost_per_million=cost_config.input_cost_per_million,
+                output_cost_per_million=cost_config.output_cost_per_million,
             )
         return cls(
             call_id=tm.call_id,
@@ -306,7 +311,9 @@ async def get_call_detail(call_id: str) -> CallDetailResponse:
     # Get the raw turns (for per-turn detail).  This uses the internal
     # access method that returns TurnMetrics for ended calls only.
     turns = metrics_collector.get_call_turns(call_id)
-    turn_items = [TurnMetricsItem.from_turn_metrics(t) for t in turns]
+    turn_items = [
+        TurnMetricsItem.from_turn_metrics(t, _cost_config) for t in turns
+    ]
 
     return CallDetailResponse(
         call_id=call_metrics.call_id,

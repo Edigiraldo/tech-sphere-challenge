@@ -20,6 +20,7 @@ from typing import Protocol
 
 from backend.metrics.models import CallMetrics, MetricsSummary, TurnMetrics
 from backend.metrics.percentiles import percentile
+from backend.metrics.cost import CostConfig, default_groq_llama33_cost_config
 
 
 # ---------------------------------------------------------------------------
@@ -86,8 +87,9 @@ class InMemoryMetricsCollector:
     latencies and optional component durations stored for every ended call.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, cost_config: CostConfig | None = None) -> None:
         self._lock = threading.Lock()
+        self._cost_config = cost_config or default_groq_llama33_cost_config()
 
         # _turns: call_id → list[TurnMetrics]  (populated by record_turn)
         self._turns: dict[str, list[TurnMetrics]] = {}
@@ -169,7 +171,12 @@ class InMemoryMetricsCollector:
             # Take a copy so the aggregation runs outside the lock.
             turns_copy = list(turns)
 
-        return CallMetrics.from_turns(turns_copy, patient_id=patient_id)
+        return CallMetrics.from_turns(
+            turns_copy,
+            patient_id=patient_id,
+            input_cost_per_million=self._cost_config.input_cost_per_million,
+            output_cost_per_million=self._cost_config.output_cost_per_million,
+        )
 
     def get_all_call_metrics(self) -> list[CallMetrics]:
         """Return per-call aggregates for all ended calls.
@@ -192,7 +199,12 @@ class InMemoryMetricsCollector:
                 snapshots.append((call_id, patient_id, turns_copy))
 
         return [
-            CallMetrics.from_turns(turns, patient_id=patient_id)
+            CallMetrics.from_turns(
+                turns,
+                patient_id=patient_id,
+                input_cost_per_million=self._cost_config.input_cost_per_million,
+                output_cost_per_million=self._cost_config.output_cost_per_million,
+            )
             for call_id, patient_id, turns in snapshots
         ]
 
@@ -235,7 +247,12 @@ class InMemoryMetricsCollector:
         for call_id, turns in snapshots:
             patient_id = patients_snapshot[call_id]
             call_metrics_list.append(
-                CallMetrics.from_turns(turns, patient_id=patient_id)
+                CallMetrics.from_turns(
+                    turns,
+                    patient_id=patient_id,
+                    input_cost_per_million=self._cost_config.input_cost_per_million,
+                    output_cost_per_million=self._cost_config.output_cost_per_million,
+                )
             )
 
         # -- Gather all per-turn observations for percentiles ---------------
