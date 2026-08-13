@@ -7,6 +7,7 @@ standalone ``estimate_cost`` function.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 
 
 @dataclass(frozen=True)
@@ -37,6 +38,12 @@ class CostConfig:
             )
 
 
+def default_groq_llama33_cost_config() -> CostConfig:
+    """Return configurable Groq Llama 3.3 pricing per million tokens."""
+    return CostConfig(
+        input_cost_per_million=float(os.getenv("LLM_INPUT_COST_PER_MILLION", "0.24")),
+        output_cost_per_million=float(os.getenv("LLM_OUTPUT_COST_PER_MILLION", "0.24")),
+    )
 def estimate_cost(
     *,
     input_tokens: int,

@@ -696,8 +696,9 @@ La aplicación expone:
 La siguiente captura corresponde a una llamada real de demostración y documenta
 la forma de reportar las métricas del reto. No es un valor hardcodeado ni una
 línea base de rendimiento; los valores cambian según el proveedor, el hardware y
-la duración de la llamada. No se reporta costo estimado porque no existe un valor
-validado para esta sesión.
+la duración de la llamada. El costo estimado incluye únicamente los tokens de
+Llama 3.3 vía Groq; STT, TTS, embeddings, hosting, red e infraestructura quedan
+fuera de este cálculo.
 
 | Métrica | Valor observado |
 | --- | ---: |
@@ -705,6 +706,7 @@ validado para esta sesión.
 | Turnos totales | 9 |
 | Tokens de entrada | 6 014 |
 | Tokens de salida | 918 |
+| Costo LLM estimado | 0,001663 USD |
 | Consultas RAG | 1 |
 | Llamadas al modelo | 6 |
 | Latencia P50 | 14 155,1 ms |

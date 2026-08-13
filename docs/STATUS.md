@@ -182,8 +182,10 @@ fases están documentados en `docs/ARCHITECTURE.md`.
   de la transcripción del agente en cada turno y progresión del estado de llamada con
   orden monótono.
 - Instrumentación de métricas: ``backend/metrics/`` — ``InMemoryMetricsCollector``
-  (thread-safe, ``threading.Lock``), ``TurnMetrics`` / ``CallMetrics`` /
-  ``MetricsSummary``, estimación de costos, percentiles P50/P95. Persistencia de
+   (thread-safe, ``threading.Lock``), ``TurnMetrics`` / ``CallMetrics`` /
+   ``MetricsSummary``, estimación de costos LLM-only, percentiles P50/P95. El costo
+   usa únicamente tokens de Groq Llama 3.3; STT, TTS, embeddings, hosting, red y
+   otros componentes quedan fuera de este cálculo. Persistencia de
   métricas en SQLite (tablas ``calls_metrics`` y ``turn_metrics``) con reconstrucción
   automática al inicio para que los endpoints ``GET /metrics/summary``,
   ``GET /metrics/calls`` y ``GET /metrics/calls/{call_id}`` muestren llamadas
