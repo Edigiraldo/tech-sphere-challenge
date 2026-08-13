@@ -569,7 +569,7 @@ primer uso.
 │   ├── PROJECT.md
 │   ├── SCREENSHOTS.md
 │   ├── STATUS.md
-│   └── screenshots/       Capturas de la interfaz (app-01.png … app-08.png)
+│   └── screenshots/       Capturas de la interfaz (app-01.png … app-09.png)
 ├── dataset/               Datos sintéticos y documentos clínicos de referencia
 ├── .challenge-docs/       Documentación disponible del reto
 ├── pyproject.toml         Declaración del proyecto y dependencias
@@ -740,13 +740,17 @@ Las capturas actuales de la interfaz están reunidas en
 
 ![Interfaz de llamada](docs/screenshots/app-02.png)
 
-#### Consola `/admin`
+#### Resumen de llamada
 
-![Consola de administración](docs/screenshots/app-04.png)
+![Resumen de llamada](docs/screenshots/app-04.png)
 
 #### Métricas
 
 ![Vista de métricas](docs/screenshots/app-07.png)
+
+#### Consola `/admin`
+
+![Consola de administración](docs/screenshots/app-09.png)
 
 La evidencia se consulta desde `/metrics/summary`, `/metrics/calls` y
 `/metrics/calls/{call_id}`. La vista `/metrics` presenta estos mismos campos

@@ -13,11 +13,13 @@ Los datos clínicos visibles son sintéticos.
 
 ## Administración Y Resumen
 
-![Consola de administración de documentos](screenshots/app-04.png)
+![Resumen de llamada](screenshots/app-04.png)
 
 ![Resumen estructurado de la llamada](screenshots/app-05.png)
 
 ![Decisión de escalamiento](screenshots/app-06.png)
+
+![Consola de administración de documentos](screenshots/app-09.png)
 
 ## Métricas
 
