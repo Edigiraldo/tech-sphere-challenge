@@ -734,6 +734,20 @@ en algunas capturas del video, aunque actualmente está disponible en `/metrics`
 Las capturas actuales de la interfaz están reunidas en
 [`docs/SCREENSHOTS.md`](docs/SCREENSHOTS.md).
 
+### Vistas principales
+
+#### Llamada
+
+![Interfaz de llamada](docs/screenshots/app-02.png)
+
+#### Consola `/admin`
+
+![Consola de administración](docs/screenshots/app-04.png)
+
+#### Métricas
+
+![Vista de métricas](docs/screenshots/app-07.png)
+
 La evidencia se consulta desde `/metrics/summary`, `/metrics/calls` y
 `/metrics/calls/{call_id}`. La vista `/metrics` presenta estos mismos campos
 cuando están disponibles en el colector.
