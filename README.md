@@ -567,7 +567,9 @@ primer uso.
 │   ├── ARCHITECTURE-DIAGRAM.md
 │   ├── ARCHITECTURE.md
 │   ├── PROJECT.md
-│   └── STATUS.md
+│   ├── SCREENSHOTS.md
+│   ├── STATUS.md
+│   └── screenshots/       Capturas de la interfaz (app-01.png … app-08.png)
 ├── dataset/               Datos sintéticos y documentos clínicos de referencia
 ├── .challenge-docs/       Documentación disponible del reto
 ├── pyproject.toml         Declaración del proyecto y dependencias
@@ -723,6 +725,14 @@ oficiales de Groq para **llama-3.3-70b-versatile** vigentes al momento de la
 implementación: $0.59 USD por millón de tokens de entrada y $0.79 USD por millón
 de tokens de salida. Estos valores pueden actualizarse mediante las variables de
 entorno `LLM_INPUT_COST_PER_MILLION` y `LLM_OUTPUT_COST_PER_MILLION`.
+
+**Nota sobre el video:** La métrica de costo estimado de las llamadas fue
+implementada después de la grabación del video de demostración. Por eso no aparece
+en algunas capturas del video, aunque actualmente está disponible en `/metrics`,
+`/metrics/summary` y `/metrics/calls`.
+
+Las capturas actuales de la interfaz están reunidas en
+[`docs/SCREENSHOTS.md`](docs/SCREENSHOTS.md).
 
 La evidencia se consulta desde `/metrics/summary`, `/metrics/calls` y
 `/metrics/calls/{call_id}`. La vista `/metrics` presenta estos mismos campos
